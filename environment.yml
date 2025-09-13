@@ -1,0 +1,20 @@
+name: mpc-rl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - jupyterlab
+  - pip
+  - pip:
+      - jax[cuda12]          # GPU JAX, switch to jax if CPU
+      - tqdm
+      - playground
+      - mujoco
+      - mujoco_mjx
+      - brax
+      - git+https://github.com/google/trajax
+      - lqrax
+      - mediapy
