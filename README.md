@@ -29,3 +29,10 @@ If you want to install with a regular Python virtual environment you need to ins
     - brax
     - mediapy
     - playground
+
+
+Side note: there is a current bug in JAX recognizing the GPU. A temporary fix can be found in this [issue discussion](https://github.com/jax-ml/jax/issues/28980), which is to close out everything using JAX and run:
+```bash
+$ sudo rmmod nvidia_uvm
+$ sudo modprobe nvidia_uvm
+```
