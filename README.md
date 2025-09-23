@@ -22,6 +22,7 @@ Active the environment with:
 conda activate mpc_rl_exp
 ```
 
+
 If you want to install with a regular Python virtual environment you need to install the following (assuming Python=3.10):
     - jax
     - mujoco

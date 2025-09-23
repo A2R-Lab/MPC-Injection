@@ -16,7 +16,7 @@ class Cartpole_iLQR:
             print("Viewer could not be launched. Continuing without viewer.")
             self.viewer = None
 
-        self.nq = self.model.nq     # number of position variables (joints)
+        self.nq = self.model.nq     # number of position variables
         self.nv = self.model.nv     # number of velocity variables
         self.nx = self.nq + self.nv # total state dimension
         self.nu = self.model.nu     # number of control inputs
