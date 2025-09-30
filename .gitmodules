@@ -1,0 +1,3 @@
+[submodule "mujoco_mpc"]
+	path = mujoco_mpc
+	url = git@github.com:A2R-Lab/mujoco_mpc.git
