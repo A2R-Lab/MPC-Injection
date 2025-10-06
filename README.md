@@ -22,6 +22,9 @@ Activate the environment:
 conda activate mpc-rl
 ```
 
+### Installing MuJoCo-MPC
+TODO: go over the details of installing MuJoCo-MPC locally and the python install. Testing this out in a new branch to be safe!
+
 ## Usage
 
 ### Training a New Agent
