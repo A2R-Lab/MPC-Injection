@@ -1,0 +1,520 @@
+import datetime
+import json
+import os
+from pathlib import Path
+import warnings
+import subprocess
+
+# Configure JAX for GPU with compatible architecture settings
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["JAX_PLATFORMS"] = "cuda"
+
+# Try to detect GPU compute capability and set appropriate flags
+try:
+    # Get GPU compute capability
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+        capture_output=True, text=True, check=True
+    )
+    compute_cap = result.stdout.strip().split('\n')[0].replace('.', '')
+    print(f"Detected GPU compute capability: {compute_cap}")
+    
+    # Set XLA flags to use detected compute capability
+    os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+except Exception as e:
+    print(f"Could not detect GPU compute capability: {e}")
+    # Use default settings
+    os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+
+# Suppress JAX warnings and info logs
+warnings.filterwarnings("ignore", category=UserWarning, module="jax")
+warnings.filterwarnings("ignore", category=FutureWarning, module="jax")
+
+from absl import app
+from absl import flags
+from absl import logging
+
+import gymnasium as gym
+from dm_control import suite
+from shimmy import DmControlCompatibilityV0
+from gymnasium.wrappers import FlattenObservation
+from sbx import SAC, PPO, TD3
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+import numpy as np
+import mediapy as media
+
+# Import JAX and verify GPU backend
+import jax
+print(f"JAX backend: {jax.default_backend()}")
+print(f"JAX devices: {jax.devices()}")
+
+# Verify we're using GPU
+if jax.default_backend() != 'gpu':
+    raise RuntimeError(
+        f"JAX is not using GPU! Backend: {jax.default_backend()}. "
+        "Please check your CUDA installation and JAX GPU setup."
+    )
+
+# Set logging level to suppress JAX backend initialization messages
+logging.set_verbosity(logging.WARNING)
+
+
+# Environment flags
+_ENV_NAME = flags.DEFINE_string(
+    "env_name",
+    "cartpole-swingup",
+    "Name of the dm_control environment (format: domain-task, e.g., cartpole-swingup)",
+)
+_DOMAIN = flags.DEFINE_string(
+    "domain",
+    None,
+    "Domain name (e.g., cartpole). If None, will be parsed from env_name",
+)
+_TASK = flags.DEFINE_string(
+    "task",
+    None,
+    "Task name (e.g., swingup). If None, will be parsed from env_name",
+)
+
+# Training flags
+_ALGORITHM = flags.DEFINE_enum(
+    "algorithm", "SAC", ["SAC", "PPO", "TD3"], "RL algorithm to use"
+)
+_TOTAL_TIMESTEPS = flags.DEFINE_integer(
+    "total_timesteps", 1_000_000, "Total number of timesteps to train"
+)
+_NUM_ENVS = flags.DEFINE_integer(
+    "num_envs", 8, "Number of parallel environments for training"
+)
+_SEED = flags.DEFINE_integer("seed", 1, "Random seed")
+
+# Evaluation flags
+_PLAY_ONLY = flags.DEFINE_boolean(
+    "play_only", False, "If true, only evaluate the model without training"
+)
+_LOAD_RUN_NAME = flags.DEFINE_string(
+    "load_run_name", None, "Name of the run to load checkpoint from"
+)
+_NUM_EVAL_EPISODES = flags.DEFINE_integer(
+    "num_eval_episodes", 5, "Number of episodes to evaluate"
+)
+_NUM_VIDEOS = flags.DEFINE_integer(
+    "num_videos", 3, "Number of videos to record during evaluation"
+)
+
+# Experiment flags
+_SUFFIX = flags.DEFINE_string("suffix", None, "Suffix for the experiment name")
+_LOGDIR = flags.DEFINE_string("logdir", "logs", "Base directory for logs")
+
+# Hyperparameter flags (this is for SAC for now, not optimized yet)
+_LEARNING_RATE = flags.DEFINE_float("learning_rate", 3e-4, "Learning rate")
+_BUFFER_SIZE = flags.DEFINE_integer("buffer_size", 1_000_000, "Replay buffer size")
+_LEARNING_STARTS = flags.DEFINE_integer(
+    "learning_starts", 10_000, "Steps before learning starts"
+)
+_BATCH_SIZE = flags.DEFINE_integer("batch_size", 256, "Batch size")
+_TAU = flags.DEFINE_float("tau", 0.005, "Target network update rate")
+_GAMMA = flags.DEFINE_float("gamma", 0.99, "Discount factor")
+
+# Checkpoint flags
+_CHECKPOINT_FREQ = flags.DEFINE_integer(
+    "checkpoint_freq", 25_000, "Save checkpoint every N steps"
+)
+_EVAL_FREQ = flags.DEFINE_integer(
+    "eval_freq", 10_000, "Evaluate policy every N steps"
+)
+
+
+def parse_env_name(env_name: str) -> tuple[str, str]:
+    """
+    Parse environment name into domain and task.
+    
+    Args:
+        env_name: Environment name in format 'domain-task' or 'domain_task'
+    
+    Returns:
+        Tuple of (domain, task)
+    """
+    # Replace underscores with hyphens and split
+    env_name = env_name.replace("_", "-")
+    parts = env_name.split("-")
+    
+    if len(parts) < 2:
+        raise ValueError(
+            f"Invalid env_name format: {env_name}. "
+            "Expected format: 'domain-task' (e.g., 'cartpole-swingup')"
+        )
+    
+    domain = parts[0]
+    task = "-".join(parts[1:])  # Handle tasks with hyphens like 'stand-and-reach'
+    return domain, task
+
+
+def make_dm_env(domain: str, task: str, render_mode=None):
+    """
+    Create a dm_control environment wrapped for gymnasium.
+    
+    Args:
+        domain: Domain name (e.g., 'cartpole')
+        task: Task name (e.g., 'swingup')
+        render_mode: Render mode for the environment
+    
+    Returns:
+        Wrapped gymnasium environment
+    """
+    dm_env = suite.load(domain_name=domain, task_name=task)
+    gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
+    gym_env = FlattenObservation(gym_env)
+    return gym_env
+
+
+def create_experiment_name(env_name: str, suffix: str = None) -> str:
+    """Create unique experiment name with timestamp."""
+    now = datetime.datetime.now()
+    timestamp = now.strftime("%Y%m%d-%H%M%S")
+    exp_name = f"{env_name}-{timestamp}"
+    if suffix:
+        exp_name += f"-{suffix}"
+    return exp_name
+
+
+def save_config(logdir: Path, config: dict):
+    """Save configuration to JSON file."""
+    config_path = logdir / "config.json"
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    print(f"Configuration saved to: {config_path}")
+
+
+def load_model(algorithm: str, model_path: Path, env):
+    """Load a trained model."""
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3}[algorithm]
+    print(f"Loading model from: {model_path}")
+    return algo_class.load(model_path, env=env)
+
+
+def create_model(algorithm: str, env, learning_rate, buffer_size, 
+                 learning_starts, batch_size, tau, gamma, seed, tensorboard_log):
+    """Create a new model instance."""
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3}[algorithm]
+    
+    if algorithm == "SAC":
+        model = algo_class(
+            "MlpPolicy",
+            env,
+            learning_rate=learning_rate,
+            buffer_size=buffer_size,
+            learning_starts=learning_starts,
+            batch_size=batch_size,
+            tau=tau,
+            gamma=gamma,
+            verbose=1,
+            seed=seed,
+            tensorboard_log=tensorboard_log,
+        )
+    elif algorithm == "PPO":
+        model = algo_class(
+            "MlpPolicy",
+            env,
+            learning_rate=learning_rate,
+            gamma=gamma,
+            verbose=1,
+            seed=seed,
+            tensorboard_log=tensorboard_log,
+        )
+    elif algorithm == "TD3":
+        model = algo_class(
+            "MlpPolicy",
+            env,
+            learning_rate=learning_rate,
+            buffer_size=buffer_size,
+            learning_starts=learning_starts,
+            batch_size=batch_size,
+            tau=tau,
+            gamma=gamma,
+            verbose=1,
+            seed=seed,
+            tensorboard_log=tensorboard_log,
+        )
+    
+    return model
+
+
+def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
+                        num_videos: int, video_dir: Path, normalize_env=None):
+    """
+    Evaluate model and record videos.
+    
+    Args:
+        model: Trained model
+        domain: Environment domain
+        task: Environment task
+        num_episodes: Number of episodes to evaluate
+        num_videos: Number of videos to record
+        video_dir: Directory to save videos
+        normalize_env: VecNormalize wrapper for observation normalization
+    """
+    video_dir.mkdir(parents=True, exist_ok=True)
+    
+    episode_rewards = []
+    episode_lengths = []
+    
+    for episode in range(num_episodes):
+        # Create evaluation environment
+        eval_env_base = make_dm_env(domain, task, render_mode="rgb_array")
+        
+        # Wrap in VecEnv for compatibility with model
+        eval_env = DummyVecEnv([lambda: eval_env_base])
+        
+        # Apply normalization if available
+        if normalize_env is not None:
+            eval_env = VecNormalize.load(
+                normalize_env, 
+                eval_env
+            )
+            eval_env.training = False
+            eval_env.norm_reward = False
+        
+        obs = eval_env.reset()
+        done = False
+        episode_reward = 0
+        episode_length = 0
+        frames = []
+        
+        # Record video for first few episodes
+        record_video = episode < num_videos
+        
+        while not done:
+            action, _states = model.predict(obs, deterministic=True)
+            obs, reward, done, info = eval_env.step(action)
+            episode_reward += reward[0]
+            episode_length += 1
+            
+            # Capture frames for video
+            if record_video:
+                frame = eval_env_base.render()
+                if frame is not None:
+                    frames.append(frame)
+            
+            if done:
+                break
+        
+        episode_rewards.append(episode_reward)
+        episode_lengths.append(episode_length)
+        
+        print(f"Episode {episode + 1}/{num_episodes}: "
+              f"Reward = {episode_reward:.2f}, Length = {episode_length}")
+        
+        # Save video
+        if record_video and frames:
+            video_path = video_dir / f"rollout{episode}.mp4"
+            # Assuming 30 FPS for dm_control environments
+            fps = 30
+            media.write_video(str(video_path), frames, fps=fps)
+            print(f"Video saved to: {video_path}")
+        
+        eval_env.close()
+    
+    # Print summary statistics
+    print("\n" + "="*50)
+    print("Evaluation Summary:")
+    print(f"Mean reward: {np.mean(episode_rewards):.2f} ± {np.std(episode_rewards):.2f}")
+    print(f"Min reward: {np.min(episode_rewards):.2f}")
+    print(f"Max reward: {np.max(episode_rewards):.2f}")
+    print(f"Mean length: {np.mean(episode_lengths):.1f}")
+    print("="*50)
+
+
+def main(argv):
+    """
+    Main training and evaluation function.
+    """
+    del argv # Not used since we're using absl for flags
+    
+    # Parse environment name
+    if _DOMAIN.value and _TASK.value:
+        domain = _DOMAIN.value
+        task = _TASK.value
+        env_name = f"{domain}-{task}"
+    else:
+        domain, task = parse_env_name(_ENV_NAME.value)
+        env_name = _ENV_NAME.value
+    
+    print(f"Environment: {domain}/{task}")
+    
+    # Determine if we're loading a checkpoint
+    if _LOAD_RUN_NAME.value:
+        # Load from existing run
+        run_name = _LOAD_RUN_NAME.value
+        logdir = Path(_LOGDIR.value) / run_name
+        
+        if not logdir.exists():
+            raise ValueError(f"Run directory not found: {logdir}")
+        
+        print(f"Loading from run: {run_name}")
+    else:
+        # Create new experiment
+        run_name = create_experiment_name(env_name, _SUFFIX.value)
+        logdir = Path(_LOGDIR.value) / run_name
+        logdir.mkdir(parents=True, exist_ok=True)
+        print(f"Created new run: {run_name}")
+    
+    print(f"Log directory: {logdir}")
+    
+    # Set up directories
+    checkpoint_dir = logdir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    video_dir = logdir / "videos"
+    
+    # Save configuration (only for new runs)
+    if not _LOAD_RUN_NAME.value:
+        config = {
+            "env_name": env_name,
+            "domain": domain,
+            "task": task,
+            "algorithm": _ALGORITHM.value,
+            "total_timesteps": _TOTAL_TIMESTEPS.value,
+            "num_envs": _NUM_ENVS.value,
+            "seed": _SEED.value,
+            "learning_rate": _LEARNING_RATE.value,
+            "buffer_size": _BUFFER_SIZE.value,
+            "learning_starts": _LEARNING_STARTS.value,
+            "batch_size": _BATCH_SIZE.value,
+            "tau": _TAU.value,
+            "gamma": _GAMMA.value,
+        }
+        save_config(logdir, config)
+    
+    # Create training environment
+    print(f"Creating {_NUM_ENVS.value} parallel environments...")
+    vec_env = make_vec_env(
+        lambda: make_dm_env(domain, task),
+        n_envs=_NUM_ENVS.value,
+        seed=_SEED.value,
+    )
+
+    # VecNormalize standardizes observations and rewards to ~N(0,1), which is critical for
+    # stable learning in continuous control (prevents different-scale features from dominating)
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
+    
+    # Path for the final model and normalization stats
+    model_path = logdir / "final_model"
+    vec_normalize_path = logdir / "vec_normalize.pkl"
+    replay_buffer_path = logdir / "replay_buffer.pkl"
+    
+    # Load or create model
+    # NOTE: SB3/SBX saves models with .zip extension but load() doesn't require it
+    if _LOAD_RUN_NAME.value and (model_path.with_suffix('.zip').exists() or model_path.exists()):
+        # Load existing model
+        model = load_model(_ALGORITHM.value, model_path, vec_env)
+        print("Model loaded successfully")
+        
+        # Load normalization stats
+        if vec_normalize_path.exists():
+            vec_env = VecNormalize.load(vec_normalize_path, vec_env)
+            print("Normalization stats loaded")
+        
+        # Load replay buffer (for off-policy algorithms)
+        if replay_buffer_path.exists() and hasattr(model, 'load_replay_buffer'):
+            model.load_replay_buffer(replay_buffer_path)
+            print(f"Replay buffer loaded (size: {model.replay_buffer.size()})")
+    else:
+        # Create new model
+        print(f"Creating new {_ALGORITHM.value} model...")
+        model = create_model(
+            algorithm=_ALGORITHM.value,
+            env=vec_env,
+            learning_rate=_LEARNING_RATE.value,
+            buffer_size=_BUFFER_SIZE.value,
+            learning_starts=_LEARNING_STARTS.value,
+            batch_size=_BATCH_SIZE.value,
+            tau=_TAU.value,
+            gamma=_GAMMA.value,
+            seed=_SEED.value,
+            tensorboard_log=str(logdir / "tensorboard"),
+        )
+    
+    # Training phase
+    if not _PLAY_ONLY.value and _TOTAL_TIMESTEPS.value > 0:
+        print(f"\nStarting training for {_TOTAL_TIMESTEPS.value} timesteps...")
+        
+        # Create callback for saving a model every save_freq calls to env.step()
+        checkpoint_callback = CheckpointCallback(
+            save_freq=_CHECKPOINT_FREQ.value,
+            save_path=str(checkpoint_dir),
+            name_prefix="model",
+            save_replay_buffer=True,
+            save_vecnormalize=True,
+        )
+        
+        # Create eval environment for evaluation callback
+        # Must be wrapped the same way as training env (with VecNormalize)
+        eval_env = make_vec_env(
+            lambda: make_dm_env(domain, task),
+            n_envs=1,
+            seed=_SEED.value + 1000,
+        )
+        eval_env = VecNormalize(
+            eval_env,
+            training=False,  # Don't update stats during evaluation
+            norm_obs=True,
+            norm_reward=True,
+        )
+        
+        # Create callback for evaluating the trained model
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=str(logdir / "best_model"),
+            log_path=str(logdir / "eval_logs"),
+            eval_freq=_EVAL_FREQ.value,
+            deterministic=True,
+            render=False,
+            n_eval_episodes=5,
+        )
+        
+        # Train the model
+        # When resuming, reset_num_timesteps=False continues from loaded timestep count
+        model.learn(
+            total_timesteps=_TOTAL_TIMESTEPS.value,
+            callback=[checkpoint_callback, eval_callback],
+            progress_bar=True,
+            reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
+        )
+        
+        print("Training complete!")
+        
+        # Save final model, normalization stats, and replay buffer
+        print(f"Saving model to: {model_path}")
+        model.save(model_path)
+        vec_env.save(vec_normalize_path)
+        
+        # Save replay buffer (for off-policy algorithms)
+        if hasattr(model, 'save_replay_buffer'):
+            model.save_replay_buffer(replay_buffer_path)
+            print(f"Replay buffer saved (size: {model.replay_buffer.size()})")
+        
+        print("Model and normalization stats saved")
+        
+        eval_env.close()
+    
+    # Evaluation phase
+    print(f"\nEvaluating model for {_NUM_EVAL_EPISODES.value} episodes...")
+    evaluate_and_record(
+        model=model,
+        domain=domain,
+        task=task,
+        num_episodes=_NUM_EVAL_EPISODES.value,
+        num_videos=_NUM_VIDEOS.value,
+        video_dir=video_dir,
+        normalize_env=vec_normalize_path if vec_normalize_path.exists() else None,
+    )
+    
+    vec_env.close()
+    print("\nDone!")
+
+
+if __name__ == "__main__":
+    app.run(main)

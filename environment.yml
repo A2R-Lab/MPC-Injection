@@ -3,20 +3,48 @@ channels:
   - conda-forge
 dependencies:
   - python=3.11
-  - numpy
-  - scipy
-  - matplotlib
-  - jupyterlab
   - pip
+  - git
   - pip:
-      - jax[cuda12]          # GPU JAX, switch to jax if CPU
+      # dev indexes first so mujoco/mjx/warp dev wheels resolve
+      # - --extra-index-url https://py.mujoco.org
+      # - --extra-index-url https://pypi.nvidia.com/warp-lang/
+
+      # install from Git HEAD (pin to a commit for reproducibility)
+      # - "playground @ git+https://github.com/google-deepmind/mujoco_playground@main"
+
+      # choose exactly one of these two JAX lines:
+      # - jax           # CPU only
+      - jax[cuda12]>=0.4.35 # NVIDIA GPU - newer version for H100/sm_90a support
+      - jaxlib>=0.4.35
+
+      # RSL-RL & Brax stack
+      # - rsl-rl-lib>=3.0.0
+      # - brax>=0.12.5
+      # - flax
+      # - etils
+      # - ml_collections
+      # - orbax-checkpoint>=0.11.22
       - tqdm
-      - playground
-      - mujoco
-      - mujoco_mjx
-      - brax
-      - git+https://github.com/google/trajax # TODO: get rid of this dependency
-      - lqrax # TODO: get rid of this dependency
-      - mediapy
-      - rsl-rl-lib
       - wandb
+      - tensorboard
+
+      # SB3/SBX RL stack
+      - sbx-rl
+      - stable-baselines3
+      - gymnasium[classical_control]
+      - shimmy[dm-control]
+      - opencv-python
+
+      # MuJoCo stack (dev wheels)
+      - mujoco>=3.3.6.dev
+      - mujoco-mjx>=3.3.6.dev
+
+      # Warp dev wheels
+      - warp-lang>=1.9.0.dev
+
+      # utils
+      - lxml
+      - mediapy
+      - matplotlib
+      - jupyter
