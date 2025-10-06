@@ -312,7 +312,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         if record_video and frames:
             video_path = video_dir / f"rollout{episode}.mp4"
             # Assuming 30 FPS for dm_control environments
-            fps = 15
+            fps = 30
             media.write_video(str(video_path), frames, fps=fps)
             print(f"Video saved to: {video_path}")
         
