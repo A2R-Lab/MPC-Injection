@@ -3,9 +3,37 @@ import json
 import os
 from pathlib import Path
 import warnings
+import subprocess
+
+# Configure JAX for GPU with compatible architecture settings
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+os.environ["JAX_PLATFORMS"] = "cuda"
+
+# Try to detect GPU compute capability and set appropriate flags
+try:
+    # Get GPU compute capability
+    result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+        capture_output=True, text=True, check=True
+    )
+    compute_cap = result.stdout.strip().split('\n')[0].replace('.', '')
+    print(f"Detected GPU compute capability: {compute_cap}")
+    
+    # Set XLA flags to use detected compute capability
+    os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+except Exception as e:
+    print(f"Could not detect GPU compute capability: {e}")
+    # Use default settings
+    os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+
+# Suppress JAX warnings and info logs
+warnings.filterwarnings("ignore", category=UserWarning, module="jax")
+warnings.filterwarnings("ignore", category=FutureWarning, module="jax")
 
 from absl import app
 from absl import flags
+from absl import logging
 
 import gymnasium as gym
 from dm_control import suite
@@ -17,6 +45,21 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import numpy as np
 import mediapy as media
+
+# Import JAX and verify GPU backend
+import jax
+print(f"JAX backend: {jax.default_backend()}")
+print(f"JAX devices: {jax.devices()}")
+
+# Verify we're using GPU
+if jax.default_backend() != 'gpu':
+    raise RuntimeError(
+        f"JAX is not using GPU! Backend: {jax.default_backend()}. "
+        "Please check your CUDA installation and JAX GPU setup."
+    )
+
+# Set logging level to suppress JAX backend initialization messages
+logging.set_verbosity(logging.WARNING)
 
 
 # Environment flags
@@ -41,10 +84,10 @@ _ALGORITHM = flags.DEFINE_enum(
     "algorithm", "SAC", ["SAC", "PPO", "TD3"], "RL algorithm to use"
 )
 _TOTAL_TIMESTEPS = flags.DEFINE_integer(
-    "total_timesteps", 100_000, "Total number of timesteps to train"
+    "total_timesteps", 1_000_000, "Total number of timesteps to train"
 )
 _NUM_ENVS = flags.DEFINE_integer(
-    "num_envs", 4, "Number of parallel environments for training"
+    "num_envs", 8, "Number of parallel environments for training"
 )
 _SEED = flags.DEFINE_integer("seed", 1, "Random seed")
 
@@ -66,7 +109,7 @@ _NUM_VIDEOS = flags.DEFINE_integer(
 _SUFFIX = flags.DEFINE_string("suffix", None, "Suffix for the experiment name")
 _LOGDIR = flags.DEFINE_string("logdir", "logs", "Base directory for logs")
 
-# Hyperparameter flags (SAC)
+# Hyperparameter flags (this is for SAC for now, not optimized yet)
 _LEARNING_RATE = flags.DEFINE_float("learning_rate", 3e-4, "Learning rate")
 _BUFFER_SIZE = flags.DEFINE_integer("buffer_size", 1_000_000, "Replay buffer size")
 _LEARNING_STARTS = flags.DEFINE_integer(
@@ -86,7 +129,8 @@ _EVAL_FREQ = flags.DEFINE_integer(
 
 
 def parse_env_name(env_name: str) -> tuple[str, str]:
-    """Parse environment name into domain and task.
+    """
+    Parse environment name into domain and task.
     
     Args:
         env_name: Environment name in format 'domain-task' or 'domain_task'
@@ -110,7 +154,8 @@ def parse_env_name(env_name: str) -> tuple[str, str]:
 
 
 def make_dm_env(domain: str, task: str, render_mode=None):
-    """Create a dm_control environment wrapped for gymnasium.
+    """
+    Create a dm_control environment wrapped for gymnasium.
     
     Args:
         domain: Domain name (e.g., 'cartpole')
@@ -200,7 +245,8 @@ def create_model(algorithm: str, env, learning_rate, buffer_size,
 
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
                         num_videos: int, video_dir: Path, normalize_env=None):
-    """Evaluate model and record videos.
+    """
+    Evaluate model and record videos.
     
     Args:
         model: Trained model
@@ -266,7 +312,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         if record_video and frames:
             video_path = video_dir / f"rollout{episode}.mp4"
             # Assuming 30 FPS for dm_control environments
-            fps = 30
+            fps = 15
             media.write_video(str(video_path), frames, fps=fps)
             print(f"Video saved to: {video_path}")
         
@@ -283,8 +329,10 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
 
 
 def main(argv):
-    """Main training and evaluation function."""
-    del argv
+    """
+    Main training and evaluation function.
+    """
+    del argv # Not used since we're using absl for flags
     
     # Parse environment name
     if _DOMAIN.value and _TASK.value:
@@ -347,14 +395,19 @@ def main(argv):
         n_envs=_NUM_ENVS.value,
         seed=_SEED.value,
     )
+
+    # VecNormalize standardizes observations and rewards to ~N(0,1), which is critical for
+    # stable learning in continuous control (prevents different-scale features from dominating)
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
     
     # Path for the final model and normalization stats
     model_path = logdir / "final_model"
     vec_normalize_path = logdir / "vec_normalize.pkl"
+    replay_buffer_path = logdir / "replay_buffer.pkl"
     
     # Load or create model
-    if _LOAD_RUN_NAME.value and model_path.exists():
+    # NOTE: SB3/SBX saves models with .zip extension but load() doesn't require it
+    if _LOAD_RUN_NAME.value and (model_path.with_suffix('.zip').exists() or model_path.exists()):
         # Load existing model
         model = load_model(_ALGORITHM.value, model_path, vec_env)
         print("Model loaded successfully")
@@ -363,6 +416,11 @@ def main(argv):
         if vec_normalize_path.exists():
             vec_env = VecNormalize.load(vec_normalize_path, vec_env)
             print("Normalization stats loaded")
+        
+        # Load replay buffer (for off-policy algorithms)
+        if replay_buffer_path.exists() and hasattr(model, 'load_replay_buffer'):
+            model.load_replay_buffer(replay_buffer_path)
+            print(f"Replay buffer loaded (size: {model.replay_buffer.size()})")
     else:
         # Create new model
         print(f"Creating new {_ALGORITHM.value} model...")
@@ -383,7 +441,7 @@ def main(argv):
     if not _PLAY_ONLY.value and _TOTAL_TIMESTEPS.value > 0:
         print(f"\nStarting training for {_TOTAL_TIMESTEPS.value} timesteps...")
         
-        # Create callbacks
+        # Create callback for saving a model every save_freq calls to env.step()
         checkpoint_callback = CheckpointCallback(
             save_freq=_CHECKPOINT_FREQ.value,
             save_path=str(checkpoint_dir),
@@ -393,12 +451,20 @@ def main(argv):
         )
         
         # Create eval environment for evaluation callback
+        # Must be wrapped the same way as training env (with VecNormalize)
         eval_env = make_vec_env(
             lambda: make_dm_env(domain, task),
             n_envs=1,
             seed=_SEED.value + 1000,
         )
+        eval_env = VecNormalize(
+            eval_env,
+            training=False,  # Don't update stats during evaluation
+            norm_obs=True,
+            norm_reward=True,
+        )
         
+        # Create callback for evaluating the trained model
         eval_callback = EvalCallback(
             eval_env,
             best_model_save_path=str(logdir / "best_model"),
@@ -410,18 +476,26 @@ def main(argv):
         )
         
         # Train the model
+        # When resuming, reset_num_timesteps=False continues from loaded timestep count
         model.learn(
             total_timesteps=_TOTAL_TIMESTEPS.value,
             callback=[checkpoint_callback, eval_callback],
             progress_bar=True,
+            reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
         )
         
         print("Training complete!")
         
-        # Save final model and normalization stats
+        # Save final model, normalization stats, and replay buffer
         print(f"Saving model to: {model_path}")
         model.save(model_path)
         vec_env.save(vec_normalize_path)
+        
+        # Save replay buffer (for off-policy algorithms)
+        if hasattr(model, 'save_replay_buffer'):
+            model.save_replay_buffer(replay_buffer_path)
+            print(f"Replay buffer saved (size: {model.replay_buffer.size()})")
+        
         print("Model and normalization stats saved")
         
         eval_env.close()

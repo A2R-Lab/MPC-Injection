@@ -32,6 +32,11 @@ Train an SAC agent on a dm_control environment:
 python mpc_rl/train_sbx.py --env_name=cartpole-swingup
 ```
 
+Note that we keep the `--env_name` flag to be split up into `domain-task` or `domain_task`. You can quickly list the available environments with this command:
+```
+python -c "from dm_control import suite; print('\n'.join([f'{domain}/{task}' for domain, task in suite.ALL_TASKS]))"
+```
+
 **Common Training Options:**
 ```bash
 # Train with custom hyperparameters

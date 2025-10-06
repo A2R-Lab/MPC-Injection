@@ -15,8 +15,8 @@ dependencies:
 
       # choose exactly one of these two JAX lines:
       # - jax           # CPU only
-      - jax[cuda12]<0.4.31 # NVIDIA GPU - pinned for SBX compatibility
-      - jaxlib<0.4.31
+      - jax[cuda12]>=0.4.35 # NVIDIA GPU - newer version for H100/sm_90a support
+      - jaxlib>=0.4.35
 
       # RSL-RL & Brax stack
       # - rsl-rl-lib>=3.0.0
