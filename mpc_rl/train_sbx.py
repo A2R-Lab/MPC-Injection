@@ -61,6 +61,9 @@ if jax.default_backend() != 'gpu':
 # Set logging level to suppress JAX backend initialization messages
 logging.set_verbosity(logging.WARNING)
 
+# Relative import SAC_MPC
+from sac_mpc.sac_mpc import SAC_MPC
+
 
 # Environment flags
 _ENV_NAME = flags.DEFINE_string(
@@ -81,7 +84,7 @@ _TASK = flags.DEFINE_string(
 
 # Training flags
 _ALGORITHM = flags.DEFINE_enum(
-    "algorithm", "SAC", ["SAC", "PPO", "TD3"], "RL algorithm to use"
+    "algorithm", "SAC", ["SAC", "PPO", "TD3", "SAC-MPC"], "RL algorithm to use"
 )
 _TOTAL_TIMESTEPS = flags.DEFINE_integer(
     "total_timesteps", 1_000_000, "Total number of timesteps to train"
@@ -113,10 +116,10 @@ _LOGDIR = flags.DEFINE_string("logdir", "logs", "Base directory for logs")
 _LEARNING_RATE = flags.DEFINE_float("learning_rate", 3e-4, "Learning rate")
 _BUFFER_SIZE = flags.DEFINE_integer("buffer_size", 1_000_000, "Replay buffer size")
 _LEARNING_STARTS = flags.DEFINE_integer(
-    "learning_starts", 10_000, "Steps before learning starts"
+    "learning_starts", 10_000, "Steps of model to collect transitions before learning starts"
 )
-_BATCH_SIZE = flags.DEFINE_integer("batch_size", 256, "Batch size")
-_TAU = flags.DEFINE_float("tau", 0.005, "Target network update rate")
+_BATCH_SIZE = flags.DEFINE_integer("batch_size", 256, "Minibatch size")
+_TAU = flags.DEFINE_float("tau", 0.005, "Soft update coefficient")
 _GAMMA = flags.DEFINE_float("gamma", 0.99, "Discount factor")
 
 # Checkpoint flags
@@ -198,10 +201,30 @@ def load_model(algorithm: str, model_path: Path, env):
 
 def create_model(algorithm: str, env, learning_rate, buffer_size, 
                  learning_starts, batch_size, tau, gamma, seed, tensorboard_log):
-    """Create a new model instance."""
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3}[algorithm]
+    """
+    Create a new model instance.
+    
+    Uses a factory pattern: algo_class is a class object (not an instance), selected by
+    algorithm string. Calling algo_class(...) invokes the class constructor (__init__) to
+    create a new agent instance with the specified hyperparameters.
+    """
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC}[algorithm]
     
     if algorithm == "SAC":
+        model = algo_class(
+            "MlpPolicy",
+            env,
+            learning_rate=learning_rate,
+            buffer_size=buffer_size,
+            learning_starts=learning_starts,
+            batch_size=batch_size,
+            tau=tau,
+            gamma=gamma,
+            verbose=1,
+            seed=seed,
+            tensorboard_log=tensorboard_log,
+        )
+    elif algorithm == "SAC-MPC":
         model = algo_class(
             "MlpPolicy",
             env,
@@ -391,7 +414,7 @@ def main(argv):
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
     vec_env = make_vec_env(
-        lambda: make_dm_env(domain, task),
+        lambda: make_dm_env(domain, task), # lambda fxn so make_vec_env() can make multiple envs
         n_envs=_NUM_ENVS.value,
         seed=_SEED.value,
     )

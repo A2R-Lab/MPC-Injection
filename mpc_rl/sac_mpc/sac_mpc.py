@@ -17,7 +17,8 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from sbx.common.off_policy_algorithm import OffPolicyAlgorithmJax
 from sbx.common.type_aliases import ReplayBufferSamplesNp, RLTrainState
 from sbx.sac.policies import SACPolicy, SimbaSACPolicy
-# TODO: Make a local import for SAC_MPCPolicy
+# Relative import for SAC_MPCPolicy
+from .policies import SAC_MPCPolicy
 
 """
 NOTE: This file is derived from SBX's implementation of SAC. We are modifying it to be able to

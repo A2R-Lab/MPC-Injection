@@ -144,7 +144,7 @@ This will load the existing model and normalization statistics, then continue tr
 - `--task`: Task name (optional, parsed from env_name if not provided)
 
 ### Training Flags
-- `--algorithm`: RL algorithm to use (`SAC`, `PPO`, or `TD3`). Default: `SAC`
+- `--algorithm`: RL algorithm to use (`SAC`, `SAC-MPC`, `PPO`, or `TD3`). Default: `SAC`
 - `--total_timesteps`: Total number of training timesteps. Default: `100000`
 - `--num_envs`: Number of parallel environments for training. Default: `4`
 - `--seed`: Random seed for reproducibility. Default: `1`
