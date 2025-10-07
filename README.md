@@ -23,7 +23,44 @@ conda activate mpc-rl
 ```
 
 ### Installing MuJoCo-MPC
-TODO: go over the details of installing MuJoCo-MPC locally and the python install. Testing this out in a new branch to be safe!
+Note that this project is using Ubuntu 24.04.3 LTS and clang version 18.1.3. It should be possible to install mjpc through the terminal command seen in the mjpc submodule's README. However, it is so much easier to let VSCode compile the project for you. The process is copied over from mjpc's README and shown here for convenience.
+
+#### Build and Run MJPC GUI application using VSCode
+We recommend using [VSCode](https://code.visualstudio.com/) and 2 of its extensions ([CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) and [C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools)) to simplify the build process.
+
+1. Open the submodule directory `mujoco_mpc` with VSCode.
+2. Configure the project with CMake (a pop-up should appear in VSCode)
+3. Set compiler to `clang-18`.
+4. Build `[all]` and then you can test by running `./mjpc` in `mujoco_mpc/build/bin` or try the next step.
+5. Build and run the `mjpc` target in "release" mode (VSCode defaults to "debug"). This will open and run the graphical user interface.
+
+### Installing MuJoCo-MPC Python Bindings
+Make sure you're doing this in the mpc-rl conda environment and after you've built the project as seen above. Next, change to mujoco_mpc's python directory:
+```bash
+cd MPC-RL/mujoco_mpc/python
+```
+
+Install the Python module:
+```bash
+python setup.py install
+```
+
+Test that installation was successful by going back to the root project directory and trying:
+```bash
+python mujoco_mpc/python/mujoco_mpc/agent_test.py
+```
+This should result in 18 tests run with 1 failed and 3 skipped. This is okay for now.
+
+Example scripts are found in `mujoco_mpc/python/mujoco_mpc/demos`. For example from `python/`:
+```bash
+python mujoco_mpc/python/mujoco_mpc/demos/agent/cartpole_gui.py
+```
+will run the MJPC GUI application using MuJoCo's passive viewer via Python.
+
+TODO: Test mpc-rl's trajectory collector here
+```bash
+python ...
+```
 
 ## Usage
 
