@@ -6,11 +6,8 @@ import warnings
 import subprocess
 
 # Configure JAX for GPU with compatible architecture settings
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-os.environ["JAX_PLATFORMS"] = "cuda"
-
-# Try to detect GPU compute capability and set appropriate flags
+# Try to detect GPU first
+gpu_available = False
 try:
     # Get GPU compute capability
     result = subprocess.run(
@@ -20,12 +17,17 @@ try:
     compute_cap = result.stdout.strip().split('\n')[0].replace('.', '')
     print(f"Detected GPU compute capability: {compute_cap}")
     
-    # Set XLA flags to use detected compute capability
+    # Configure for GPU
+    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
+    os.environ["JAX_PLATFORMS"] = "cuda"
     os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+    gpu_available = True
 except Exception as e:
     print(f"Could not detect GPU compute capability: {e}")
-    # Use default settings
-    os.environ["XLA_FLAGS"] = "--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+    print("Falling back to CPU")
+    # Configure for CPU
+    os.environ["JAX_PLATFORMS"] = "cpu"
 
 # Suppress JAX warnings and info logs
 warnings.filterwarnings("ignore", category=UserWarning, module="jax")
@@ -46,17 +48,18 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import numpy as np
 import mediapy as media
 
-# Import JAX and verify GPU backend
+# Import JAX and verify backend
 import jax
 print(f"JAX backend: {jax.default_backend()}")
 print(f"JAX devices: {jax.devices()}")
 
-# Verify we're using GPU
-if jax.default_backend() != 'gpu':
-    raise RuntimeError(
-        f"JAX is not using GPU! Backend: {jax.default_backend()}. "
-        "Please check your CUDA installation and JAX GPU setup."
-    )
+# Inform user about the backend being used
+if jax.default_backend() == 'gpu':
+    print("AX is using GPU acceleration")
+elif jax.default_backend() == 'cpu':
+    print("JAX is using CPU (GPU not available or not detected)")
+else:
+    print(f"JAX is using backend: {jax.default_backend()}")
 
 # Set logging level to suppress JAX backend initialization messages
 logging.set_verbosity(logging.WARNING)
