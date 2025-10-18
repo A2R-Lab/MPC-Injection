@@ -1,5 +1,5 @@
 """
-TODO: Test script to try out MPC injection callback with custom SAC training.
+Test script to try out MPC injection callback with custom SAC training.
 
 Mainly here to experiment with before integration into the main training script.
 """
@@ -48,17 +48,20 @@ from dm_control import suite
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from sbx import SAC, PPO, TD3
+import matplotlib.pyplot as plt
+from matplotlib import animation
+import numpy as np
+import mediapy as media
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.evaluation import evaluate_policy
-import numpy as np
-import mediapy as media
 import sys
 
 # Add parent directory to path to import from mpc_rl
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from mpc_rl.sac_mpc.mpc_planner import MPCPlanner
 from mpc_rl.sac_mpc.mpc_inject_callbacks import EpisodeMPCInjectCallback, AdaptiveMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 
@@ -117,6 +120,32 @@ if __name__ == "__main__":
         seed=1,
     )
 
+    # Setup MPC Planner for trajectory injection
+    print("\nSetting up MPC Planner for trajectory injection...")
+    planner = MPCPlanner(
+        rollout_horizon=10000,  # 10 seconds at 0.001s timestep
+        opt_steps=10,
+        weights={
+            "Vertical": 10.0,
+            "Centered": 10.0,
+            "Velocity": 0.1,
+            "Control": 0.1
+        },
+        task_params={"Goal": 0.0},
+        init_state_noise_flag=True,  # Enable noise for diverse trajectories
+        qpos_noise_rnge=(-0.02, 0.02),
+        qvel_noise_rnge=(-0.02, 0.02)
+    )
+    
+    # Setup MPC injection callback
+    inject_callback = EpisodeMPCInjectCallback(
+        mpc_planner=planner,
+        inject_every_n_episodes=1000,  # Inject after every 1000 episodes
+        num_mpc_trajectories=100,       # Inject 100 MPC trajectories each time
+        verbose=1                        # Show injection progress
+    )
+
+
     # Create eval environment for evaluation callback
     # Must be wrapped the same way as training env (with VecNormalize)
     eval_env = make_vec_env(
@@ -146,18 +175,28 @@ if __name__ == "__main__":
 
     print("\nStarting training...")
     print(f"Training environment: {vec_env.num_envs} parallel environments")
-    print(f"Total timesteps: 1,000,000")
+    print(f"Total timesteps: 500,000")
     print(f"Evaluation frequency: every 10,000 steps")
+    print(f"MPC injection: every 1,000 episodes (100 trajectories each)")
     
-    # Train the model
+    # Train the model with both eval and MPC injection callbacks
     model.learn(
         total_timesteps=500_000,
-        callback=eval_callback,
-        log_interval=4,  # Log training metrics every 4 episodes
+        callback=[eval_callback, inject_callback],  # Include MPC injection callback
+        log_interval=100,  # Log training metrics every 100 episodes
         progress_bar=True,
     )
     
     print("\nTraining complete!")
+    
+    # Print MPC injection statistics
+    print(f"\n{'='*70}")
+    print("MPC Injection Statistics:")
+    print(f"  Total injections: {inject_callback.total_injections}")
+    print(f"  Total episodes: {inject_callback.episode_count}")
+    print(f"  Trajectories per injection: {inject_callback.num_mpc_trajectories}")
+    print(f"  Total MPC trajectories injected: {inject_callback.total_injections * inject_callback.num_mpc_trajectories}")
+    print(f"{'='*70}\n")
     
     # Final evaluation with the trained model
     print("\nRunning final evaluation...")
@@ -173,7 +212,157 @@ if __name__ == "__main__":
     print(f"\nFinal Evaluation Results:")
     print(f"Mean reward: {mean_reward:.2f} +/- {std_reward:.2f}")
     
+    # Create visualization of final policy performance
+    print("\nGenerating performance visualization...")
+    
+    # Create a single non-vectorized environment for visualization
+    vis_env = make_dmc_env(domain, task, render_mode="rgb_array")
+    
+    # Get the timestep from the environment
+    dt = vis_env.unwrapped._env.physics.timestep()
+    print(f"Environment timestep: {dt} seconds")
+    
+    # Run one episode and collect data
+    obs, info = vis_env.reset(seed=42)
+    
+    # Storage for trajectories
+    # DM Control cartpole swingup has a 10 second time limit
+    # With control timestep of 0.01s, this gives 1000 max steps
+    max_steps = 1000
+    observations = []
+    actions = []
+    rewards = []
+    times = []
+    frames = []
+    
+    done = False
+    truncated = False
+    step = 0
+    
+    while not done and not truncated and step < max_steps:
+        # Get action from policy
+        action, _states = model.predict(obs, deterministic=True)
+        
+        # Store data
+        observations.append(obs)
+        actions.append(action)
+        times.append(step * dt)
+        
+        # Render frame
+        frame = vis_env.render()
+        frames.append(frame)
+        
+        # Step environment
+        obs, reward, done, truncated, info = vis_env.step(action)
+        rewards.append(reward)
+        
+        step += 1
+        
+        if step % 500 == 0:
+            print(f"Visualization step: {step}")
+    
+    # Convert to numpy arrays
+    observations = np.array(observations)
+    actions = np.array(actions)
+    rewards = np.array(rewards)
+    times = np.array(times)
+    
+    print(f"Episode completed: {step} steps, total time: {times[-1]:.2f} seconds")
+    print(f"Total reward: {np.sum(rewards):.2f}")
+
+    # Save actions array for later testing
+    """actions_save_path = "actions_rl_policy.npy"
+    np.save(actions_save_path, actions)
+    print(f"Actions array saved to {actions_save_path}")"""
+    
+    # Create plots similar to mjpc_ex.py
+    # The dm_control cartpole swingup observation space is:
+    # [cart_position, cos(pole_angle), sin(pole_angle), cart_velocity, pole_angular_velocity]
+    cart_pos = observations[:, 0]
+    cos_angle = observations[:, 1]
+    sin_angle = observations[:, 2]
+    cart_vel = observations[:, 3]
+    pole_vel = observations[:, 4]
+    
+    # Compute pole angle from cos and sin
+    pole_angle = np.arctan2(sin_angle, cos_angle)
+    
+    # Plot position (cart position and pole angle)
+    fig1 = plt.figure(figsize=(10, 6))
+    plt.subplot(2, 1, 1)
+    plt.plot(times, cart_pos, label="Cart Position", color="blue")
+    plt.ylabel("Cart Position (m)")
+    plt.xlabel("Time (s)")
+    plt.legend()
+    plt.grid(True)
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(times, pole_angle, label="Pole Angle", color="orange")
+    plt.ylabel("Pole Angle (rad)")
+    plt.xlabel("Time (s)")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Plot velocity
+    fig2 = plt.figure(figsize=(10, 6))
+    plt.subplot(2, 1, 1)
+    plt.plot(times, cart_vel, label="Cart Velocity", color="blue")
+    plt.ylabel("Cart Velocity (m/s)")
+    plt.xlabel("Time (s)")
+    plt.legend()
+    plt.grid(True)
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(times, pole_vel, label="Pole Angular Velocity", color="orange")
+    plt.ylabel("Pole Angular Velocity (rad/s)")
+    plt.xlabel("Time (s)")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Plot control
+    fig3 = plt.figure(figsize=(10, 4))
+    plt.plot(times, actions[:, 0], color="blue")
+    plt.ylabel("Control Action")
+    plt.xlabel("Time (s)")
+    plt.title("Control Signal")
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Plot rewards
+    fig4 = plt.figure(figsize=(10, 4))
+    plt.plot(times, rewards, color="green")
+    plt.ylabel("Reward")
+    plt.xlabel("Time (s)")
+    plt.title(f"Rewards (Total: {np.sum(rewards):.2f})")
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Create animation if frames were collected
+    if len(frames) > 0:
+        print(f"\nCreating animation with {len(frames)} frames...")
+        
+        fig_anim = plt.figure(figsize=(8, 6))
+        img = plt.imshow(frames[0])
+        plt.axis('off')
+        plt.title("Cartpole Swingup - Trained Policy")
+        
+        def animate(i):
+            img.set_data(frames[i])
+            return [img]
+        
+        FPS = 1.0 / dt
+        anim = animation.FuncAnimation(
+            fig_anim, animate, frames=len(frames),
+            interval=1000/FPS, blit=True, repeat=True
+        )
+        print(f"Animation created at {FPS:.1f} FPS")
+    
+    plt.show()
+    
     # Cleanup
+    vis_env.close()
     vec_env.close()
     eval_env.close()
     
