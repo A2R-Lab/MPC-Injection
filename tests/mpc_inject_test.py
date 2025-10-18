@@ -47,7 +47,6 @@ import gymnasium as gym
 from dm_control import suite
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
-from sbx import SAC, PPO, TD3
 import matplotlib.pyplot as plt
 from matplotlib import animation
 import numpy as np
@@ -111,7 +110,7 @@ if __name__ == "__main__":
         "MlpPolicy",
         vec_env,
         learning_rate=3e-4,
-        buffer_size=1000000,
+        buffer_size=1000,
         learning_starts=10000,
         batch_size=256,
         tau=0.005,
@@ -123,7 +122,7 @@ if __name__ == "__main__":
     # Setup MPC Planner for trajectory injection
     print("\nSetting up MPC Planner for trajectory injection...")
     planner = MPCPlanner(
-        rollout_horizon=10000,  # 10 seconds at 0.001s timestep
+        rollout_horizon=10000,  # 10 seconds at 0.001s timestep for sim (0.01 for planner)
         opt_steps=10,
         weights={
             "Vertical": 10.0,
@@ -140,18 +139,17 @@ if __name__ == "__main__":
     # Setup MPC injection callback
     inject_callback = EpisodeMPCInjectCallback(
         mpc_planner=planner,
-        inject_every_n_episodes=1000,  # Inject after every 1000 episodes
-        num_mpc_trajectories=100,       # Inject 100 MPC trajectories each time
-        verbose=1                        # Show injection progress
+        inject_every_n_timesteps=5000,  # Inject after every 5,000 timesteps
+        num_mpc_trajectories=10,        # Inject 10 MPC traj each time
+        verbose=1                         # Show injection progress
     )
-
 
     # Create eval environment for evaluation callback
     # Must be wrapped the same way as training env (with VecNormalize)
     eval_env = make_vec_env(
         lambda: make_dmc_env(domain, task),
         n_envs=1,
-        seed= 1 + 1000,
+        seed=2,
     )
     eval_env = VecNormalize(
         eval_env,
@@ -175,13 +173,10 @@ if __name__ == "__main__":
 
     print("\nStarting training...")
     print(f"Training environment: {vec_env.num_envs} parallel environments")
-    print(f"Total timesteps: 500,000")
-    print(f"Evaluation frequency: every 10,000 steps")
-    print(f"MPC injection: every 1,000 episodes (100 trajectories each)")
     
     # Train the model with both eval and MPC injection callbacks
     model.learn(
-        total_timesteps=500_000,
+        total_timesteps=100_000,
         callback=[eval_callback, inject_callback],  # Include MPC injection callback
         log_interval=100,  # Log training metrics every 100 episodes
         progress_bar=True,
@@ -190,13 +185,13 @@ if __name__ == "__main__":
     print("\nTraining complete!")
     
     # Print MPC injection statistics
-    print(f"\n{'='*70}")
+    print(f"\n{'='*60}")
     print("MPC Injection Statistics:")
     print(f"  Total injections: {inject_callback.total_injections}")
-    print(f"  Total episodes: {inject_callback.episode_count}")
+    print(f"  Total timesteps: {inject_callback.num_timesteps}")
     print(f"  Trajectories per injection: {inject_callback.num_mpc_trajectories}")
     print(f"  Total MPC trajectories injected: {inject_callback.total_injections * inject_callback.num_mpc_trajectories}")
-    print(f"{'='*70}\n")
+    print(f"{'='*60}\n")
     
     # Final evaluation with the trained model
     print("\nRunning final evaluation...")
@@ -269,11 +264,6 @@ if __name__ == "__main__":
     
     print(f"Episode completed: {step} steps, total time: {times[-1]:.2f} seconds")
     print(f"Total reward: {np.sum(rewards):.2f}")
-
-    # Save actions array for later testing
-    """actions_save_path = "actions_rl_policy.npy"
-    np.save(actions_save_path, actions)
-    print(f"Actions array saved to {actions_save_path}")"""
     
     # Create plots similar to mjpc_ex.py
     # The dm_control cartpole swingup observation space is:
