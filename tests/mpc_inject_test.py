@@ -110,7 +110,7 @@ if __name__ == "__main__":
         "MlpPolicy",
         vec_env,
         learning_rate=3e-4,
-        buffer_size=1000,
+        buffer_size=100_000, # og 1_000_000, but smaller for testing speed/ratio
         learning_starts=10000,
         batch_size=256,
         tau=0.005,
@@ -124,13 +124,13 @@ if __name__ == "__main__":
     planner = MPCPlanner(
         rollout_horizon=10000,  # 10 seconds at 0.001s timestep for sim (0.01 for planner)
         opt_steps=10,
-        weights={
+        weights={ # Default from mjpc's gui
             "Vertical": 10.0,
             "Centered": 10.0,
             "Velocity": 0.1,
             "Control": 0.1
         },
-        task_params={"Goal": 0.0},
+        task_params={"Goal": 0.0}, # Target cart position, note that this varies with env and task
         init_state_noise_flag=True,  # Enable noise for diverse trajectories
         qpos_noise_rnge=(-0.02, 0.02),
         qvel_noise_rnge=(-0.02, 0.02)
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     inject_callback = EpisodeMPCInjectCallback(
         mpc_planner=planner,
         inject_every_n_timesteps=5000,  # Inject after every 5,000 timesteps
-        num_mpc_trajectories=10,        # Inject 10 MPC traj each time
+        num_mpc_trajectories=20,        # Inject 10 MPC traj each time
         verbose=1                         # Show injection progress
     )
 
@@ -176,7 +176,7 @@ if __name__ == "__main__":
     
     # Train the model with both eval and MPC injection callbacks
     model.learn(
-        total_timesteps=100_000,
+        total_timesteps=500_000,
         callback=[eval_callback, inject_callback],  # Include MPC injection callback
         log_interval=100,  # Log training metrics every 100 episodes
         progress_bar=True,

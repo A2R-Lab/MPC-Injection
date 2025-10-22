@@ -17,10 +17,10 @@ class EpisodeMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
-        mpc_planner,                        # MPCPlanner instance for trajectory optimization
+        mpc_planner,                          # MPCPlanner instance for trajectory optimization
         inject_every_n_timesteps: int=10000,  # Inject after every N timesteps
-        num_mpc_trajectories: int=1,      # How many MPC rollouts to inject
-        verbose: int=1                      # 0: no output, 1: info msgs, 2: debug msgs
+        num_mpc_trajectories: int=1,          # How many MPC rollouts to inject
+        verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
     ):
         super().__init__(verbose)
         self.mpc_planner = mpc_planner

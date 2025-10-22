@@ -22,7 +22,8 @@ class MPCPlanner():
                  task_params: dict[str, float] = {"Goal": 0.0},
                  init_state_noise_flag=False,
                  qpos_noise_rnge=(-0.02, 0.02),
-                 qvel_noise_rnge=(-0.02, 0.02)
+                 qvel_noise_rnge=(-0.02, 0.02),
+                 verbose: int=0
         ) -> None:
         """
         model_path: Path to the task XML model file.
@@ -42,6 +43,7 @@ class MPCPlanner():
         else:
             self.model_path = model_path
 
+        self.verbose = verbose
         self.task_id = task_id
         self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         self.data = mujoco.MjData(self.model)
@@ -111,6 +113,9 @@ class MPCPlanner():
 
         # Simulate over the rollout horizon
         for t in range(self.rollout_horizon - 1):
+            if self.verbose > 0 and t % 100 == 0:
+                print(f"Planning step {t}/{self.rollout_horizon}")
+
             # Set planner state
             self.agent.set_state(
                 time=self.data.time,

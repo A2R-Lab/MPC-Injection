@@ -211,3 +211,6 @@ logs/
 
 # Ignore MuJoCo logs
 MUJOCO_LOG.TXT
+
+# Ignore saved compressed numpy arrays
+*.npz
