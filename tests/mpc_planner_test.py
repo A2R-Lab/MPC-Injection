@@ -262,5 +262,5 @@ def downsample_test():
 
 if __name__ == "__main__":
     #planner_test()
-    plan_and_save_traj()
-    #downsample_test()
+    #plan_and_save_traj()
+    downsample_test()
