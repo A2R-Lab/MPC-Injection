@@ -1,3 +1,4 @@
+import random
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 from dm_control import suite
@@ -17,11 +18,14 @@ class EpisodeMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
-        mpc_planner,                          # MPCPlanner instance for trajectory optimization
+        mpc_planner=None,                     # MPCPlanner instance (not used if loading from file)
         inject_every_n_timesteps: int=10000,  # Inject after every N timesteps
         num_mpc_trajectories: int=1,          # How many MPC rollouts to inject
+        data_dir: str=None,                   # Path to directory with saved trajectories
+        random_select: bool=True,             # If True, randomly select trajectories from data_dir
+        trajectory_files: list=None,          # List of specific filenames to load (used when random_select=False)
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
-    ):
+        ):
         super().__init__(verbose)
         self.mpc_planner = mpc_planner
         self.inject_freq = inject_every_n_timesteps
@@ -29,11 +33,69 @@ class EpisodeMPCInjectCallback(BaseCallback):
         self.total_injections = 0
         self.last_injection_timestep = 0
         
+        # Trajectory loading configuration
+        self.data_dir = data_dir
+        self.random_select = random_select
+        self.trajectory_files = trajectory_files if trajectory_files is not None else []
+        self.trajectory_file_idx = 0  # For cycling through specified files
+        
+        # If data_dir is provided, we'll load trajectories from files
+        if data_dir is not None:
+            from pathlib import Path
+            self.data_dir = Path(data_dir)
+            if not self.data_dir.exists():
+                raise FileNotFoundError(f"Data directory not found: {data_dir}")
+            
+            # Get all available trajectory files
+            self.available_files = list(self.data_dir.glob("*.npz"))
+            if len(self.available_files) == 0:
+                raise FileNotFoundError(f"No trajectory files found in {data_dir}")
+            
+            if verbose > 0:
+                print(f"  Found {len(self.available_files)} trajectory files in {data_dir}")
+        
         # Print initialization info
         print(f"\nMPC Injection Callback initialized:")
         print(f"  Inject every: {inject_every_n_timesteps} timesteps")
         print(f"  Trajectories per injection: {num_mpc_trajectories}")
+        if data_dir:
+            print(f"  Loading from: {data_dir}")
+            print(f"  Random selection: {random_select}")
+        else:
+            print(f"  Generating trajectories with MPC planner")
         print(f"  Verbose level: {verbose}\n")
+    
+    def _select_trajectory_file(self):
+        """
+        Select a trajectory file to load.
+        
+        Returns:
+            Path to selected trajectory file
+        """
+        
+        if self.random_select:
+            # Randomly select from available files
+            selected_file = random.choice(self.available_files)
+            if self.verbose > 1:
+                print(f"    Randomly selected: {selected_file.name}")
+        else:
+            # Cycle through specified trajectory files
+            if len(self.trajectory_files) == 0:
+                raise ValueError("trajectory_files list is empty. Provide filenames or set random_select=True")
+            
+            filename = self.trajectory_files[self.trajectory_file_idx]
+            selected_file = self.data_dir / filename
+            
+            if not selected_file.exists():
+                raise FileNotFoundError(f"Trajectory file not found: {selected_file}")
+            
+            if self.verbose > 1:
+                print(f"    Selected: {selected_file.name}")
+            
+            # Cycle to next file for next time
+            self.trajectory_file_idx = (self.trajectory_file_idx + 1) % len(self.trajectory_files)
+        
+        return selected_file
     
     def _on_step(self) -> bool:
         """
@@ -56,10 +118,10 @@ class EpisodeMPCInjectCallback(BaseCallback):
     
     def _inject_mpc_trajectories(self):
         """
-        Generate and inject MPC trajectories into replay buffer.
+        Load or generate and inject MPC trajectories into replay buffer.
         
         For each trajectory:
-        1. Run MPC planner to generate optimal control sequence
+        1. Load from file OR run MPC planner to generate optimal control sequence
         2. Extract downsampled controls (to match RL action timestep)
         3. Step through environment using MPC actions to get real rewards
         4. Add transitions to replay buffer
@@ -69,7 +131,7 @@ class EpisodeMPCInjectCallback(BaseCallback):
         """
         # Get the MPC downsampled control for RL timestep alignment
         # For cartpole: MPC runs at 0.001s, RL acts at 0.01s, so downsample by 10
-        downsample_factor = 10 # TODO: Make this configurable if needed
+        downsample_factor = 10
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
@@ -79,19 +141,43 @@ class EpisodeMPCInjectCallback(BaseCallback):
         temp_env = FlattenObservation(temp_env)
         
         for traj_idx in range(self.num_mpc_trajectories):
-            if self.verbose > 1:
-                print(f"  Generating MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
-            
-            # Run MPC planner to generate trajectory
-            # Enable noise for diversity across trajectories
-            self.mpc_planner.set_init_state_noise_flag(True)
-            self.mpc_planner.plan(keyframe="home")
-            
-            # Get trajectories
-            qpos, qvel, ctrl, time = self.mpc_planner.get_trajectories()
+            # Load or generate trajectory
+            if self.data_dir is not None:
+                # Load from file
+                if self.verbose > 1:
+                    print(f"  Loading MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
+                
+                traj_file = self._select_trajectory_file()
+                data = np.load(traj_file)
+                qpos = data["qpos"]
+                qvel = data["qvel"]
+                ctrl = data["ctrl"]
+                time = data["time"]
+                
+                if self.verbose > 1:
+                    init_qpos = data["init_qpos"]
+                    init_qvel = data["init_qvel"]
+                    print(f"    Loaded: init_qpos={init_qpos}, init_qvel={init_qvel}")
+            else:
+                # Generate with MPC planner
+                if self.verbose > 1:
+                    print(f"  Generating MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
+                
+                # Run MPC planner to generate trajectory
+                # Enable noise for diversity across trajectories
+                self.mpc_planner.set_init_state_noise_flag(True)
+                self.mpc_planner.plan(keyframe="home")
+                
+                # Get trajectories
+                qpos, qvel, ctrl, time = self.mpc_planner.get_trajectories()
             
             # Get downsampled control actions to match RL timestep
-            ctrl_downsampled = self.mpc_planner.get_ctrl_downsampled(downsample_factor)
+            if self.data_dir is not None:
+                # Downsample loaded control directly
+                ctrl_downsampled = ctrl[:, ::downsample_factor]
+            else:
+                # Use planner's downsampling method
+                ctrl_downsampled = self.mpc_planner.get_ctrl_downsampled(downsample_factor)
             
             # Reset environment to match MPC initial state
             # Gymnasium API returns (observation, info)
@@ -124,6 +210,12 @@ class EpisodeMPCInjectCallback(BaseCallback):
             for step in range(num_steps):
                 # Get MPC action
                 action = ctrl_downsampled[:, step]
+                
+                # Stop if control becomes all zeros (trajectory reached equilibrium)
+                if np.allclose(action, 0.0, atol=1e-6):
+                    if self.verbose > 1:
+                        print(f"    Control became zero at step {step}, stopping...")
+                    break
                 
                 # Step environment to get real reward
                 # Gymnasium API returns 5 values: (obs, reward, terminated, truncated, info)
