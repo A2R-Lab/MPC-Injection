@@ -78,7 +78,7 @@ class MPCPlanner():
         # Reset data (for later rollout just in case)
         mujoco.mj_resetData(self.model, self.data)
     
-    def plan(self, keyframe: str="home") -> None:
+    def plan(self, keyframe: str="home", init_qpos=None, init_qvel=None) -> None:
         """
         Plan an action sequence from the keyframe using MPC.
         NOTE: The keyframe is defined in the task XML file. The "home" keyframe is usually the default starting state. So if you want to start from a different initial state, define a new keyframe in the XML for now.
@@ -105,6 +105,12 @@ class MPCPlanner():
                                                 size=self.model.nv)
             self.data.qpos[:] += self.qpos_noise
             self.data.qvel[:] += self.qvel_noise
+
+        # If initial qpos/qvel are provided, override the keyframe state
+        if init_qpos is not None:
+            self.data.qpos[:] = init_qpos
+        if init_qvel is not None:
+            self.data.qvel[:] = init_qvel
 
         # Cache initial state
         self.qpos[:, 0] = self.data.qpos

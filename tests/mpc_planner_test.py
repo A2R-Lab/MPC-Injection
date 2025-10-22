@@ -18,7 +18,7 @@ from pathlib import Path
 # Add parent directory to path to import from mpc_rl
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mpc_rl.sac_mpc.mpc_planner import MPCPlanner
+from mpc_rl.planner.mpc_planner import MPCPlanner
 
 def planner_test():
     print("Testing MPCPlanner...")
@@ -262,5 +262,5 @@ def downsample_test():
 
 if __name__ == "__main__":
     #planner_test()
-    #plan_and_save_traj()
-    downsample_test()
+    plan_and_save_traj()
+    #downsample_test()

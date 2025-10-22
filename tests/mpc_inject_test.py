@@ -60,7 +60,7 @@ import sys
 # Add parent directory to path to import from mpc_rl
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mpc_rl.sac_mpc.mpc_planner import MPCPlanner
+from mpc_rl.planner.mpc_planner import MPCPlanner
 from mpc_rl.sac_mpc.mpc_inject_callbacks import EpisodeMPCInjectCallback, AdaptiveMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 
