@@ -91,6 +91,16 @@ python mpc_rl/train_sbx.py \
 # Train with a different algorithm (PPO or TD3)
 python mpc_rl/train_sbx.py --env_name=acrobot-swingup --algorithm=TD3
 
+# Train with SAC-MPC
+python mpc_rl/train_sbx.py \
+    --env_name=cartpole-swingup \
+    --algorithm=SAC-MPC \
+    --total_timesteps=500000 \
+    --inject_n_timesteps=5000 \
+    --num_traj=10 \
+    --random_select=True \
+    --data_dir=data/cartpole_0_001dt/
+
 # Add a custom suffix to the experiment name
 python mpc_rl/train_sbx.py --env_name=cartpole-swingup --suffix=experiment1
 ```
@@ -166,6 +176,12 @@ This will load the existing model and normalization statistics, then continue tr
 - `--batch_size`: Batch size for training. Default: `256`
 - `--tau`: Target network update rate. Default: `0.005`
 - `--gamma`: Discount factor. Default: `0.99`
+
+### MPC Injection Flags (SAC-MPC only)
+- `--inject_n_timesteps`: Inject MPC trajectories every N timesteps. Default: `5000`
+- `--num_traj`: Number of MPC trajectories to inject each time. Default: `10`
+- `--random_select`: Randomly select trajectories to inject. Default: `True`
+- `--data_dir`: Directory containing pre-generated MPC trajectories. Default: `data/cartpole_0_001dt/`
 
 ### Checkpoint Flags
 - `--checkpoint_freq`: Save checkpoint every N steps. Default: `25000`

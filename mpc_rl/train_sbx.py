@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import sys
 from pathlib import Path
 import warnings
 import subprocess
@@ -64,8 +65,12 @@ else:
 # Set logging level to suppress JAX backend initialization messages
 logging.set_verbosity(logging.WARNING)
 
-# Relative import SAC_MPC
-from sac_mpc.sac_mpc import SAC_MPC
+# Add parent directory to path to import from mpc_rl
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from mpc_rl.planner.mpc_planner import MPCPlanner
+from mpc_rl.sac_mpc.mpc_inject_callbacks import EpisodeMPCInjectCallback, AdaptiveMPCInjectCallback
+from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 
 
 # Environment flags
@@ -90,10 +95,10 @@ _ALGORITHM = flags.DEFINE_enum(
     "algorithm", "SAC", ["SAC", "PPO", "TD3", "SAC-MPC"], "RL algorithm to use"
 )
 _TOTAL_TIMESTEPS = flags.DEFINE_integer(
-    "total_timesteps", 1_000_000, "Total number of timesteps to train"
+    "total_timesteps", 500_000, "Total number of timesteps to train"
 )
 _NUM_ENVS = flags.DEFINE_integer(
-    "num_envs", 8, "Number of parallel environments for training"
+    "num_envs", 4, "Number of parallel environments for training"
 )
 _SEED = flags.DEFINE_integer("seed", 1, "Random seed")
 
@@ -124,6 +129,20 @@ _LEARNING_STARTS = flags.DEFINE_integer(
 _BATCH_SIZE = flags.DEFINE_integer("batch_size", 256, "Minibatch size")
 _TAU = flags.DEFINE_float("tau", 0.005, "Soft update coefficient")
 _GAMMA = flags.DEFINE_float("gamma", 0.99, "Discount factor")
+
+# MPC injection flags
+_INJECT_N_TIMESTEPS = flags.DEFINE_integer(
+    "inject_n_timesteps", 5000, "Inject MPC trajectories every N timesteps"
+)
+_NUM_TRAJ = flags.DEFINE_integer(
+    "num_traj", 10, "Number of MPC trajectories to inject each time"
+)
+_RANDOM_SELECT = flags.DEFINE_boolean(
+    "random_select", True, "Randomly select trajectories to inject"
+)
+_DATA_DIR = flags.DEFINE_string(
+    "data_dir", "data/cartpole_0_001dt/", "Directory containing pre-generated MPC trajectories"
+)
 
 # Checkpoint flags
 _CHECKPOINT_FREQ = flags.DEFINE_integer(
@@ -177,11 +196,11 @@ def make_dm_env(domain: str, task: str, render_mode=None):
     return gym_env
 
 
-def create_experiment_name(env_name: str, suffix: str = None) -> str:
-    """Create unique experiment name with timestamp."""
+def create_experiment_name(env_name: str, algorithm: str, suffix: str = None) -> str:
+    """Create unique experiment name with timestamp and algorithm."""
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y%m%d-%H%M%S")
-    exp_name = f"{env_name}-{timestamp}"
+    exp_name = f"{env_name}-{algorithm}-{timestamp}"
     if suffix:
         exp_name += f"-{suffix}"
     return exp_name
@@ -383,7 +402,7 @@ def main(argv):
         print(f"Loading from run: {run_name}")
     else:
         # Create new experiment
-        run_name = create_experiment_name(env_name, _SUFFIX.value)
+        run_name = create_experiment_name(env_name, _ALGORITHM.value, _SUFFIX.value)
         logdir = Path(_LOGDIR.value) / run_name
         logdir.mkdir(parents=True, exist_ok=True)
         print(f"Created new run: {run_name}")
@@ -411,6 +430,10 @@ def main(argv):
             "batch_size": _BATCH_SIZE.value,
             "tau": _TAU.value,
             "gamma": _GAMMA.value,
+            "inject_n_timesteps": _INJECT_N_TIMESTEPS.value,
+            "num_traj": _NUM_TRAJ.value,
+            "random_select": _RANDOM_SELECT.value,
+            "data_dir": _DATA_DIR.value,
         }
         save_config(logdir, config)
     
@@ -503,12 +526,28 @@ def main(argv):
         
         # Train the model
         # When resuming, reset_num_timesteps=False continues from loaded timestep count
-        model.learn(
-            total_timesteps=_TOTAL_TIMESTEPS.value,
-            callback=[checkpoint_callback, eval_callback],
-            progress_bar=True,
-            reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
-        )
+        if _ALGORITHM.value == "SAC-MPC":
+            print("\nSetting up MPC Injection from pre-generated trajectories...")
+            inject_callback = EpisodeMPCInjectCallback(
+                inject_every_n_timesteps=_INJECT_N_TIMESTEPS.value,
+                num_mpc_trajectories=_NUM_TRAJ.value,
+                data_dir=_DATA_DIR.value,
+                random_select=_RANDOM_SELECT.value,
+                verbose=1,
+            )
+            model.learn(
+                total_timesteps=_TOTAL_TIMESTEPS.value,
+                callback=[checkpoint_callback, eval_callback, inject_callback],
+                progress_bar=True,
+                reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
+            )
+        else:
+            model.learn(
+                total_timesteps=_TOTAL_TIMESTEPS.value,
+                callback=[checkpoint_callback, eval_callback],
+                progress_bar=True,
+                reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
+            )
         
         print("Training complete!")
         
