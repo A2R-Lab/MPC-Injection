@@ -110,7 +110,7 @@ if __name__ == "__main__":
         "MlpPolicy",
         vec_env,
         learning_rate=3e-4,
-        buffer_size=100_000, # og 1_000_000, but smaller for testing speed/ratio
+        buffer_size=1_000_000, # og 1_000_000
         learning_starts=10000,
         batch_size=256,
         tau=0.005,
@@ -212,7 +212,7 @@ if __name__ == "__main__":
     model.learn(
         total_timesteps=500_000,
         callback=[eval_callback, inject_callback],  # Include MPC injection callback
-        log_interval=100,  # Log training metrics every 100 episodes
+        log_interval=10,  # Log training metrics every 10 episodes
         progress_bar=True,
     )
     
@@ -245,14 +245,19 @@ if __name__ == "__main__":
     print("\nGenerating performance visualization...")
     
     # Create a single non-vectorized environment for visualization
-    vis_env = make_dmc_env(domain, task, render_mode="rgb_array")
+    # IMPORTANT: Must use VecNormalize with the same statistics as training!
+    vis_env_raw = make_vec_env(lambda: make_dmc_env(domain, task, render_mode="rgb_array"), n_envs=1)
+    vis_env = VecNormalize(vis_env_raw, training=False, norm_obs=True, norm_reward=False)
+    # Copy normalization statistics from training environment
+    vis_env.obs_rms = vec_env.obs_rms
+    vis_env.ret_rms = vec_env.ret_rms
     
     # Get the timestep from the environment
-    dt = vis_env.unwrapped._env.physics.timestep()
+    dt = vis_env.unwrapped.envs[0].unwrapped._env.physics.timestep()
     print(f"Environment timestep: {dt} seconds")
     
     # Run one episode and collect data
-    obs, info = vis_env.reset(seed=42)
+    obs = vis_env.reset()
     
     # Storage for trajectories
     # DM Control cartpole swingup has a 10 second time limit
@@ -273,17 +278,19 @@ if __name__ == "__main__":
         action, _states = model.predict(obs, deterministic=True)
         
         # Store data
-        observations.append(obs)
-        actions.append(action)
+        observations.append(obs[0])  # Extract from vectorized format
+        actions.append(action[0])    # Extract from vectorized format
         times.append(step * dt)
         
         # Render frame
-        frame = vis_env.render()
+        frame = vis_env.render(mode='rgb_array')
         frames.append(frame)
         
-        # Step environment
-        obs, reward, done, truncated, info = vis_env.step(action)
-        rewards.append(reward)
+        # Step environment (VecEnv returns different format)
+        obs, reward, done_vec, info = vis_env.step(action)
+        done = done_vec[0]
+        truncated = info[0].get('TimeLimit.truncated', False)
+        rewards.append(reward[0])
         
         step += 1
         

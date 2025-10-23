@@ -32,6 +32,7 @@ class EpisodeMPCInjectCallback(BaseCallback):
         self.num_mpc_trajectories = num_mpc_trajectories
         self.total_injections = 0
         self.last_injection_timestep = 0
+        self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
         
         # Trajectory loading configuration
         self.data_dir = data_dir
@@ -140,6 +141,9 @@ class EpisodeMPCInjectCallback(BaseCallback):
         temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
         temp_env = FlattenObservation(temp_env)
         
+        # Track actual transitions added in this injection
+        total_transitions_added = 0
+        
         for traj_idx in range(self.num_mpc_trajectories):
             # Load or generate trajectory
             if self.data_dir is not None:
@@ -206,6 +210,7 @@ class EpisodeMPCInjectCallback(BaseCallback):
             
             # Step through trajectory using MPC actions
             num_steps = ctrl_downsampled.shape[1]
+            steps_added_this_traj = 0
             
             for step in range(num_steps):
                 # Get MPC action
@@ -245,24 +250,47 @@ class EpisodeMPCInjectCallback(BaseCallback):
                     info_vec
                 )
                 
+                # Track transitions added (accounting for n_envs replication)
+                steps_added_this_traj += n_envs
+                
                 # Update observation for next step
                 obs = next_obs
                 
                 # Stop if episode ended early (shouldn't happen with MPC)
                 if done:
                     break
+            
+            # Accumulate total transitions for this injection
+            total_transitions_added += steps_added_this_traj
+        
+        # Update total MPC trajectory count
+        self.total_mpc_trajectories_injected += self.num_mpc_trajectories
         
         # Close temporary environment
         temp_env.close()
         
         if self.verbose > 0:
             buffer_size = self.model.replay_buffer.size()
-            # Calculate actual transitions added (accounting for n_envs replication)
-            transitions_added_per_traj = num_steps * self.training_env.num_envs
-            total_transitions_added = self.num_mpc_trajectories * transitions_added_per_traj
-            print(f"Injected {total_transitions_added} transitions from {self.num_mpc_trajectories} MPC trajectories")
-            print(f"  Replay buffer size: {buffer_size}")
-            print(f"  Total injections so far: {self.total_injections}")
+            buffer_capacity = self.model.replay_buffer.buffer_size
+            
+            # Calculate what percentage of buffer is from this injection
+            # If we added more than buffer capacity, it means we overwrote everything
+            if buffer_size > 0:
+                if total_transitions_added >= buffer_size:
+                    # We added more than the buffer contains - buffer is entirely (or mostly) MPC data
+                    mpc_percentage = 100.0
+                    print(f"Total MPC trajectories injected: {self.total_mpc_trajectories_injected}")
+                    print(f"  Recent MPC injection: ~100% of buffer (added {total_transitions_added} transitions)")
+                else:
+                    # Normal case: MPC is a portion of the buffer
+                    mpc_percentage = (total_transitions_added / buffer_size) * 100
+                    print(f"Total MPC trajectories injected: {self.total_mpc_trajectories_injected}")
+                    print(f"  Recent MPC injection: {mpc_percentage:.1f}% of buffer ({total_transitions_added} transitions)")
+            else:
+                print(f"Total MPC trajectories injected: {self.total_mpc_trajectories_injected}")
+                print(f"  Recent MPC injection: 0.0% of buffer")
+            
+            print(f"  Replay buffer: {buffer_size}/{buffer_capacity}")
             print(f"{'='*60}\n")
 
 
