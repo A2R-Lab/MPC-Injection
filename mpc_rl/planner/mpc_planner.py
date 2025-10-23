@@ -157,6 +157,109 @@ class MPCPlanner():
         # Reset the agent
         self.agent.reset()
 
+    def plan_receding_horizon(self, keyframe: str="home", plan_frequency: int=10,
+                              init_qpos=None, init_qvel=None) -> None:
+        """
+        Generate long trajectory using receding horizon MPC.
+        
+        This method significantly reduces gRPC communication overhead by only
+        re-planning every N timesteps instead of at every simulation step.
+        
+        Args:
+            keyframe: Initial keyframe to start from
+            plan_frequency: Re-plan every N timesteps (reduces gRPC calls)
+            init_qpos: Optional initial joint positions (overrides keyframe)
+            init_qvel: Optional initial joint velocities (overrides keyframe)
+        """
+        # Reset data
+        mujoco.mj_resetData(self.model, self.data)
+        
+        # Reset to specified keyframe
+        keyframe_id = mujoco.mj_name2id(self.model,
+                                        mujoco.mjtObj.mjOBJ_KEY,
+                                        keyframe)
+        if keyframe_id >= 0:
+            mujoco.mj_resetDataKeyframe(self.model, self.data, keyframe_id)
+        else:
+            if self.verbose > 0:
+                print(f"Warning: '{keyframe}' keyframe not found in model")
+        
+        # Add noise if enabled
+        if self.init_state_noise_flag:
+            np.random.seed(0)
+            self.qpos_noise = np.random.uniform(self.qpos_noise_rnge[0],
+                                                self.qpos_noise_rnge[1],
+                                                size=self.model.nq)
+            self.qvel_noise = np.random.uniform(self.qvel_noise_rnge[0],
+                                                self.qvel_noise_rnge[1],
+                                                size=self.model.nv)
+            self.data.qpos[:] += self.qpos_noise
+            self.data.qvel[:] += self.qvel_noise
+        
+        # If initial qpos/qvel are provided, override the keyframe state
+        if init_qpos is not None:
+            self.data.qpos[:] = init_qpos
+        if init_qvel is not None:
+            self.data.qvel[:] = init_qvel
+        
+        # Cache initial state
+        self.qpos[:, 0] = self.data.qpos
+        self.qvel[:, 0] = self.data.qvel
+        self.time[0] = self.data.time
+        
+        # Pre-allocate for planned actions
+        planned_actions = None
+        
+        for t in range(self.rollout_horizon - 1):
+            if self.verbose > 0 and t % 100 == 0:
+                print(f"Planning step {t}/{self.rollout_horizon}")
+            
+            # Only re-plan every N steps (instead of every step!)
+            if t % plan_frequency == 0:
+                # gRPC call: Update state
+                self.agent.set_state(
+                    time=self.data.time,
+                    qpos=self.data.qpos,
+                    qvel=self.data.qvel,
+                    act=self.data.act,
+                    mocap_pos=self.data.mocap_pos,
+                    mocap_quat=self.data.mocap_quat,
+                    userdata=self.data.userdata
+                )
+                
+                # gRPC call: Run optimization
+                for _ in range(self.opt_steps):
+                    self.agent.planner_step()
+                
+                # gRPC call: Get best trajectory
+                trajectory = self.agent.best_trajectory()
+                planned_actions = trajectory['actions']  # (horizon_steps, nu)
+                
+                if self.verbose > 1:
+                    print(f"  Re-planned at step {t}, got {len(planned_actions)} actions")
+            
+            # Use cached action from the planned trajectory
+            # The action index within the current planning window
+            action_idx = t % plan_frequency
+            
+            # Clamp to last available action if we're at the end of planned horizon
+            action_idx = min(action_idx, len(planned_actions) - 1)
+            
+            # Set control from planned trajectory (no gRPC!)
+            self.data.ctrl = planned_actions[action_idx]
+            self.ctrl[:, t] = self.data.ctrl
+            
+            # Step simulation (no gRPC!)
+            mujoco.mj_step(self.model, self.data)
+            
+            # Cache states (no gRPC!)
+            self.qpos[:, t+1] = self.data.qpos
+            self.qvel[:, t+1] = self.data.qvel
+            self.time[t+1] = self.data.time
+        
+        # Reset the agent
+        self.agent.reset()
+
     def set_rollout_horizon(self, rollout_horizon: int):
         self.rollout_horizon = rollout_horizon
 

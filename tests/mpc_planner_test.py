@@ -110,6 +110,84 @@ def planner_test():
     
     print("\nTest complete!")
 
+def planner_receding_horizon_test():
+    print("Testing MPCPlanner with Receding Horizon...")
+    
+    # Create MPC planner instance
+    planner = MPCPlanner(
+        rollout_horizon=10000,
+        opt_steps=10,
+        weights={
+            "Vertical": 10.0,
+            "Centered": 10.0,
+            "Velocity": 0.1,
+            "Control": 0.1
+        },
+        task_params={"Goal": 0.0},
+        init_state_noise_flag=False,
+        qpos_noise_rnge=(-0.02, 0.02),
+        qvel_noise_rnge=(-0.02, 0.02),
+        verbose=1
+    )
+    
+    print(f"Rollout horizon: {planner.get_rollout_horizon()}")
+    print(f"Initial state noise: {planner.get_init_state_noise_flag()}")
+    print(f"qpos noise range: {planner.get_qpos_noise_range()}")
+    print(f"qvel noise range: {planner.get_qvel_noise_range()}")
+    
+    # Run MPC planning with receding horizon (re-plan every 50 steps for speedup)
+    print("\nRunning MPC receding horizon trajectory optimization...")
+    print("(Re-planning every 50 steps for faster execution)")
+    import time
+    start_time = time.time()
+    planner.plan_receding_horizon(keyframe="home", plan_frequency=10)
+    end_time = time.time()
+    print(f"Planning complete! Took {end_time - start_time:.2f} seconds")
+    
+    # Get trajectories
+    qpos, qvel, ctrl, time_array = planner.get_trajectories()
+    
+    print(f"\nTrajectory shapes:")
+    print(f"  qpos: {qpos.shape}")
+    print(f"  qvel: {qvel.shape}")
+    print(f"  ctrl: {ctrl.shape}")
+    print(f"  time: {time_array.shape}")
+    
+    # Plot position
+    fig1 = plt.figure(figsize=(10, 6))
+    plt.plot(time_array, qpos[0, :], label="q0 (cart position)", color="blue")
+    plt.plot(time_array, qpos[1, :], label="q1 (pole angle)", color="orange")
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("States")
+    plt.title("State Trajectories (Receding Horizon)")
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Plot velocity
+    fig2 = plt.figure(figsize=(10, 6))
+    plt.plot(time_array, qvel[0, :], label="v0 (cart velocity)", color="blue")
+    plt.plot(time_array, qvel[1, :], label="v1 (pole velocity)", color="orange")
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Velocity")
+    plt.title("Velocity Trajectories (Receding Horizon)")
+    plt.grid(True)
+    plt.tight_layout()
+    
+    # Plot control
+    fig3 = plt.figure(figsize=(10, 4))
+    plt.plot(time_array[:-1], ctrl[0, :], color="blue")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Control")
+    plt.title("Control Signal (Receding Horizon)")
+    plt.grid(True)
+    plt.tight_layout()
+    
+    plt.show()
+    
+    print("\nReceding Horizon Test complete!")
+
 def plan_and_save_traj():
     """
     Simple function to save a planned trajectory to load and use for later
@@ -261,6 +339,9 @@ def downsample_test():
 
 
 if __name__ == "__main__":
-    #planner_test()
-    #plan_and_save_traj()
-    downsample_test()
+    # Uncomment the test you want to run:
+    
+    #planner_test()  # Test standard MPC planning
+    planner_receding_horizon_test()  # Test receding horizon MPC planning (faster!)
+    #plan_and_save_traj()  # Save a trajectory for later use
+    #downsample_test()  # Test downsampling and visualization
