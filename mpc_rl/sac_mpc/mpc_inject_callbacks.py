@@ -216,12 +216,6 @@ class EpisodeMPCInjectCallback(BaseCallback):
                 # Get MPC action
                 action = ctrl_downsampled[:, step]
                 
-                # Stop if control becomes all zeros (trajectory reached equilibrium)
-                if np.allclose(action, 0.0, atol=1e-6):
-                    if self.verbose > 1:
-                        print(f"    Control became zero at step {step}, stopping...")
-                    break
-                
                 # Step environment to get real reward
                 # Gymnasium API returns 5 values: (obs, reward, terminated, truncated, info)
                 next_obs, reward, terminated, truncated, info = temp_env.step(action)
@@ -250,8 +244,11 @@ class EpisodeMPCInjectCallback(BaseCallback):
                     info_vec
                 )
                 
-                # Track transitions added (accounting for n_envs replication)
-                steps_added_this_traj += n_envs
+                # Track transitions added (each MPC step = 1 unique transition in buffer)
+                # NOTE: Even though we tile/replicate data n_envs times above, the replay
+                # buffer stores each transition only once. The vectorization is just for API
+                # compatibility with the expected input shape.
+                steps_added_this_traj += 1
                 
                 # Update observation for next step
                 obs = next_obs
@@ -274,23 +271,26 @@ class EpisodeMPCInjectCallback(BaseCallback):
             buffer_capacity = self.model.replay_buffer.buffer_size
             
             # Calculate what percentage of buffer is from this injection
-            # If we added more than buffer capacity, it means we overwrote everything
             if buffer_size > 0:
                 if total_transitions_added >= buffer_size:
                     # We added more than the buffer contains - buffer is entirely (or mostly) MPC data
+                    # This can happen on first injection or if buffer was very small
                     mpc_percentage = 100.0
                     print(f"Total MPC trajectories injected: {self.total_mpc_trajectories_injected}")
-                    print(f"  Recent MPC injection: ~100% of buffer (added {total_transitions_added} transitions)")
+                    print(f"  Transitions added this injection: {total_transitions_added}")
+                    print(f"  MPC data in buffer: ~100% (buffer was smaller than injection)")
                 else:
                     # Normal case: MPC is a portion of the buffer
                     mpc_percentage = (total_transitions_added / buffer_size) * 100
                     print(f"Total MPC trajectories injected: {self.total_mpc_trajectories_injected}")
-                    print(f"  Recent MPC injection: {mpc_percentage:.1f}% of buffer ({total_transitions_added} transitions)")
+                    print(f"  Transitions added this injection: {total_transitions_added}")
+                    print(f"  MPC data in buffer: ~{mpc_percentage:.1f}% of current buffer")
             else:
                 print(f"Total MPC trajectories injected: {self.total_mpc_trajectories_injected}")
-                print(f"  Recent MPC injection: 0.0% of buffer")
+                print(f"  Transitions added this injection: {total_transitions_added}")
+                print(f"  MPC data in buffer: buffer is empty")
             
-            print(f"  Replay buffer: {buffer_size}/{buffer_capacity}")
+            print(f"  Replay buffer size: {buffer_size}/{buffer_capacity}")
             print(f"{'='*60}\n")
 
 

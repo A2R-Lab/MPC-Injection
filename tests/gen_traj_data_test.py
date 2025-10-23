@@ -142,6 +142,7 @@ def test_trajectory_in_environment():
         action = ctrl_downsampled[:, t]
         
         # Stop if control becomes all zeros
+        # NOTE: This was just for testing, I don't think this should be the case in general
         if np.allclose(action, 0.0, atol=1e-3):
             print(f"Control became zero at step {t}, stopping...")
             break
