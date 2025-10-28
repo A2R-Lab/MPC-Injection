@@ -168,6 +168,7 @@ This will load the existing model and normalization statistics, then continue tr
 ### Experiment Flags
 - `--suffix`: Custom suffix to append to the experiment name
 - `--logdir`: Base directory for storing logs and checkpoints. Default: `logs`
+- `--enable_logging`: Enables checkpoints, videos, and tensorboard logging for hyperparam optimization with optuna. Default: `True`
 
 ### Hyperparameter Flags (SAC/TD3)
 - `--learning_rate`: Learning rate. Default: `3e-4`

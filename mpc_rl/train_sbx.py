@@ -39,6 +39,8 @@ from absl import flags
 from absl import logging
 
 import gymnasium as gym
+from dataclasses import dataclass
+from typing import Optional
 from dm_control import suite
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
@@ -119,6 +121,9 @@ _NUM_VIDEOS = flags.DEFINE_integer(
 # Experiment flags
 _SUFFIX = flags.DEFINE_string("suffix", None, "Suffix for the experiment name")
 _LOGDIR = flags.DEFINE_string("logdir", "logs", "Base directory for logs")
+_ENABLE_LOGGING = flags.DEFINE_boolean(
+    "enable_logging", True, "Enable checkpoints, videos, and TensorBoard logging. Set to False for hyperparameter optimization with optuna."
+)
 
 # Hyperparameter flags (this is for SAC for now, not optimized yet)
 _LEARNING_RATE = flags.DEFINE_float("learning_rate", 3e-4, "Learning rate")
@@ -151,6 +156,23 @@ _CHECKPOINT_FREQ = flags.DEFINE_integer(
 _EVAL_FREQ = flags.DEFINE_integer(
     "eval_freq", 10_000, "Evaluate policy every N steps"
 )
+
+
+@dataclass
+class AllConfig:
+    algorithm: str
+    learning_rate: float
+    buffer_size: int
+    learning_starts: int
+    batch_size: int
+    tau: float
+    gamma: float
+    seed: int
+    tensorboard_log: str
+    inject_n_timesteps: int
+    num_traj: int
+    random_select: bool
+    data_dir: str
 
 
 def parse_env_name(env_name: str) -> tuple[str, str]:
@@ -221,8 +243,7 @@ def load_model(algorithm: str, model_path: Path, env):
     return algo_class.load(model_path, env=env)
 
 
-def create_model(algorithm: str, env, learning_rate, buffer_size, 
-                 learning_starts, batch_size, tau, gamma, seed, tensorboard_log):
+def create_model(env, cfg):
     """
     Create a new model instance.
     
@@ -230,62 +251,139 @@ def create_model(algorithm: str, env, learning_rate, buffer_size,
     algorithm string. Calling algo_class(...) invokes the class constructor (__init__) to
     create a new agent instance with the specified hyperparameters.
     """
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC}[algorithm]
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC}[cfg.algorithm]
     
-    if algorithm == "SAC":
+    if cfg.algorithm == "SAC":
         model = algo_class(
             "MlpPolicy",
             env,
-            learning_rate=learning_rate,
-            buffer_size=buffer_size,
-            learning_starts=learning_starts,
-            batch_size=batch_size,
-            tau=tau,
-            gamma=gamma,
+            learning_rate=cfg.learning_rate,
+            buffer_size=cfg.buffer_size,
+            learning_starts=cfg.learning_starts,
+            batch_size=cfg.batch_size,
+            tau=cfg.tau,
+            gamma=cfg.gamma,
             verbose=1,
-            seed=seed,
-            tensorboard_log=tensorboard_log,
+            seed=cfg.seed,
+            tensorboard_log=cfg.tensorboard_log,
         )
-    elif algorithm == "SAC-MPC":
+    elif cfg.algorithm == "SAC-MPC":
         model = algo_class(
             "MlpPolicy",
             env,
-            learning_rate=learning_rate,
-            buffer_size=buffer_size,
-            learning_starts=learning_starts,
-            batch_size=batch_size,
-            tau=tau,
-            gamma=gamma,
+            learning_rate=cfg.learning_rate,
+            buffer_size=cfg.buffer_size,
+            learning_starts=cfg.learning_starts,
+            batch_size=cfg.batch_size,
+            tau=cfg.tau,
+            gamma=cfg.gamma,
             verbose=1,
-            seed=seed,
-            tensorboard_log=tensorboard_log,
+            seed=cfg.seed,
+            tensorboard_log=cfg.tensorboard_log,
         )
-    elif algorithm == "PPO":
+    elif cfg.algorithm == "PPO":
         model = algo_class(
             "MlpPolicy",
             env,
-            learning_rate=learning_rate,
-            gamma=gamma,
+            learning_rate=cfg.learning_rate,
+            gamma=cfg.gamma,
             verbose=1,
-            seed=seed,
-            tensorboard_log=tensorboard_log,
+            seed=cfg.seed,
+            tensorboard_log=cfg.tensorboard_log,
         )
-    elif algorithm == "TD3":
+    elif cfg.algorithm == "TD3":
         model = algo_class(
             "MlpPolicy",
             env,
-            learning_rate=learning_rate,
-            buffer_size=buffer_size,
-            learning_starts=learning_starts,
-            batch_size=batch_size,
-            tau=tau,
-            gamma=gamma,
+            learning_rate=cfg.learning_rate,
+            buffer_size=cfg.buffer_size,
+            learning_starts=cfg.learning_starts,
+            batch_size=cfg.batch_size,
+            tau=cfg.tau,
+            gamma=cfg.gamma,
             verbose=1,
-            seed=seed,
-            tensorboard_log=tensorboard_log,
+            seed=cfg.seed,
+            tensorboard_log=cfg.tensorboard_log,
         )
     
     return model
+
+
+def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path, 
+                     domain: str, task: str, seed: int,
+                     checkpoint_freq: int, eval_freq: int):
+    """
+    Factory function to create all callbacks based on configuration.
+    
+    Args:
+        cfg: AllConfig containing algorithm and MPC injection parameters
+        enable_logging: Whether to enable checkpoints and eval callbacks
+        logdir: Path to log directory
+        domain: Environment domain name
+        task: Environment task name
+        seed: Random seed for eval environment
+        checkpoint_freq: Frequency to save checkpoints
+        eval_freq: Frequency to run evaluation
+    
+    Returns:
+        Tuple of (callbacks list, eval_env or None)
+        eval_env is returned so it can be closed after training
+    """
+    callbacks = []
+    eval_env = None
+    
+    # Add checkpoint callback if logging is enabled
+    if enable_logging:
+        checkpoint_callback = CheckpointCallback(
+            save_freq=checkpoint_freq,
+            save_path=str(logdir / "checkpoints"),
+            name_prefix="model",
+            save_replay_buffer=True,
+            save_vecnormalize=True,
+        )
+        callbacks.append(checkpoint_callback)
+    
+    # Add eval callback if logging is enabled
+    if enable_logging:
+        # Create eval environment for evaluation callback
+        # Must be wrapped the same way as training env (with VecNormalize)
+        eval_env = make_vec_env(
+            lambda: make_dm_env(domain, task),
+            n_envs=1,
+            seed=seed + 1000,
+        )
+        eval_env = VecNormalize(
+            eval_env,
+            training=False,  # Don't update stats during evaluation
+            norm_obs=True,
+            norm_reward=True,
+        )
+        
+        # Create callback for evaluating the trained model
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=str(logdir / "best_model"),
+            log_path=str(logdir / "eval_logs"),
+            eval_freq=eval_freq,
+            deterministic=True,
+            render=False,
+            n_eval_episodes=5,
+        )
+        callbacks.append(eval_callback)
+    
+    # Add MPC injection callback if using SAC-MPC
+    if cfg.algorithm == "SAC-MPC":
+        print("\nSetting up MPC Injection from pre-generated trajectories...")
+        inject_callback = EpisodeMPCInjectCallback(
+            inject_every_n_timesteps=cfg.inject_n_timesteps,
+            num_mpc_trajectories=cfg.num_traj,
+            data_dir=cfg.data_dir,
+            random_select=cfg.random_select,
+            verbose=1,
+        )
+        callbacks.append(inject_callback)
+    
+    return (callbacks if callbacks else None), eval_env
 
 
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
@@ -414,6 +512,12 @@ def main(argv):
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     video_dir = logdir / "videos"
     
+    # Determine TensorBoard logging path
+    if _ENABLE_LOGGING.value:
+        tensorboard_log_path = str(logdir / "tensorboard")
+    else:
+        tensorboard_log_path = None
+    
     # Save configuration (only for new runs)
     if not _LOAD_RUN_NAME.value:
         config = {
@@ -473,9 +577,8 @@ def main(argv):
     else:
         # Create new model
         print(f"Creating new {_ALGORITHM.value} model...")
-        model = create_model(
+        config = AllConfig(
             algorithm=_ALGORITHM.value,
-            env=vec_env,
             learning_rate=_LEARNING_RATE.value,
             buffer_size=_BUFFER_SIZE.value,
             learning_starts=_LEARNING_STARTS.value,
@@ -483,99 +586,73 @@ def main(argv):
             tau=_TAU.value,
             gamma=_GAMMA.value,
             seed=_SEED.value,
-            tensorboard_log=str(logdir / "tensorboard"),
+            tensorboard_log=tensorboard_log_path,
+            inject_n_timesteps=_INJECT_N_TIMESTEPS.value,
+            num_traj=_NUM_TRAJ.value,
+            random_select=_RANDOM_SELECT.value,
+            data_dir=_DATA_DIR.value,
+        )
+        model = create_model(
+            env=vec_env,
+            cfg=config,
         )
     
     # Training phase
     if not _PLAY_ONLY.value and _TOTAL_TIMESTEPS.value > 0:
         print(f"\nStarting training for {_TOTAL_TIMESTEPS.value} timesteps...")
         
-        # Create callback for saving a model every save_freq calls to env.step()
-        checkpoint_callback = CheckpointCallback(
-            save_freq=_CHECKPOINT_FREQ.value,
-            save_path=str(checkpoint_dir),
-            name_prefix="model",
-            save_replay_buffer=True,
-            save_vecnormalize=True,
-        )
-        
-        # Create eval environment for evaluation callback
-        # Must be wrapped the same way as training env (with VecNormalize)
-        eval_env = make_vec_env(
-            lambda: make_dm_env(domain, task),
-            n_envs=1,
-            seed=_SEED.value + 1000,
-        )
-        eval_env = VecNormalize(
-            eval_env,
-            training=False,  # Don't update stats during evaluation
-            norm_obs=True,
-            norm_reward=True,
-        )
-        
-        # Create callback for evaluating the trained model
-        eval_callback = EvalCallback(
-            eval_env,
-            best_model_save_path=str(logdir / "best_model"),
-            log_path=str(logdir / "eval_logs"),
+        # Create callbacks using factory function
+        callbacks, eval_env = create_callbacks(
+            cfg=config,
+            enable_logging=_ENABLE_LOGGING.value,
+            logdir=logdir,
+            domain=domain,
+            task=task,
+            seed=_SEED.value,
+            checkpoint_freq=_CHECKPOINT_FREQ.value,
             eval_freq=_EVAL_FREQ.value,
-            deterministic=True,
-            render=False,
-            n_eval_episodes=5,
         )
         
         # Train the model
         # When resuming, reset_num_timesteps=False continues from loaded timestep count
-        if _ALGORITHM.value == "SAC-MPC":
-            print("\nSetting up MPC Injection from pre-generated trajectories...")
-            inject_callback = EpisodeMPCInjectCallback(
-                inject_every_n_timesteps=_INJECT_N_TIMESTEPS.value,
-                num_mpc_trajectories=_NUM_TRAJ.value,
-                data_dir=_DATA_DIR.value,
-                random_select=_RANDOM_SELECT.value,
-                verbose=1,
-            )
-            model.learn(
-                total_timesteps=_TOTAL_TIMESTEPS.value,
-                callback=[checkpoint_callback, eval_callback, inject_callback],
-                progress_bar=True,
-                reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
-            )
-        else:
-            model.learn(
-                total_timesteps=_TOTAL_TIMESTEPS.value,
-                callback=[checkpoint_callback, eval_callback],
-                progress_bar=True,
-                reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
-            )
+        model.learn(
+            total_timesteps=_TOTAL_TIMESTEPS.value,
+            callback=callbacks,
+            progress_bar=True,
+            reset_num_timesteps=False if _LOAD_RUN_NAME.value else True,
+        )
         
         print("Training complete!")
         
-        # Save final model, normalization stats, and replay buffer
-        print(f"Saving model to: {model_path}")
-        model.save(model_path)
-        vec_env.save(vec_normalize_path)
+        # Save final model, normalization stats, and replay buffer (only if logging enabled)
+        if _ENABLE_LOGGING.value:
+            print(f"Saving model to: {model_path}")
+            model.save(model_path)
+            vec_env.save(vec_normalize_path)
+            
+            # Save replay buffer (for off-policy algorithms)
+            if hasattr(model, 'save_replay_buffer'):
+                model.save_replay_buffer(replay_buffer_path)
+                print(f"Replay buffer saved (size: {model.replay_buffer.size()})")
+            
+            print("Model and normalization stats saved")
         
-        # Save replay buffer (for off-policy algorithms)
-        if hasattr(model, 'save_replay_buffer'):
-            model.save_replay_buffer(replay_buffer_path)
-            print(f"Replay buffer saved (size: {model.replay_buffer.size()})")
-        
-        print("Model and normalization stats saved")
-        
-        eval_env.close()
+        # Close eval environment if it was created
+        if eval_env is not None:
+            eval_env.close()
     
-    # Evaluation phase
-    print(f"\nEvaluating model for {_NUM_EVAL_EPISODES.value} episodes...")
-    evaluate_and_record(
-        model=model,
-        domain=domain,
-        task=task,
-        num_episodes=_NUM_EVAL_EPISODES.value,
-        num_videos=_NUM_VIDEOS.value,
-        video_dir=video_dir,
-        normalize_env=vec_normalize_path if vec_normalize_path.exists() else None,
-    )
+    # Evaluation phase (only if logging enabled)
+    if _ENABLE_LOGGING.value:
+        print(f"\nEvaluating model for {_NUM_EVAL_EPISODES.value} episodes...")
+        evaluate_and_record(
+            model=model,
+            domain=domain,
+            task=task,
+            num_episodes=_NUM_EVAL_EPISODES.value,
+            num_videos=_NUM_VIDEOS.value,
+            video_dir=video_dir,
+            normalize_env=vec_normalize_path if vec_normalize_path.exists() else None,
+        )
     
     vec_env.close()
     print("\nDone!")
