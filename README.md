@@ -180,7 +180,9 @@ This will load the existing model and normalization statistics, then continue tr
 
 ### MPC Injection Flags (SAC-MPC only)
 - `--inject_n_timesteps`: Inject MPC trajectories every N timesteps. Default: `5000`
-- `--num_traj`: Number of MPC trajectories to inject each time. Default: `10`
+- `--inject_type`: Type of injection of MPC trajectories (percentage, fixed, etc.). Default: `percentage`
+- `--percentage`: Percentage of the replay buffer that should be MPC trajectories. Default: `25`
+- `--num_traj`: Number of fixed MPC trajectories to inject each time. This results in decreasing % over time. Default: `10`
 - `--random_select`: Randomly select trajectories to inject. Default: `True`
 - `--data_dir`: Directory containing pre-generated MPC trajectories. Default: `data/cartpole_0_001dt/`
 

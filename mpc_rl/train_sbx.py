@@ -71,7 +71,7 @@ logging.set_verbosity(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.planner.mpc_planner import MPCPlanner
-from mpc_rl.sac_mpc.mpc_inject_callbacks import EpisodeMPCInjectCallback, AdaptiveMPCInjectCallback
+from mpc_rl.sac_mpc.mpc_inject_callbacks import FixedMPCInjectCallback, PercentMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 
 
@@ -139,6 +139,12 @@ _GAMMA = flags.DEFINE_float("gamma", 0.99, "Discount factor")
 _INJECT_N_TIMESTEPS = flags.DEFINE_integer(
     "inject_n_timesteps", 5000, "Inject MPC trajectories every N timesteps"
 )
+_INJECT_TYPE = flags.DEFINE_enum(
+    "inject_type", "percentage", ["percentage", "fixed"], "Type of injection of MPC trajectories"
+)
+_PERCENTAGE = flags.DEFINE_integer(
+    "percentage", 25, "Percentage of the replay buffer that should be MPC trajectories"
+)
 _NUM_TRAJ = flags.DEFINE_integer(
     "num_traj", 10, "Number of MPC trajectories to inject each time"
 )
@@ -170,6 +176,8 @@ class AllConfig:
     seed: int
     tensorboard_log: str
     inject_n_timesteps: int
+    inject_type: str
+    percentage: int
     num_traj: int
     random_select: bool
     data_dir: str
@@ -218,11 +226,20 @@ def make_dm_env(domain: str, task: str, render_mode=None):
     return gym_env
 
 
-def create_experiment_name(env_name: str, algorithm: str, suffix: str = None) -> str:
+def create_experiment_name(env_name: str, algorithm: str, suffix: str = None,
+                          inject_type: str = None, percentage: int = None) -> str:
     """Create unique experiment name with timestamp and algorithm."""
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y%m%d-%H%M%S")
     exp_name = f"{env_name}-{algorithm}-{timestamp}"
+    
+    # Add injection type for SAC-MPC
+    if algorithm == "SAC-MPC" and inject_type:
+        exp_name += f"-{inject_type}"
+        # Add percentage if using percentage-based injection
+        if inject_type == "percentage" and percentage is not None:
+            exp_name += f"-{percentage}pct"
+    
     if suffix:
         exp_name += f"-{suffix}"
     return exp_name
@@ -373,14 +390,24 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     
     # Add MPC injection callback if using SAC-MPC
     if cfg.algorithm == "SAC-MPC":
-        print("\nSetting up MPC Injection from pre-generated trajectories...")
-        inject_callback = EpisodeMPCInjectCallback(
-            inject_every_n_timesteps=cfg.inject_n_timesteps,
-            num_mpc_trajectories=cfg.num_traj,
-            data_dir=cfg.data_dir,
-            random_select=cfg.random_select,
-            verbose=1,
-        )
+        if _INJECT_TYPE.value == "fixed":
+            print("\nSetting up FIXED MPC Injection from pre-generated trajectories...")
+            inject_callback = FixedMPCInjectCallback(
+                inject_every_n_timesteps=cfg.inject_n_timesteps,
+                num_mpc_trajectories=cfg.num_traj,
+                data_dir=cfg.data_dir,
+                random_select=cfg.random_select,
+                verbose=1,
+            )
+        elif _INJECT_TYPE.value == "percentage":
+            print("\nSetting up PERCENTAGE MPC Injection from pre-generated trajectories...")
+            inject_callback = PercentMPCInjectCallback(
+                inject_every_n_timesteps=cfg.inject_n_timesteps,
+                target_percentage=cfg.percentage,
+                data_dir=cfg.data_dir,
+                random_select=cfg.random_select,
+                verbose=1,
+            )
         callbacks.append(inject_callback)
     
     return (callbacks if callbacks else None), eval_env
@@ -500,7 +527,13 @@ def main(argv):
         print(f"Loading from run: {run_name}")
     else:
         # Create new experiment
-        run_name = create_experiment_name(env_name, _ALGORITHM.value, _SUFFIX.value)
+        run_name = create_experiment_name(
+            env_name, 
+            _ALGORITHM.value, 
+            _SUFFIX.value,
+            inject_type=_INJECT_TYPE.value if _ALGORITHM.value == "SAC-MPC" else None,
+            percentage=_PERCENTAGE.value if _ALGORITHM.value == "SAC-MPC" else None
+        )
         logdir = Path(_LOGDIR.value) / run_name
         logdir.mkdir(parents=True, exist_ok=True)
         print(f"Created new run: {run_name}")
@@ -518,28 +551,38 @@ def main(argv):
     else:
         tensorboard_log_path = None
     
+    # Create configuration object (for both new and loaded runs)
+    config = AllConfig(
+        algorithm=_ALGORITHM.value,
+        learning_rate=_LEARNING_RATE.value,
+        buffer_size=_BUFFER_SIZE.value,
+        learning_starts=_LEARNING_STARTS.value,
+        batch_size=_BATCH_SIZE.value,
+        tau=_TAU.value,
+        gamma=_GAMMA.value,
+        seed=_SEED.value,
+        tensorboard_log=tensorboard_log_path,
+        inject_n_timesteps=_INJECT_N_TIMESTEPS.value,
+        inject_type=_INJECT_TYPE.value,
+        percentage=_PERCENTAGE.value,
+        num_traj=_NUM_TRAJ.value,
+        random_select=_RANDOM_SELECT.value,
+        data_dir=_DATA_DIR.value,
+    )
+    
     # Save configuration (only for new runs)
     if not _LOAD_RUN_NAME.value:
-        config = {
+        # Convert dataclass to dict and add environment info
+        from dataclasses import asdict
+        config_dict = asdict(config)
+        config_dict.update({
             "env_name": env_name,
             "domain": domain,
             "task": task,
-            "algorithm": _ALGORITHM.value,
             "total_timesteps": _TOTAL_TIMESTEPS.value,
             "num_envs": _NUM_ENVS.value,
-            "seed": _SEED.value,
-            "learning_rate": _LEARNING_RATE.value,
-            "buffer_size": _BUFFER_SIZE.value,
-            "learning_starts": _LEARNING_STARTS.value,
-            "batch_size": _BATCH_SIZE.value,
-            "tau": _TAU.value,
-            "gamma": _GAMMA.value,
-            "inject_n_timesteps": _INJECT_N_TIMESTEPS.value,
-            "num_traj": _NUM_TRAJ.value,
-            "random_select": _RANDOM_SELECT.value,
-            "data_dir": _DATA_DIR.value,
-        }
-        save_config(logdir, config)
+        })
+        save_config(logdir, config_dict)
     
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
@@ -577,21 +620,6 @@ def main(argv):
     else:
         # Create new model
         print(f"Creating new {_ALGORITHM.value} model...")
-        config = AllConfig(
-            algorithm=_ALGORITHM.value,
-            learning_rate=_LEARNING_RATE.value,
-            buffer_size=_BUFFER_SIZE.value,
-            learning_starts=_LEARNING_STARTS.value,
-            batch_size=_BATCH_SIZE.value,
-            tau=_TAU.value,
-            gamma=_GAMMA.value,
-            seed=_SEED.value,
-            tensorboard_log=tensorboard_log_path,
-            inject_n_timesteps=_INJECT_N_TIMESTEPS.value,
-            num_traj=_NUM_TRAJ.value,
-            random_select=_RANDOM_SELECT.value,
-            data_dir=_DATA_DIR.value,
-        )
         model = create_model(
             env=vec_env,
             cfg=config,
