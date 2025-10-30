@@ -91,6 +91,16 @@ python mpc_rl/train_sbx.py \
 # Train with a different algorithm (PPO or TD3)
 python mpc_rl/train_sbx.py --env_name=acrobot-swingup --algorithm=TD3
 
+# Train with SAC-MPC
+python mpc_rl/train_sbx.py \
+    --env_name=cartpole-swingup \
+    --algorithm=SAC-MPC \
+    --total_timesteps=500000 \
+    --inject_n_timesteps=5000 \
+    --num_traj=10 \
+    --random_select=True \
+    --data_dir=data/cartpole_0_001dt/
+
 # Add a custom suffix to the experiment name
 python mpc_rl/train_sbx.py --env_name=cartpole-swingup --suffix=experiment1
 ```
@@ -144,7 +154,7 @@ This will load the existing model and normalization statistics, then continue tr
 - `--task`: Task name (optional, parsed from env_name if not provided)
 
 ### Training Flags
-- `--algorithm`: RL algorithm to use (`SAC`, `PPO`, or `TD3`). Default: `SAC`
+- `--algorithm`: RL algorithm to use (`SAC`, `SAC-MPC`, `PPO`, or `TD3`). Default: `SAC`
 - `--total_timesteps`: Total number of training timesteps. Default: `100000`
 - `--num_envs`: Number of parallel environments for training. Default: `4`
 - `--seed`: Random seed for reproducibility. Default: `1`
@@ -158,6 +168,7 @@ This will load the existing model and normalization statistics, then continue tr
 ### Experiment Flags
 - `--suffix`: Custom suffix to append to the experiment name
 - `--logdir`: Base directory for storing logs and checkpoints. Default: `logs`
+- `--enable_logging`: Enables checkpoints, videos, and tensorboard logging for hyperparam optimization with optuna. Default: `True`
 
 ### Hyperparameter Flags (SAC/TD3)
 - `--learning_rate`: Learning rate. Default: `3e-4`
@@ -166,6 +177,14 @@ This will load the existing model and normalization statistics, then continue tr
 - `--batch_size`: Batch size for training. Default: `256`
 - `--tau`: Target network update rate. Default: `0.005`
 - `--gamma`: Discount factor. Default: `0.99`
+
+### MPC Injection Flags (SAC-MPC only)
+- `--inject_n_timesteps`: Inject MPC trajectories every N timesteps. Default: `5000`
+- `--inject_type`: Type of injection of MPC trajectories (percentage, fixed, etc.). Default: `percentage`
+- `--percentage`: Percentage of the replay buffer that should be MPC trajectories. Default: `25`
+- `--num_traj`: Number of fixed MPC trajectories to inject each time. This results in decreasing % over time. Default: `10`
+- `--random_select`: Randomly select trajectories to inject. Default: `True`
+- `--data_dir`: Directory containing pre-generated MPC trajectories. Default: `data/cartpole_0_001dt/`
 
 ### Checkpoint Flags
 - `--checkpoint_freq`: Save checkpoint every N steps. Default: `25000`

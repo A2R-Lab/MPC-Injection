@@ -17,7 +17,8 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from sbx.common.off_policy_algorithm import OffPolicyAlgorithmJax
 from sbx.common.type_aliases import ReplayBufferSamplesNp, RLTrainState
 from sbx.sac.policies import SACPolicy, SimbaSACPolicy
-# TODO: Make a local import for SAC_MPCPolicy
+# Relative import for SAC_MPCPolicy
+from .policies import SAC_MPCPolicy
 
 """
 NOTE: This file is derived from SBX's implementation of SAC. We are modifying it to be able to
@@ -187,6 +188,20 @@ class SAC_MPC(OffPolicyAlgorithmJax):
             # this will also throw an error for unexpected string
             self.target_entropy = float(self.target_entropy)
 
+    def _excluded_save_params(self) -> list[str]:
+        """
+        Returns the names of the parameters that should be excluded from being saved.
+        
+        We exclude the MPC injection callback and target percentage because:
+        1. Callbacks contain unpicklable objects (file handles, environments)
+        2. These are runtime-only attributes set by train_sbx.py
+        3. They need to be reconnected when loading the model
+        """
+        excluded = super()._excluded_save_params()
+        # Add our custom attributes that shouldn't be pickled
+        excluded.extend(["mpc_inject_callback", "target_mpc_percentage"])
+        return excluded
+
     def learn(
         self,
         total_timesteps: int,
@@ -207,6 +222,31 @@ class SAC_MPC(OffPolicyAlgorithmJax):
 
     def train(self, gradient_steps: int, batch_size: int) -> None:
         assert self.replay_buffer is not None
+        
+        # Check MPC percentage before sampling (if using TaggedReplayBuffer)
+        if hasattr(self.replay_buffer, 'get_mpc_percentage'):
+            actual_mpc_pct = self.replay_buffer.get_mpc_percentage()
+            
+            # Log actual percentage for monitoring
+            self.logger.record("replay_buffer/mpc_percentage_actual", actual_mpc_pct)
+            
+            # If we have a target percentage set and we're below it, inject more MPC data
+            if hasattr(self, 'target_mpc_percentage') and hasattr(self, 'mpc_inject_callback'):
+                # For 100% target, accept ≥99% if buffer is full (can't maintain exactly 100% with ongoing RL)
+                buffer_full = self.replay_buffer.size() >= self.replay_buffer.buffer_size
+                target_reached = (
+                    actual_mpc_pct >= self.target_mpc_percentage or
+                    (self.target_mpc_percentage >= 100 and actual_mpc_pct >= 99.0 and buffer_full)
+                )
+                
+                if not target_reached:
+                    if self.verbose > 0:
+                        print(f"\n[Train Update {self._n_updates}] MPC percentage low: {actual_mpc_pct:.2f}% < {self.target_mpc_percentage}%")
+                        print(f"Injecting MPC trajectories before sampling...")
+                    
+                    # Call the injection method from the callback
+                    self.mpc_inject_callback._inject_mpc_trajectories()
+        
         # Sample all at once for efficiency (so we can jit the for loop)
         data = self.replay_buffer.sample(batch_size * gradient_steps, env=self._vec_normalize_env)
 

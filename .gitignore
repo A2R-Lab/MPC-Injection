@@ -211,3 +211,10 @@ logs/
 
 # Ignore MuJoCo logs
 MUJOCO_LOG.TXT
+
+# Ignore saved compressed numpy arrays
+*.npz
+*.zip
+
+# Ignore bash script for running multiple experiments
+# run_experiments.sh

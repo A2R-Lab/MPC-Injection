@@ -5,6 +5,7 @@ dependencies:
   - python=3.11
   - pip
   - git
+  - ffmpeg
   - pip:
       # dev indexes first so mujoco/mjx/warp dev wheels resolve
       # - --extra-index-url https://py.mujoco.org
