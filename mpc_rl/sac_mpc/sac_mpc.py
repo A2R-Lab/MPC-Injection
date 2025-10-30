@@ -208,6 +208,24 @@ class SAC_MPC(OffPolicyAlgorithmJax):
 
     def train(self, gradient_steps: int, batch_size: int) -> None:
         assert self.replay_buffer is not None
+        
+        # Check MPC percentage before sampling (if using TaggedReplayBuffer)
+        if hasattr(self.replay_buffer, 'get_mpc_percentage'):
+            actual_mpc_pct = self.replay_buffer.get_mpc_percentage()
+            
+            # Log actual percentage for monitoring
+            self.logger.record("replay_buffer/mpc_percentage_actual", actual_mpc_pct)
+            
+            # If we have a target percentage set and we're below it, inject more MPC data
+            if hasattr(self, 'target_mpc_percentage') and hasattr(self, 'mpc_inject_callback'):
+                if actual_mpc_pct < self.target_mpc_percentage:
+                    if self.verbose > 0:
+                        print(f"\n[Train Update {self._n_updates}] MPC percentage low: {actual_mpc_pct:.2f}% < {self.target_mpc_percentage}%")
+                        print(f"Injecting MPC trajectories before sampling...")
+                    
+                    # Call the injection method from the callback
+                    self.mpc_inject_callback._inject_mpc_trajectories()
+        
         # Sample all at once for efficiency (so we can jit the for loop)
         data = self.replay_buffer.sample(batch_size * gradient_steps, env=self._vec_normalize_env)
 

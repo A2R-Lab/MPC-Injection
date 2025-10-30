@@ -22,11 +22,11 @@ def generate_filename(qpos, qvel, rollout_horizon):
 
 
 def generate_trajectories(
-    qpos0_range=(-1.0, 1.0),
-    qpos1_range=None,  # Will default to (pi-1, pi+1)
-    qvel0_range=(-1.0, 1.0),
-    qvel1_range=(-1.0, 1.0),
-    interval=0.10,
+    qpos0_range=(-0.02, 0.02),  # dm_control: 0.01 * randn() ≈ ±0.02
+    qpos1_range=None,  # Will default to (pi-0.02, pi+0.02) for swingup
+    qvel0_range=(-0.02, 0.02),  # dm_control: 0.01 * randn() ≈ ±0.02
+    qvel1_range=(-0.02, 0.02),  # dm_control: 0.01 * randn() ≈ ±0.02
+    interval=0.01,  # Finer interval for small range
     rollout_horizon=10000,
     opt_steps=10,
     weights=None,
@@ -39,9 +39,14 @@ def generate_trajectories(
     """
     Generate trajectories by scanning over initial states.
     
+    Defaults match dm_control cartpole swingup initialization:
+    - Cart position: 0.01 * randn() ≈ ±0.02 range
+    - Pole angle: π + 0.01 * randn() ≈ π ± 0.02 (pointing down)
+    - Velocities: 0.01 * randn() ≈ ±0.02 range
+    
     Args:
         qpos0_range: Tuple (min, max) for qpos[0] (cart position)
-        qpos1_range: Tuple (min, max) for qpos[1] (pole angle), defaults to (pi-1, pi+1)
+        qpos1_range: Tuple (min, max) for qpos[1] (pole angle), defaults to (pi-0.02, pi+0.02)
         qvel0_range: Tuple (min, max) for qvel[0] (cart velocity)
         qvel1_range: Tuple (min, max) for qvel[1] (pole velocity)
         interval: Step size for scanning over the ranges
@@ -52,9 +57,9 @@ def generate_trajectories(
         output_dir: Directory to save trajectories (defaults to ../../data/)
         verbose: Verbosity level (0=quiet, 1=progress, 2=detailed)
     """
-    # Set defaults
+    # Set defaults to match dm_control cartpole swingup initialization
     if qpos1_range is None:
-        qpos1_range = (np.pi - 1.0, np.pi + 1.0)
+        qpos1_range = (np.pi - 0.02, np.pi + 0.02)
     
     if weights is None:
         weights = {
@@ -183,8 +188,8 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Generate MPC trajectories with various initial conditions")
-    parser.add_argument("--interval", type=float, default=0.10, 
-                        help="Step size for scanning state space (default: 0.10)")
+    parser.add_argument("--interval", type=float, default=0.01, 
+                        help="Step size for scanning state space (default: 0.01)")
     parser.add_argument("--rollout-horizon", type=int, default=10000,
                         help="Trajectory length (default: 10000)")
     parser.add_argument("--opt-steps", type=int, default=10,
@@ -205,10 +210,10 @@ def main():
         parser.error("--partition-idx and --num-partitions must be used together")
     
     generate_trajectories(
-        qpos0_range=(-1.0, 1.0),
-        qpos1_range=(np.pi - 1.0, np.pi + 1.0),
-        qvel0_range=(-1.0, 1.0),
-        qvel1_range=(-1.0, 1.0),
+        qpos0_range=(-0.02, 0.02),
+        qpos1_range=(np.pi - 0.02, np.pi + 0.02),
+        qvel0_range=(-0.02, 0.02),
+        qvel1_range=(-0.02, 0.02),
         interval=args.interval,
         rollout_horizon=args.rollout_horizon,
         opt_steps=args.opt_steps,
@@ -223,21 +228,30 @@ if __name__ == "__main__":
     """
     How to Run:
 
-    Running in Parallel - Examples Split into 4 partitions (4 terminals)
+    Basic usage (generates trajectories matching dm_control cartpole swingup initialization):
+    python mpc_rl/planner/gen_traj_data.py
+
+    With custom interval:
+    python mpc_rl/planner/gen_traj_data.py --interval 0.01
+
+    Running in Parallel - Examples Split into 4 partitions (4 terminals):
+    
     Terminal 1:
-    python mpc_rl/planner/gen_traj_data.py --interval 0.5 --partition-idx 0 --num-partitions 4
+    python mpc_rl/planner/gen_traj_data.py --partition-idx 0 --num-partitions 4
 
     Terminal 2:
-    python mpc_rl/planner/gen_traj_data.py --interval 0.5 --partition-idx 0 --num-partitions 4
+    python mpc_rl/planner/gen_traj_data.py --partition-idx 1 --num-partitions 4
     
     Terminal 3:
-    python mpc_rl/planner/gen_traj_data.py --interval 0.5 --partition-idx 0 --num-partitions 4
+    python mpc_rl/planner/gen_traj_data.py --partition-idx 2 --num-partitions 4
 
     Terminal 4:
-    python mpc_rl/planner/gen_traj_data.py --interval 0.5 --partition-idx 0 --num-partitions 4
+    python mpc_rl/planner/gen_traj_data.py --partition-idx 3 --num-partitions 4
 
-    Each terminal will process ~156 trajectories (625 ÷ 4) in parallel.
-
-    NOTE: 
+    NOTE: Default ranges now match dm_control cartpole swingup initialization:
+    - Cart position: ±0.02 (0.01 * randn())
+    - Pole angle: π ± 0.02 (π + 0.01 * randn())
+    - Velocities: ±0.02 each (0.01 * randn())
+    - Interval: 0.01 (finer granularity for small ranges)
     """
     main()

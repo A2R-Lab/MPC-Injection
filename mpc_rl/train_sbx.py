@@ -73,6 +73,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from mpc_rl.planner.mpc_planner import MPCPlanner
 from mpc_rl.sac_mpc.mpc_inject_callbacks import FixedMPCInjectCallback, PercentMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
+from mpc_rl.sac_mpc.tagged_replay_buffer import TaggedReplayBuffer
 
 
 # Environment flags
@@ -294,6 +295,7 @@ def create_model(env, cfg):
             batch_size=cfg.batch_size,
             tau=cfg.tau,
             gamma=cfg.gamma,
+            replay_buffer_class=TaggedReplayBuffer,  # Use custom tagged replay buffer
             verbose=1,
             seed=cfg.seed,
             tensorboard_log=cfg.tensorboard_log,
@@ -343,11 +345,12 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         eval_freq: Frequency to run evaluation
     
     Returns:
-        Tuple of (callbacks list, eval_env or None)
+        Tuple of (callbacks list, eval_env or None, inject_callback or None)
         eval_env is returned so it can be closed after training
     """
     callbacks = []
     eval_env = None
+    inject_callback = None  # Initialize to None for non-SAC-MPC algorithms
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
@@ -402,15 +405,17 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         elif _INJECT_TYPE.value == "percentage":
             print("\nSetting up PERCENTAGE MPC Injection from pre-generated trajectories...")
             inject_callback = PercentMPCInjectCallback(
-                inject_every_n_timesteps=cfg.inject_n_timesteps,
                 target_percentage=cfg.percentage,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
                 verbose=1,
             )
         callbacks.append(inject_callback)
+        
+        # Store reference to callback in list so model can access it later
+        return (callbacks if callbacks else None), eval_env, inject_callback if cfg.algorithm == "SAC-MPC" else None
     
-    return (callbacks if callbacks else None), eval_env
+    return (callbacks if callbacks else None), eval_env, None
 
 
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
@@ -630,7 +635,7 @@ def main(argv):
         print(f"\nStarting training for {_TOTAL_TIMESTEPS.value} timesteps...")
         
         # Create callbacks using factory function
-        callbacks, eval_env = create_callbacks(
+        callbacks, eval_env, mpc_inject_callback = create_callbacks(
             cfg=config,
             enable_logging=_ENABLE_LOGGING.value,
             logdir=logdir,
@@ -640,6 +645,12 @@ def main(argv):
             checkpoint_freq=_CHECKPOINT_FREQ.value,
             eval_freq=_EVAL_FREQ.value,
         )
+        
+        # If using SAC-MPC with percentage injection, connect the callback to the model
+        if _ALGORITHM.value == "SAC-MPC" and _INJECT_TYPE.value == "percentage" and mpc_inject_callback is not None:
+            model.target_mpc_percentage = config.percentage
+            model.mpc_inject_callback = mpc_inject_callback
+            print(f"Connected MPC injection callback to SAC_MPC (target: {config.percentage}%)")
         
         # Train the model
         # When resuming, reset_num_timesteps=False continues from loaded timestep count
