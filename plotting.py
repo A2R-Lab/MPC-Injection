@@ -114,8 +114,15 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
     # Sort by percentage for consistent ordering
     percentages = sorted(data_dict.keys())
     
-    # Use a colormap for better visualization
-    cmap = plt.cm.viridis
+    # Use a colormap with more distinct colors
+    # tab20 provides 20 distinct colors, good for multiple lines
+    if len(percentages) <= 10:
+        cmap = plt.cm.tab10
+    elif len(percentages) <= 20:
+        cmap = plt.cm.tab20
+    else:
+        cmap = plt.cm.hsv
+    
     colors = [cmap(i / len(percentages)) for i in range(len(percentages))]
     
     for idx, percentage in enumerate(percentages):
@@ -123,8 +130,8 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
         plt.plot(data['steps'], data['values'], 
                 label=f'{percentage}pct',
                 color=colors[idx],
-                linewidth=1.5,
-                alpha=0.8)
+                linewidth=2.0,
+                alpha=0.9)
     
     plt.xlabel('Training Steps', fontsize=12)
     plt.ylabel('Episode Reward Mean', fontsize=12)
@@ -145,7 +152,11 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
 def main():
     """Main function to run the plotting script."""
     # Base directory containing all experiment runs
-    base_dir = 'logs/1st_run'
+    #base_dir = 'logs/1st_run'
+    #base_dir = 'logs/2nd_run'
+    #base_dir = 'logs/3rd_run'
+    #base_dir = 'logs/4th_run'
+    base_dir = 'logs/5th_run'
     
     # Convert to absolute path if relative
     if not os.path.isabs(base_dir):
@@ -162,7 +173,7 @@ def main():
     # percentages_to_plot = None
     
     # Option 2: Plot specific percentages (uncomment and modify as needed)
-    percentages_to_plot = [0, 25, 50, 75, 100]
+    percentages_to_plot = [0, 25, 50, 75]#, 100]
     # percentages_to_plot = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     # percentages_to_plot = [0, 50, 100]
     

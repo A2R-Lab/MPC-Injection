@@ -400,6 +400,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 num_mpc_trajectories=cfg.num_traj,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
+                seed=seed,  # Pass seed for reproducible trajectory selection
                 verbose=1,
             )
         elif _INJECT_TYPE.value == "percentage":
@@ -408,6 +409,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 target_percentage=cfg.percentage,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
+                seed=seed,  # Pass seed for reproducible trajectory selection
                 verbose=1,
             )
         callbacks.append(inject_callback)

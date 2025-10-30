@@ -27,6 +27,7 @@ class FixedMPCInjectCallback(BaseCallback):
         data_dir: str=None,                   # Path to directory with saved trajectories
         random_select: bool=True,             # If True, randomly select trajectories from data_dir
         trajectory_files: list=None,          # List of specific filenames to load (used when random_select=False)
+        seed: int=None,                       # Random seed for trajectory selection (for reproducibility)
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
@@ -42,6 +43,11 @@ class FixedMPCInjectCallback(BaseCallback):
         self.random_select = random_select
         self.trajectory_files = trajectory_files if trajectory_files is not None else []
         self.trajectory_file_idx = 0  # For cycling through specified files
+        
+        # Seed the random number generator for reproducible trajectory selection
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
         
         # If data_dir is provided, we'll load trajectories from files
         if data_dir is not None:
@@ -67,6 +73,8 @@ class FixedMPCInjectCallback(BaseCallback):
             print(f"  Random selection: {random_select}")
         else:
             print(f"  Generating trajectories with MPC planner")
+        if seed is not None:
+            print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}\n")
     
     def _select_trajectory_file(self):
@@ -316,6 +324,7 @@ class PercentMPCInjectCallback(BaseCallback):
         data_dir: str=None,                   # Path to directory with saved trajectories
         random_select: bool=True,             # If True, randomly select trajectories from data_dir
         trajectory_files: list=None,          # List of specific filenames to load (used when random_select=False)
+        seed: int=None,                       # Random seed for trajectory selection (for reproducibility)
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
@@ -327,6 +336,11 @@ class PercentMPCInjectCallback(BaseCallback):
         self.random_select = random_select
         self.trajectory_files = trajectory_files if trajectory_files is not None else []
         self.trajectory_file_idx = 0  # For cycling through specified files
+        
+        # Seed the random number generator for reproducible trajectory selection
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
         
         # If data_dir is provided, we'll load trajectories from files
         if data_dir is not None:
@@ -349,6 +363,8 @@ class PercentMPCInjectCallback(BaseCallback):
         if data_dir:
             print(f"  Loading from: {data_dir}")
             print(f"  Random selection: {random_select}")
+        if seed is not None:
+            print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}")
         print(f"  Note: Injection triggered by SAC_MPC when MPC% falls below target\n")
     
@@ -400,22 +416,23 @@ class PercentMPCInjectCallback(BaseCallback):
         """
         Load or generate and inject MPC trajectories into replay buffer to maintain target percentage.
         
-        NOTE: LIMITATION:
-        This method injects trajectories until approximately the target percentage is reached.
-        However, it cannot maintain an exact percentage over time because:
-        1. The replay buffer evicts old transitions when full (FIFO)
-        2. We cannot track which evicted transitions were MPC vs RL
-        3. Therefore, the actual MPC percentage will fluctuate over time
+        This method uses TaggedReplayBuffer to accurately track MPC vs RL transitions and injects
+        trajectories one at a time until the target percentage is reached. To avoid overshooting,
+        it employs a predictive stopping mechanism:
         
-        This callback is best used when the buffer is not yet full, or when you want to
-        periodically "top up" the MPC data to approximately the target percentage.
+        - Checks actual MPC% from TaggedReplayBuffer before each injection
+        - Estimates what the MPC% would be after adding one more trajectory (~1000 steps)
+        - Stops if already at target OR if next injection would overshoot by >3% (Hard-coded)
+        
+        This ensures the MPC percentage stays close to the target (typically within 1-3%) while
+        preventing significant overshooting that would occur from blindly adding full trajectories.
         
         For each trajectory:
         1. Load from file OR run MPC planner to generate optimal control sequence
         2. Extract downsampled controls (to match RL action timestep)
         3. Step through environment using MPC actions to get real rewards
-        4. Add transitions to replay buffer
-        5. Check if approximate target percentage is reached
+        4. Add transitions to replay buffer with source=1 (MPC tag)
+        5. Check if target percentage is reached or if next injection would overshoot
         
         Note: We create a temporary environment for MPC trajectory generation
         to avoid modifying the training environment's state.
@@ -438,63 +455,109 @@ class PercentMPCInjectCallback(BaseCallback):
         # Get initial buffer state
         initial_buffer_size = self.model.replay_buffer.size()
         
-        # Keep injecting trajectories until we estimate the target percentage is reached
-        # We use a simple heuristic: transitions_just_added / (buffer_size + transitions_just_added)
+        # Keep injecting trajectories until target percentage is reached
+        # Use TaggedReplayBuffer's accurate get_mpc_percentage() instead of estimation
         while True:
+            # Handle edge cases first
+            if self.target_percentage == 0:
+                # 0% target means don't inject anything
+                if self.verbose > 0:
+                    print(f"  Target percentage is 0%, skipping injection")
+                    print(f"{'='*60}\n")
+                break
+            
+            # Check actual MPC percentage from TaggedReplayBuffer BEFORE injection
+            if hasattr(self.model.replay_buffer, 'get_mpc_percentage'):
+                actual_mpc_pct = self.model.replay_buffer.get_mpc_percentage()
+            else:
+                # Fallback: can't determine percentage without TaggedReplayBuffer
+                print("Warning: Cannot determine MPC percentage without TaggedReplayBuffer")
+                break
+            
             buffer_size = self.model.replay_buffer.size()
             
-            # Calculate approximate current MPC percentage based on this injection session
-            # This is an approximation because we don't know how much MPC data was already in buffer
-            if buffer_size == 0:
-                current_percentage = 0
-                if self.verbose > 1:
-                    print(f"  Buffer is empty, injecting first trajectory")
-            else:
-                # Handle edge cases
-                if self.target_percentage == 0:
-                    # 0% target means don't inject anything
+            if self.target_percentage >= 100:
+                # 100% target means fill the entire buffer with MPC
+                buffer_capacity = self.model.replay_buffer.buffer_size
+                
+                # If buffer is full and we're close to 100% (>99%), accept it
+                # We can't maintain exactly 100% because RL transitions keep coming and evict MPC
+                if buffer_size >= buffer_capacity and actual_mpc_pct >= 99.0:
                     if self.verbose > 0:
-                        print(f"  Target percentage is 0%, skipping injection")
-                        print(f"  Buffer size: {buffer_size}")
+                        print(f"  Target reached (buffer full): {actual_mpc_pct:.2f}% MPC")
+                        print(f"  Cannot maintain exactly 100% with full buffer and ongoing RL collection")
+                        print(f"  Injected {num_trajectories_added} trajectories this session")
+                        print(f"  Transitions added: {total_transitions_added}")
+                        print(f"  Buffer size: {buffer_size}/{buffer_capacity}")
                         print(f"{'='*60}\n")
                     break
-                elif self.target_percentage >= 100:
-                    # 100% target means fill the entire buffer with MPC
-                    # Continue injecting until buffer is full
-                    buffer_capacity = self.model.replay_buffer.buffer_size
-                    if buffer_size >= buffer_capacity:
+                
+                # If buffer not full yet, keep injecting until full or 100%
+                if buffer_size < buffer_capacity and actual_mpc_pct >= 100:
+                    if self.verbose > 0:
+                        print(f"  Target reached: {actual_mpc_pct:.2f}% MPC")
+                        print(f"  Injected {num_trajectories_added} trajectories this session")
+                        print(f"  Transitions added: {total_transitions_added}")
+                        print(f"  Buffer size: {buffer_size}/{buffer_capacity}")
+                        print(f"{'='*60}\n")
+                    break
+            else:
+                # Normal case: 0% < target < 100%
+                # Check if we've already reached or exceeded target
+                # Use a small tolerance to avoid overshooting with large trajectories
+                # Since each trajectory is ~1000 steps, we might overshoot by adding one more
+                # So we stop if we're within 1% of target OR if we would overshoot significantly
+                
+                # Calculate what percentage we'd have after adding ~1000 more transitions
+                # (rough estimate to decide if we should inject another trajectory)
+                if buffer_size > 0:
+                    # Get current composition from TaggedReplayBuffer
+                    stats = self.model.replay_buffer.get_composition_stats()
+                    current_mpc_count = stats["mpc_transitions"]
+                    current_total = stats["total_transitions"]
+                    
+                    # Estimate after adding 1 more trajectory (~1000 transitions)
+                    # Note: 1 trajectory = 1000 MPC steps, each added once to buffer
+                    estimated_new_mpc = current_mpc_count + 1000
+                    estimated_new_total = current_total + 1000
+                    estimated_new_pct = (estimated_new_mpc / estimated_new_total) * 100.0
+                    
+                    # Stop if we're already at target OR if adding one more would overshoot significantly
+                    if actual_mpc_pct >= self.target_percentage:
                         if self.verbose > 0:
-                            print(f"  Target percentage is {self.target_percentage}%, buffer is full")
+                            print(f"  Target reached: {actual_mpc_pct:.2f}% >= {self.target_percentage}%")
                             print(f"  Injected {num_trajectories_added} trajectories this session")
                             print(f"  Transitions added: {total_transitions_added}")
-                            print(f"  Buffer size: {buffer_size}/{buffer_capacity}")
-                            print(f"{'='*60}\n")
-                        break
-                    # Otherwise, keep injecting (will fill buffer with MPC)
-                else:
-                    # Normal case: 0% < target < 100%
-                    # Estimate: assume we're starting from 0% MPC and injecting to target
-                    # This gives us: target% = added / (initial + added)
-                    # Solve for how much to add: added = initial * target / (100 - target)
-                    target_transitions = int((initial_buffer_size * self.target_percentage) / (100 - self.target_percentage))
-                    
-                    if self.verbose > 1:
-                        print(f"  Initial buffer size: {initial_buffer_size}")
-                        print(f"  Current buffer size: {buffer_size}")
-                        print(f"  Transitions added so far: {total_transitions_added}")
-                        print(f"  Target transitions to add: {target_transitions}")
-                        print(f"  Target MPC percentage: {self.target_percentage}%")
-                    
-                    # Check if we've added enough
-                    if total_transitions_added >= target_transitions:
-                        estimated_percentage = int((total_transitions_added * 100) / buffer_size)
-                        if self.verbose > 0:
-                            print(f"  Target reached: added {total_transitions_added} transitions")
-                            print(f"  Estimated MPC percentage: ~{estimated_percentage}%")
-                            print(f"  Injected {num_trajectories_added} trajectories this session")
                             print(f"  Buffer size: {buffer_size}")
                             print(f"{'='*60}\n")
                         break
+                    
+                    # Stop if adding one more trajectory would overshoot by too much (>3%)
+                    if estimated_new_pct > self.target_percentage + 3.0:
+                        if self.verbose > 0:
+                            print(f"  Stopping to avoid overshoot:")
+                            print(f"    Current: {actual_mpc_pct:.2f}%")
+                            print(f"    Target: {self.target_percentage}%")
+                            print(f"    Estimated after +1 traj: {estimated_new_pct:.2f}%")
+                            print(f"  Injected {num_trajectories_added} trajectories this session")
+                            print(f"  Transitions added: {total_transitions_added}")
+                            print(f"  Buffer size: {buffer_size}")
+                            print(f"{'='*60}\n")
+                        break
+                else:
+                    # Empty buffer, inject at least one trajectory
+                    if actual_mpc_pct >= self.target_percentage:
+                        if self.verbose > 0:
+                            print(f"  Target reached: {actual_mpc_pct:.2f}% >= {self.target_percentage}%")
+                            print(f"  Injected {num_trajectories_added} trajectories this session")
+                            print(f"  Transitions added: {total_transitions_added}")
+                            print(f"  Buffer size: {buffer_size}")
+                            print(f"{'='*60}\n")
+                        break
+                
+                if self.verbose > 1:
+                    print(f"  Current MPC%: {actual_mpc_pct:.2f}% < Target: {self.target_percentage}%")
+                    print(f"  Need to inject more trajectories...")
             
             # Inject one trajectory
             if self.verbose > 1:
@@ -603,6 +666,21 @@ class PercentMPCInjectCallback(BaseCallback):
             if self.verbose > 2:
                 print(f"    Added {steps_added_this_traj} transitions from this trajectory")
                 print(f"    Total added this session: {total_transitions_added}")
+            
+            # Check if we've reached target AFTER adding this trajectory
+            # This prevents continuing the loop and adding another trajectory when we've already hit target
+            if hasattr(self.model.replay_buffer, 'get_mpc_percentage'):
+                actual_mpc_pct_after = self.model.replay_buffer.get_mpc_percentage()
+                
+                # Stop if we've now reached or exceeded the target
+                if actual_mpc_pct_after >= self.target_percentage:
+                    if self.verbose > 0:
+                        print(f"  Target reached after injection: {actual_mpc_pct_after:.2f}% >= {self.target_percentage}%")
+                        print(f"  Injected {num_trajectories_added} trajectories this session")
+                        print(f"  Transitions added: {total_transitions_added}")
+                        print(f"  Buffer size: {self.model.replay_buffer.size()}")
+                        print(f"{'='*60}\n")
+                    break
         
         # Close temporary environment
         temp_env.close()
