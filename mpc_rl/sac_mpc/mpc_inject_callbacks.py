@@ -1,4 +1,3 @@
-import random
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 from dm_control import suite
@@ -44,9 +43,11 @@ class FixedMPCInjectCallback(BaseCallback):
         self.trajectory_files = trajectory_files if trajectory_files is not None else []
         self.trajectory_file_idx = 0  # For cycling through specified files
         
+        # Store seed for reproducibility
+        self.seed = seed
+        
         # Seed the random number generator for reproducible trajectory selection
         if seed is not None:
-            random.seed(seed)
             np.random.seed(seed)
         
         # If data_dir is provided, we'll load trajectories from files
@@ -87,7 +88,7 @@ class FixedMPCInjectCallback(BaseCallback):
         
         if self.random_select:
             # Randomly select from available files
-            selected_file = random.choice(self.available_files)
+            selected_file = np.random.choice(self.available_files)
             if self.verbose > 1:
                 print(f"    Randomly selected: {selected_file.name}")
         else:
@@ -151,6 +152,10 @@ class FixedMPCInjectCallback(BaseCallback):
         dm_env = suite.load(domain_name="cartpole", task_name="swingup")
         temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
         temp_env = FlattenObservation(temp_env)
+        
+        # Seed the temporary environment for reproducibility
+        if self.seed is not None:
+            temp_env.reset(seed=self.seed)
         
         # Track actual transitions added in this injection
         total_transitions_added = 0
@@ -337,9 +342,11 @@ class PercentMPCInjectCallback(BaseCallback):
         self.trajectory_files = trajectory_files if trajectory_files is not None else []
         self.trajectory_file_idx = 0  # For cycling through specified files
         
+        # Store seed for reproducibility
+        self.seed = seed
+        
         # Seed the random number generator for reproducible trajectory selection
         if seed is not None:
-            random.seed(seed)
             np.random.seed(seed)
         
         # If data_dir is provided, we'll load trajectories from files
@@ -378,7 +385,7 @@ class PercentMPCInjectCallback(BaseCallback):
         
         if self.random_select:
             # Randomly select from available files
-            selected_file = random.choice(self.available_files)
+            selected_file = np.random.choice(self.available_files)
             if self.verbose > 1:
                 print(f"    Randomly selected: {selected_file.name}")
         else:
@@ -447,6 +454,10 @@ class PercentMPCInjectCallback(BaseCallback):
         dm_env = suite.load(domain_name="cartpole", task_name="swingup")
         temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
         temp_env = FlattenObservation(temp_env)
+        
+        # Seed the temporary environment for reproducibility
+        if self.seed is not None:
+            temp_env.reset(seed=self.seed)
         
         # Track transitions added in this injection session
         total_transitions_added = 0

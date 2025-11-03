@@ -50,6 +50,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 import numpy as np
 import mediapy as media
+import jax
 
 # Import JAX and verify backend
 import jax
@@ -370,7 +371,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         eval_env = make_vec_env(
             lambda: make_dm_env(domain, task),
             n_envs=1,
-            seed=seed + 1000,
+            seed=seed+1000,
         )
         eval_env = VecNormalize(
             eval_env,
@@ -378,6 +379,10 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             norm_obs=True,
             norm_reward=True,
         )
+        # Reseed after VecNormalize wrapping
+        #eval_env.seed(seed + 1000)
+        #eval_env.action_space.seed(seed + 1000)
+        #eval_env.observation_space.seed(seed + 1000)
         
         # Create callback for evaluating the trained model
         eval_callback = EvalCallback(
@@ -409,6 +414,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 target_percentage=cfg.percentage,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
+                #trajectory_files=['qpos_[0.01,3.15]_qvel_[0.01,-0.02]_rh_10000.npz'],
                 seed=seed,  # Pass seed for reproducible trajectory selection
                 verbose=1,
             )
@@ -421,7 +427,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
 
 
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
-                        num_videos: int, video_dir: Path, normalize_env=None):
+                        num_videos: int, video_dir: Path, normalize_env=None, seed: int = None):
     """
     Evaluate model and record videos.
     
@@ -433,6 +439,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         num_videos: Number of videos to record
         video_dir: Directory to save videos
         normalize_env: VecNormalize wrapper for observation normalization
+        seed: Random seed for reproducible evaluation (uses seed+2000+episode for each episode)
     """
     video_dir.mkdir(parents=True, exist_ok=True)
     
@@ -445,6 +452,12 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         # Wrap in VecEnv for compatibility with model
         eval_env = DummyVecEnv([lambda: eval_env_base])
+        
+        # Seed the environment for reproducibility (different seed per episode)
+        if seed is not None:
+            eval_env.seed(seed + 2000 + episode)
+            eval_env.action_space.seed(seed + 2000 + episode)
+            eval_env.observation_space.seed(seed + 2000 + episode)
         
         # Apply normalization if available
         if normalize_env is not None:
@@ -510,6 +523,21 @@ def main(argv):
     Main training and evaluation function.
     """
     del argv # Not used since we're using absl for flags
+    
+    # ==================== SEED EVERYTHING FOR REPRODUCIBILITY ====================   
+    # 1. NumPy's random number generator (used by callbacks and various operations)
+    np.random.seed(_SEED.value)
+    
+    # 2. Python hash randomization (affects dict/set ordering)
+    os.environ['PYTHONHASHSEED'] = str(_SEED.value)
+    
+    # 3. JAX deterministic operations (crucial for GPU reproducibility)
+    os.environ['XLA_FLAGS'] = '--xla_gpu_deterministic_ops=true'
+    
+    print(f"=" * 60)
+    print(f"SEEDING: All random number generators set to seed={_SEED.value}")
+    print(f"=" * 60)
+    # ============================================================================
     
     # Parse environment name
     if _DOMAIN.value and _TASK.value:
@@ -603,6 +631,11 @@ def main(argv):
     # stable learning in continuous control (prevents different-scale features from dominating)
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True)
     
+    # Reseed after VecNormalize wrapping to ensure deterministic environment behavior
+    #vec_env.seed(_SEED.value)
+    #vec_env.action_space.seed(_SEED.value)
+    #vec_env.observation_space.seed(_SEED.value)
+    
     # Path for the final model and normalization stats
     model_path = logdir / "final_model"
     vec_normalize_path = logdir / "vec_normalize.pkl"
@@ -693,6 +726,7 @@ def main(argv):
             num_videos=_NUM_VIDEOS.value,
             video_dir=video_dir,
             normalize_env=vec_normalize_path if vec_normalize_path.exists() else None,
+            seed=_SEED.value,  # Pass seed for reproducible evaluation
         )
     
     vec_env.close()

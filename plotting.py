@@ -156,7 +156,8 @@ def main():
     #base_dir = 'logs/2nd_run'
     #base_dir = 'logs/3rd_run'
     #base_dir = 'logs/4th_run'
-    base_dir = 'logs/5th_run'
+    #base_dir = 'logs/5th_run'
+    base_dir = 'logs/0pct_inj_reproducibility'
     
     # Convert to absolute path if relative
     if not os.path.isabs(base_dir):
@@ -173,7 +174,7 @@ def main():
     # percentages_to_plot = None
     
     # Option 2: Plot specific percentages (uncomment and modify as needed)
-    percentages_to_plot = [0, 25, 50, 75]#, 100]
+    percentages_to_plot = [0, 25, 50, 75, 100]
     # percentages_to_plot = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     # percentages_to_plot = [0, 50, 100]
     
