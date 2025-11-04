@@ -53,10 +53,10 @@ class MPCPlanner():
         # - Set task parameters (e.g. goal position)
         self.agent = agent_lib.Agent(task_id=self.task_id, model=self.model)
         
-        if self.task_id == "Cartpole":
-            # Default weights and parameters for cartpole
+        # Set cost weights and task parameters for any task
+        if weights:
             self.agent.set_cost_weights(weights)
-            # Default goal parameters for cartpole
+        if task_params:
             self.agent.set_task_parameters(task_params)
         
         self.rollout_horizon = rollout_horizon
