@@ -10,7 +10,7 @@
     <!-- agent_planner: 0=Sampling, 1=Gradient, 2=iLQG, 3=iLQS, 4=Robust Sampling, 5=Cross Entropy, 6=Sample Gradient -->
     <numeric name="agent_planner" data="2" />
     <numeric name="agent_horizon" data="0.8" />
-    <numeric name="agent_timestep" data="0.01" />
+    <numeric name="agent_timestep" data="0.025" />
     <numeric name="sampling_spline_points" data="3" />
     <numeric name="sampling_exploration" data="0.5" />
     <numeric name="gradient_spline_points" data="5" />

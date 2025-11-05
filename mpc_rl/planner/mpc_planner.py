@@ -15,14 +15,11 @@ class MPCPlanner():
                  task_id="Cartpole",
                  rollout_horizon=10000,
                  opt_steps=10,
-                 weights: dict[str, float] = {"Vertical": 10.0,
-                                              "Centered": 10.0,
-                                              "Velocity": 0.1,
-                                              "Control": 0.1},
-                 task_params: dict[str, float] = {"Goal": 0.0},
+                 weights: dict[str, float] = {},
+                 task_params: dict[str, float] = {},
                  init_state_noise_flag=False,
-                 qpos_noise_rnge=(-0.02, 0.02),
-                 qvel_noise_rnge=(-0.02, 0.02),
+                 qpos_noise_rnge=(),
+                 qvel_noise_rnge=(),
                  verbose: int=0
         ) -> None:
         """
@@ -65,6 +62,12 @@ class MPCPlanner():
         self.qpos_noise_rnge = qpos_noise_rnge
         self.qvel_noise_rnge = qvel_noise_rnge
 
+        # Calculate agent timestep ratio (how many physics steps per agent update)
+        # This is needed to properly record controls at agent timestep intervals
+        self.physics_timestep = self.model.opt.timestep
+        self.agent_timestep = self._get_agent_timestep_from_model()
+        self.steps_per_agent_update = int(round(self.agent_timestep / self.physics_timestep))
+        
         # Trajectories
         self.qpos = np.zeros((self.model.nq, self.rollout_horizon))
         self.qvel = np.zeros((self.model.nv, self.rollout_horizon))
@@ -78,10 +81,23 @@ class MPCPlanner():
         # Reset data (for later rollout just in case)
         mujoco.mj_resetData(self.model, self.data)
     
+    def _get_agent_timestep_from_model(self) -> float:
+        """Extract agent_timestep from the model's custom numeric data."""
+        # Find the agent_timestep custom numeric in the model
+        for i in range(self.model.nnumeric):
+            numeric_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_NUMERIC, i)
+            if numeric_name == "agent_timestep":
+                return self.model.numeric_data[self.model.numeric_adr[i]]
+        # Default fallback if not found
+        return self.physics_timestep
+    
     def plan(self, keyframe: str="home", init_qpos=None, init_qvel=None) -> None:
         """
         Plan an action sequence from the keyframe using MPC.
         NOTE: The keyframe is defined in the task XML file. The "home" keyframe is usually the default starting state. So if you want to start from a different initial state, define a new keyframe in the XML for now.
+        
+        The ctrl array will be at physics timestep resolution, but controls only update
+        at agent_timestep intervals (with the same action held constant between updates).
         """
         # Reset data
         mujoco.mj_resetData(self.model, self.data)
@@ -122,23 +138,28 @@ class MPCPlanner():
             if self.verbose > 0 and t % 100 == 0:
                 print(f"Planning step {t}/{self.rollout_horizon}")
 
-            # Set planner state
-            self.agent.set_state(
-                time=self.data.time,
-                qpos=self.data.qpos,
-                qvel=self.data.qvel,
-                act=self.data.act,
-                mocap_pos=self.data.mocap_pos,
-                mocap_quat=self.data.mocap_quat,
-                userdata=self.data.userdata
-            )
+            # Only update agent planner at agent_timestep intervals
+            if t % self.steps_per_agent_update == 0:
+                # Set planner state
+                self.agent.set_state(
+                    time=self.data.time,
+                    qpos=self.data.qpos,
+                    qvel=self.data.qvel,
+                    act=self.data.act,
+                    mocap_pos=self.data.mocap_pos,
+                    mocap_quat=self.data.mocap_quat,
+                    userdata=self.data.userdata
+                )
 
-            # Run planner optimization step
-            for _ in range(self.opt_steps):
-                self.agent.planner_step()
+                # Run planner optimization step
+                for _ in range(self.opt_steps):
+                    self.agent.planner_step()
 
-            # Set ctrl from agent policy
-            self.data.ctrl = self.agent.get_action()
+                # Get new action from agent
+                self.data.ctrl = self.agent.get_action()
+
+            # If not updating agent, ctrl remains the same (held from previous update)
+            # Record control at every physics step
             self.ctrl[:, t] = self.data.ctrl
 
             # Get costs
@@ -290,30 +311,24 @@ class MPCPlanner():
     def get_costs(self) -> tuple[np.ndarray, np.ndarray]:
         return self.cost_total, self.cost_terms
     
-    def get_ctrl_downsampled(self, downsample_factor: int = 10) -> np.ndarray:
+    def get_ctrl_downsampled(self, downsample_factor: int = None) -> np.ndarray:
         """
         Get downsampled control trajectory for comparison with RL environments.
         
-        NOTE: The MPC simulation runs at a fine timestep (e.g., 0.001s for cartpole),
-        but the control actions are updated at a coarser rate (e.g., 0.01s in the
-        cartpole planner (seen in the task xml)). For comparison with RL policies
-        that act at the coarser control timestep (0.01) for both sim and actions,
-        we downsample by taking every Nth control value.
+        The MPC ctrl array is stored at physics_timestep resolution (e.g., 0.0025s),
+        but RL environments typically expect actions at a coarser control_timestep
+        (e.g., 0.025s for walker). This method downsamples by taking every Nth control.
         
-        For cartpole swingup:
-        - MPC sim timestep: 0.001s (physics sim step)
-        - MPC control update: 0.01s (planner step)
-        - DM Control env step: 0.01s (RL action step)
-        - Downsample factor: 0.01 / 0.001 = 10
+        If downsample_factor is not provided, it automatically uses the ratio
+        between agent_timestep and physics_timestep.
         
-        EXTRA NOTE: Not sure the rammifications of a hack like this. Need to
-        experiment!
-
         Args:
-            downsample_factor: Number of simulation steps per control action.
-                             Default is 10 (0.01s / 0.001s = 10).
+            downsample_factor: Number of physics steps per control action.
+                             If None, uses self.steps_per_agent_update.
         
         Returns:
             Downsampled control array with shape (nu, rollout_horizon // downsample_factor)
         """
+        if downsample_factor is None:
+            downsample_factor = self.steps_per_agent_update
         return self.ctrl[:, ::downsample_factor]

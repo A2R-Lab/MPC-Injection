@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 import sys
 from pathlib import Path
+from mujoco_mpc import agent as agent_lib
+import mujoco
 
 # Add parent directory to path to import from mpc_rl
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -24,62 +26,48 @@ from mpc_rl.planner.mpc_planner import MPCPlanner
 def planner_test_walker_walk():
     print("Testing MPCPlanner for Walker Walk...")
     
-    model_path = (Path(__file__).parent.parent
-                  / "mpc_rl/tasks/walker/task.xml")
+    model_path = (
+        Path(__file__).parent.parent
+        / "mpc_rl/tasks/walker/task.xml"
+    )
 
-    # Create MPC planner instance
-    # Based on walker/task.xml configuration:
-    # - agent_horizon: 0.8s
-    # - agent_timestep: 0.01s
-    # 
-    # Cost terms (from XML sensor definitions):
-    #   <user name="Control" dim="6" user="0 0.1 0.0 1.0" />
-    #     - Format: user="norm_type weight min max"
-    #     - Weight: 0.1 applies to all 6 control dimensions
-    #   <user name="Height" dim="1" user="0 10.0 0.0 10.0" />
-    #     - Weight: 10.0
-    #   <user name="Rotation" dim="1" user="0 3.0 0.0 5.0" />
-    #     - Weight: 3.0
-    #   <user name="Speed" dim="1" user="0 1.0 0.0 1.0" />
-    #     - Weight: 1.0
-    #
-    # Task parameters (from XML residual definitions):
-    #   <numeric name="residual_Height Goal" data="1.2 0.5 1.2" />
-    #     - Format: data="default min max"
-    #     - Default: 1.2
-    #   <numeric name="residual_Speed Goal" data="0 -5.0 5.0" />
-    #     - Format: data="default min max"
-    #     - Default: 0
+    weights = {
+        'Speed': 1.0,
+        'Height': 10.0,
+        'Rotation': 3.0,
+        'Control': 0.1
+    }
+
+    task_params = {
+        'Speed Goal': 1.0,
+        'Height Goal': 1.2
+    }
+
+    qpos_noise_rnge = (-0.0, 0.0)
+    qvel_noise_rnge = (-0.0, 0.0)
+
     planner = MPCPlanner(
         model_path=model_path,
         task_id="Walker",
         rollout_horizon=5000,
-        opt_steps=10,
-        weights={
-            "Control": 0.1,
-            "Height": 10.0,
-            "Rotation": 3.0,
-            "Speed": 1.0
-        },
-        task_params={
-            "Height Goal": 1.2,
-            "Speed Goal": 1.0  # Default is 0 (stationary), not 1.0
-        },
+        opt_steps=1,
+        weights=weights,
+        task_params=task_params,
         init_state_noise_flag=False,
-        qpos_noise_rnge=(-0.0, 0.0),
-        qvel_noise_rnge=(-0.0, 0.0),
+        qpos_noise_rnge=qpos_noise_rnge,
+        qvel_noise_rnge=qvel_noise_rnge,
         verbose=1
     )
     
     print(f"Rollout horizon: {planner.get_rollout_horizon()}")
     print(f"Initial state noise: {planner.get_init_state_noise_flag()}")
-    print(f"qpos noise range: {planner.get_qpos_noise_range()}")
-    print(f"qvel noise range: {planner.get_qvel_noise_range()}")
+    print(f"Physics timestep: {planner.physics_timestep}s")
+    print(f"Agent timestep: {planner.agent_timestep}s")
+    print(f"Steps per agent update: {planner.steps_per_agent_update}")
     
     # Run MPC planning
     print("\nRunning MPC trajectory optimization for Walker...")
-    #planner.plan(keyframe="home")
-    planner.plan_receding_horizon(keyframe="home", plan_frequency=10)
+    planner.plan(keyframe="home")
     print("Planning complete!")
     
     # Get trajectories and costs
@@ -187,19 +175,28 @@ def planner_test_walker_walk():
     # Create animation of walker using the MPC controls
     print("\nCreating walker animation with MPC controls...")
     
-    # Downsample controls to match dm_control timestep
-    # Walker MPC physics timestep: 0.0025s (from walker_modified.xml)
-    # DM Control walker control_timestep: typically 0.0025s (matches physics)
-    # So we can use controls directly without downsampling, or downsample slightly for smoother animation
-    # For smoother animation, we'll downsample by 2 to get ~0.005s per frame
-    downsample_factor = 2  # Adjust for animation smoothness
-    ctrl_downsampled = ctrl[:, ::downsample_factor]
+    # The MPC ctrl array is at physics timestep resolution (0.0025s)
+    # DM Control expects actions at control_timestep resolution (0.025s)
+    # Use the planner's automatic downsampling based on agent_timestep
+    ctrl_downsampled = planner.get_ctrl_downsampled()
+    print(f"Downsampled controls from {ctrl.shape[1]} to {ctrl_downsampled.shape[1]} steps")
+    print(f"MPC physics timestep: {planner.physics_timestep}s")
+    print(f"MPC agent timestep: {planner.agent_timestep}s")
+    print(f"Downsample factor: {planner.steps_per_agent_update}")
     
     # Create walker environment from dm_control with fixed random seed for consistency
+    # Use tracking camera that follows the walker
     dm_env = suite.load(domain_name="walker", task_name="walk", 
                         task_kwargs={'random': np.random.RandomState(42)})
+    
+    # Wrap with gymnasium compatibility and set render parameters
     env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
     env = FlattenObservation(env)
+    
+    # Override the default camera to use the tracking camera
+    # This must be done on the dm_control environment before rendering
+    env.unwrapped._env.physics.model.vis.global_.offwidth = 640
+    env.unwrapped._env.physics.model.vis.global_.offheight = 480
     
     # Reset environment and set to the same initial state as MPC planner
     obs, info = env.reset()
@@ -215,18 +212,18 @@ def planner_test_walker_walk():
     print("Applying MPC controls to walker environment...")
     frames = []
     
-    # Get initial frame
-    frame = env.render()
+    # Get initial frame with side camera (DM Control walker has 'side' and 'back' cameras)
+    frame = env.unwrapped._env.physics.render(camera_id="side", height=480, width=640)
     frames.append(frame)
     
-    # Apply each control action
-    num_steps = min(ctrl_downsampled.shape[1], 1000)  # Limit to 1000 steps for animation
+    # Apply each downsampled control action
+    num_steps = ctrl_downsampled.shape[1]
     for t in range(num_steps):
-        action = ctrl_downsampled[:, t]
+        action = ctrl_downsampled[:, t]  # Use the DOWNSAMPLED control
         obs, reward, terminated, truncated, info = env.step(action)
         
-        # Render and save frame
-        frame = env.render()
+        # Render with side camera
+        frame = env.unwrapped._env.physics.render(camera_id="side", height=480, width=640)
         frames.append(frame)
         
         if terminated or truncated:
@@ -261,31 +258,48 @@ def planner_test_walker_walk():
 
 # For cartpole swingup
 def planner_test_cartpole_swingup():
-    print("Testing MPCPlanner...")
+    print("Testing MPCPlanner for Cartpole Swingup...")
     
-    # Create MPC planner instance
+    model_path = (
+        Path(__file__).parent.parent
+        / "mpc_rl/tasks/cartpole/task.xml"
+    )
+
+    weights = {
+        'Vertical': 10.0,
+        'Centered': 10.0,
+        'Velocity': 0.1,
+        'Control': 0.1
+    }
+
+    task_params = {
+        'Goal': 0.0
+    }
+
+    qpos_noise_rnge = (-0.0, 0.0)
+    qvel_noise_rnge = (-0.0, 0.0)
+
     planner = MPCPlanner(
-        rollout_horizon=10000,
-        opt_steps=10,
-        weights={
-            "Vertical": 10.0,
-            "Centered": 10.0,
-            "Velocity": 0.1,
-            "Control": 0.1
-        },
-        task_params={"Goal": 0.0},
+        model_path=model_path,
+        task_id="Cartpole",
+        rollout_horizon=1000,
+        opt_steps=1,
+        weights=weights,
+        task_params=task_params,
         init_state_noise_flag=False,
-        qpos_noise_rnge=(-0.02, 0.02),
-        qvel_noise_rnge=(-0.02, 0.02)
+        qpos_noise_rnge=qpos_noise_rnge,
+        qvel_noise_rnge=qvel_noise_rnge,
+        verbose=1
     )
     
     print(f"Rollout horizon: {planner.get_rollout_horizon()}")
     print(f"Initial state noise: {planner.get_init_state_noise_flag()}")
-    print(f"qpos noise range: {planner.get_qpos_noise_range()}")
-    print(f"qvel noise range: {planner.get_qvel_noise_range()}")
+    print(f"Physics timestep: {planner.physics_timestep}s")
+    print(f"Agent timestep: {planner.agent_timestep}s")
+    print(f"Steps per agent update: {planner.steps_per_agent_update}")
     
     # Run MPC planning
-    print("\nRunning MPC trajectory optimization...")
+    print("\nRunning MPC trajectory optimization for Cartpole...")
     planner.plan(keyframe="home")
     print("Planning complete!")
     
@@ -299,56 +313,154 @@ def planner_test_cartpole_swingup():
     print(f"  ctrl: {ctrl.shape}")
     print(f"  time: {time.shape}")
     
-    # Plot position
-    fig1 = plt.figure(figsize=(10, 6))
-    plt.plot(time, qpos[0, :], label="q0 (cart position)", color="blue")
-    plt.plot(time, qpos[1, :], label="q1 (pole angle)", color="orange")
+    # Cartpole has 2 joints: slider (cart position), hinge_1 (pole angle)
+    # And 1 actuator: slide (cart force)
+    
+    # Plot joint positions
+    fig1 = plt.figure(figsize=(12, 8))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(time, qpos[0, :], label="slider (cart position)", color="blue")
+    plt.legend()
+    plt.ylabel("Cart Position (m)")
+    plt.grid(True)
+    plt.title("Cartpole Position Trajectories")
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(time, qpos[1, :], label="hinge_1 (pole angle)", color="orange")
+    plt.axhline(y=np.pi, color='red', linestyle='--', alpha=0.5, label="upright (π)")
+    plt.axhline(y=-np.pi, color='red', linestyle='--', alpha=0.5)
     plt.legend()
     plt.xlabel("Time (s)")
-    plt.ylabel("States")
-    plt.title("State Trajectories")
+    plt.ylabel("Pole Angle (rad)")
     plt.grid(True)
+    
     plt.tight_layout()
     
-    # Plot velocity
-    fig2 = plt.figure(figsize=(10, 6))
-    plt.plot(time, qvel[0, :], label="v0 (cart velocity)", color="blue")
-    plt.plot(time, qvel[1, :], label="v1 (pole velocity)", color="orange")
+    # Plot velocities
+    fig2 = plt.figure(figsize=(12, 6))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(time, qvel[0, :], label="cart velocity", color="blue")
+    plt.legend()
+    plt.ylabel("Cart Velocity (m/s)")
+    plt.grid(True)
+    plt.title("Cartpole Velocity Trajectories")
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(time, qvel[1, :], label="pole angular velocity", color="orange")
     plt.legend()
     plt.xlabel("Time (s)")
-    plt.ylabel("Velocity")
-    plt.title("Velocity Trajectories")
+    plt.ylabel("Pole Angular Velocity (rad/s)")
     plt.grid(True)
+    
     plt.tight_layout()
     
-    # Plot control
-    fig3 = plt.figure(figsize=(10, 4))
-    plt.plot(time[:-1], ctrl[0, :], color="blue")
+    # Plot control (1 actuator)
+    fig3 = plt.figure(figsize=(12, 4))
+    
+    plt.plot(time[:-1], ctrl[0, :], color="blue", label="slide force")
+    plt.legend()
     plt.xlabel("Time (s)")
     plt.ylabel("Control")
-    plt.title("Control Signal")
+    plt.title("Cartpole Control Signal")
     plt.grid(True)
     plt.tight_layout()
     
     # Plot costs
     fig4 = plt.figure(figsize=(10, 6))
     
-    # Get cost term names (matching mjpc_ex.py style)
+    # Get cost term names from cartpole task.xml
     cost_names = ["Vertical", "Centered", "Velocity", "Control"]
-    for i, name in enumerate(cost_names):
-        plt.plot(time[:-1], cost_terms[i, :], label=name)
+    colors_cost = ["blue", "orange", "green", "red"]
+    
+    for i, (name, color) in enumerate(zip(cost_names, colors_cost)):
+        plt.plot(time[:-1], cost_terms[i, :], label=name, color=color)
     
     plt.plot(time[:-1], cost_total, label="Total (weighted)", color="black", linewidth=2)
     plt.legend()
     plt.xlabel("Time (s)")
     plt.ylabel("Costs")
-    plt.title("Cost Terms")
+    plt.title("Cartpole Swingup Cost Terms")
     plt.grid(True)
     plt.tight_layout()
     
     plt.show()
     
-    print("\nTest complete!")
+    # Create animation of cartpole using the MPC controls
+    print("\nCreating cartpole animation with MPC controls...")
+    
+    # The MPC ctrl array is at physics timestep resolution (0.01s)
+    # DM Control expects actions at control_timestep resolution (0.01s)
+    # Use the planner's automatic downsampling based on agent_timestep
+    ctrl_downsampled = planner.get_ctrl_downsampled()
+    print(f"Downsampled controls from {ctrl.shape[1]} to {ctrl_downsampled.shape[1]} steps")
+    print(f"MPC physics timestep: {planner.physics_timestep}s")
+    print(f"MPC agent timestep: {planner.agent_timestep}s")
+    print(f"Downsample factor: {planner.steps_per_agent_update}")
+    
+    # Create cartpole environment from dm_control with fixed random seed for consistency
+    dm_env = suite.load(domain_name="cartpole", task_name="swingup", 
+                        task_kwargs={'random': np.random.RandomState(42)})
+    env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
+    env = FlattenObservation(env)
+    
+    # Reset environment and set to the same initial state as MPC planner
+    obs, info = env.reset()
+    
+    # Set cartpole to the same initial state used by MPC planner (from keyframe "home")
+    physics = env.unwrapped._env.physics
+    with physics.reset_context():
+        physics.data.qpos[:] = qpos[:, 0]  # Use the initial qpos from MPC trajectory
+        physics.data.qvel[:] = qvel[:, 0]  # Use the initial qvel from MPC trajectory
+    physics.forward()
+    
+    # Collect frames by applying downsampled controls
+    print("Applying MPC controls to cartpole environment...")
+    frames = []
+    
+    # Get initial frame
+    frame = env.render()
+    frames.append(frame)
+    
+    # Apply each downsampled control action
+    num_steps = ctrl_downsampled.shape[1]
+    for t in range(num_steps):
+        action = ctrl_downsampled[:, t]  # Use the DOWNSAMPLED control
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        # Render and save frame
+        frame = env.render()
+        frames.append(frame)
+        
+        if terminated or truncated:
+            print(f"Episode ended at step {t}")
+            break
+    
+    env.close()
+    print(f"Collected {len(frames)} frames")
+    
+    # Create animation
+    print("Creating animation...")
+    fig_anim = plt.figure(figsize=(10, 6))
+    img = plt.imshow(frames[0])
+    plt.axis('off')
+    plt.title("Cartpole with MPC Controls")
+    
+    def animate(i):
+        img.set_data(frames[i])
+        return [img]
+    
+    # Display at 30 FPS for smooth playback (regardless of actual simulation rate)
+    display_fps = 30
+    
+    anim = animation.FuncAnimation(fig_anim, animate, frames=len(frames), 
+                                   interval=1000/display_fps, blit=True, repeat=True)
+    print(f"Animation created with {len(frames)} frames at {display_fps} FPS")
+    
+    plt.show()
+    
+    print("\nCartpole Swingup Test complete!")
 
 def planner_receding_horizon_test():
     print("Testing MPCPlanner with Receding Horizon...")
@@ -467,6 +579,9 @@ def downsample_test():
     """
     This is a sanity check test to verify that downsampling the action trajectory from the planner
     results in the same expected trajectory in the RL environment.
+
+    NOTE: You don't need this if you change the .xml files to have matching timesteps with the
+    dm_control environments.
     """
     # Create MPC planner instance
     planner = MPCPlanner(
@@ -577,12 +692,14 @@ def downsample_test():
     
     plt.show()
 
-
 if __name__ == "__main__":
     # Uncomment the test you want to run:
     
     planner_test_walker_walk()  # Test Walker MPC planning
-    #planner_test_cartpole_swingup()  # Test standard MPC planning
+    planner_test_cartpole_swingup()  # Test standard MPC planning
     #planner_receding_horizon_test()  # Test receding horizon MPC planning (faster!)
     #plan_and_save_traj()  # Save a trajectory for later use
     #downsample_test()  # Test downsampling and visualization
+
+    
+
