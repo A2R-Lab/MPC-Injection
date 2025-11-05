@@ -1,4 +1,5 @@
 import numpy as np
+import zipfile
 from stable_baselines3.common.callbacks import BaseCallback
 from dm_control import suite
 from shimmy import DmControlCompatibilityV0
@@ -175,21 +176,38 @@ class FixedMPCInjectCallback(BaseCallback):
         for traj_idx in range(self.num_mpc_trajectories):
             # Load or generate trajectory
             if self.data_dir is not None:
-                # Load from file
-                if self.verbose > 1:
-                    print(f"  Loading MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
-                
-                traj_file = self._select_trajectory_file()
-                data = np.load(traj_file)
-                qpos = data["qpos"]
-                qvel = data["qvel"]
-                ctrl = data["ctrl"]
-                time = data["time"]
-                
-                if self.verbose > 1:
-                    init_qpos = data["init_qpos"]
-                    init_qvel = data["init_qvel"]
-                    print(f"    Loaded: init_qpos={init_qpos}, init_qvel={init_qvel}")
+                # Load from file with error handling for corrupted files
+                max_retries = 5
+                for retry in range(max_retries):
+                    try:
+                        if self.verbose > 1:
+                            print(f"  Loading MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
+                        
+                        traj_file = self._select_trajectory_file()
+                        data = np.load(traj_file)
+                        qpos = data["qpos"]
+                        qvel = data["qvel"]
+                        ctrl = data["ctrl"]
+                        time = data["time"]
+                        
+                        if self.verbose > 1:
+                            init_qpos = data["init_qpos"]
+                            init_qvel = data["init_qvel"]
+                            print(f"    Loaded: init_qpos={init_qpos}, init_qvel={init_qvel}")
+                        
+                        # Successfully loaded, break out of retry loop
+                        break
+                        
+                    except (zipfile.BadZipFile, EOFError, IOError) as e:
+                        if retry < max_retries - 1:
+                            if self.verbose > 0:
+                                print(f"    Warning: Failed to load {traj_file.name}: {e}")
+                                print(f"    Retrying with different file ({retry + 1}/{max_retries})...")
+                            continue
+                        else:
+                            # All retries exhausted
+                            raise RuntimeError(f"Failed to load valid trajectory file after {max_retries} attempts. "
+                                             f"Last error: {e}. Check your data directory for corrupted files.")
             else:
                 # Generate with MPC planner
                 if self.verbose > 1:
@@ -599,20 +617,37 @@ class PercentMPCInjectCallback(BaseCallback):
             
             # Load or generate trajectory
             if self.data_dir is not None:
-                # Load from file
-                selected_file = self._select_trajectory_file()
-                
-                # Load the MPC trajectory data
-                traj_data = np.load(selected_file)
-                qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
-                qvel = traj_data['qvel']
-                ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
-                
-                # Downsample controls to match RL action timestep
-                ctrl_downsampled = ctrl[:, ::downsample_factor]
-                
-                if self.verbose > 2:
-                    print(f"    Loaded trajectory: MPC steps={ctrl.shape[1]}, Downsampled steps={ctrl_downsampled.shape[1]}")
+                # Load from file with error handling for corrupted files
+                max_retries = 5
+                for retry in range(max_retries):
+                    try:
+                        selected_file = self._select_trajectory_file()
+                        
+                        # Load the MPC trajectory data
+                        traj_data = np.load(selected_file)
+                        qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
+                        qvel = traj_data['qvel']
+                        ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
+                        
+                        # Downsample controls to match RL action timestep
+                        ctrl_downsampled = ctrl[:, ::downsample_factor]
+                        
+                        if self.verbose > 2:
+                            print(f"    Loaded trajectory: MPC steps={ctrl.shape[1]}, Downsampled steps={ctrl_downsampled.shape[1]}")
+                        
+                        # Successfully loaded, break out of retry loop
+                        break
+                        
+                    except (zipfile.BadZipFile, EOFError, IOError) as e:
+                        if retry < max_retries - 1:
+                            if self.verbose > 0:
+                                print(f"    Warning: Failed to load {selected_file.name}: {e}")
+                                print(f"    Retrying with different file ({retry + 1}/{max_retries})...")
+                            continue
+                        else:
+                            # All retries exhausted
+                            raise RuntimeError(f"Failed to load valid trajectory file after {max_retries} attempts. "
+                                             f"Last error: {e}. Check your data directory for corrupted files.")
             
             else:
                 # Generate trajectory using MPC planner
