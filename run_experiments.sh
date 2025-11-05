@@ -10,12 +10,14 @@
 # - TensorBoard logs show real-time buffer composition
 
 # Common parameters
-ENV_NAME="cartpole-swingup"
+#ENV_NAME="cartpole-swingup"
+ENV_NAME="walker-walk"
 ALGORITHM="SAC-MPC"
 TOTAL_TIMESTEPS=500000
 INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
 RANDOM_SELECT="True"
-DATA_DIR="data/cartpole_0_001dt/"
+#DATA_DIR="data/cartpole_0_001dt/"
+DATA_DIR="data/walker_0_0025dt/"
 
 echo "Starting SAC-MPC percentage sweep experiments"
 echo "=============================================="

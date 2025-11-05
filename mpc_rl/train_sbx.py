@@ -154,7 +154,7 @@ _RANDOM_SELECT = flags.DEFINE_boolean(
     "random_select", True, "Randomly select trajectories to inject"
 )
 _DATA_DIR = flags.DEFINE_string(
-    "data_dir", "data/cartpole_0_001dt/", "Directory containing pre-generated MPC trajectories"
+    "data_dir", None, "Directory containing pre-generated MPC trajectories (e.g., 'data/cartpole_0_010dt/' or 'data/walker_0_0025dt/')"
 )
 
 # Checkpoint flags
@@ -401,6 +401,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         if _INJECT_TYPE.value == "fixed":
             print("\nSetting up FIXED MPC Injection from pre-generated trajectories...")
             inject_callback = FixedMPCInjectCallback(
+                domain=domain,
+                task=task,
                 inject_every_n_timesteps=cfg.inject_n_timesteps,
                 num_mpc_trajectories=cfg.num_traj,
                 data_dir=cfg.data_dir,
@@ -411,6 +413,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         elif _INJECT_TYPE.value == "percentage":
             print("\nSetting up PERCENTAGE MPC Injection from pre-generated trajectories...")
             inject_callback = PercentMPCInjectCallback(
+                domain=domain,
+                task=task,
                 target_percentage=cfg.percentage,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,

@@ -20,6 +20,8 @@ class FixedMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
+        domain: str,                          # Environment domain (e.g., 'cartpole', 'walker')
+        task: str,                            # Environment task (e.g., 'swingup', 'walk')
         mpc_planner=None,                     # MPCPlanner instance (not used if loading from file)
         inject_every_n_timesteps: int=10000,  # Inject after every N timesteps
         num_mpc_trajectories: int=1,          # How many MPC rollouts to inject
@@ -30,6 +32,8 @@ class FixedMPCInjectCallback(BaseCallback):
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
+        self.domain = domain
+        self.task = task
         self.mpc_planner = mpc_planner
         self.inject_freq = inject_every_n_timesteps
         self.num_mpc_trajectories = num_mpc_trajectories
@@ -67,6 +71,7 @@ class FixedMPCInjectCallback(BaseCallback):
         
         # Print initialization info
         print(f"\nMPC Injection Callback initialized:")
+        print(f"  Environment: {domain}/{task}")
         print(f"  Inject every: {inject_every_n_timesteps} timesteps")
         print(f"  Trajectories per injection: {num_mpc_trajectories}")
         if data_dir:
@@ -142,14 +147,21 @@ class FixedMPCInjectCallback(BaseCallback):
         Note: We create a temporary environment for MPC trajectory generation
         to avoid modifying the training environment's state.
         """
-        # Get the MPC downsampled control for RL timestep alignment
-        # For cartpole: MPC runs at 0.001s, RL acts at 0.01s, so downsample by 10
-        downsample_factor = 10
+        # Determine downsample factor based on environment
+        # This should match the ratio of MPC timestep to RL control timestep
+        # Cartpole: MPC at 0.01s, RL at 0.01s -> downsample by 1
+        # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
+        if self.domain == "cartpole":
+            downsample_factor = 1  # MPC and RL both at 0.01s
+        elif self.domain == "walker":
+            downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
+        else:
+            raise ValueError(f"Unsupported domain: {self.domain}")
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        dm_env = suite.load(domain_name="cartpole", task_name="swingup")
+        dm_env = suite.load(domain_name=self.domain, task_name=self.task)
         temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
         temp_env = FlattenObservation(temp_env)
         
@@ -203,26 +215,19 @@ class FixedMPCInjectCallback(BaseCallback):
             # Gymnasium API returns (observation, info)
             obs, _ = temp_env.reset()
             
-            # Set the environment to the MPC initial state
-            # For cartpole swingup, convert qpos/qvel to observation format
-            # DM Control obs: [cart_pos, cos(pole_angle), sin(pole_angle), cart_vel, pole_vel]
-            cart_pos_init = qpos[0, 0]
-            pole_angle_init = qpos[1, 0]
-            cart_vel_init = qvel[0, 0]
-            pole_vel_init = qvel[1, 0]
-            
-            # Set the physics state directly
+            # Set the environment to the MPC initial state by setting physics directly
             temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
             temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
             
-            # Get initial observation from environment
-            obs = np.array([
-                cart_pos_init,
-                np.cos(pole_angle_init),
-                np.sin(pole_angle_init),
-                cart_vel_init,
-                pole_vel_init
-            ], dtype=np.float32)
+            # Forward the physics to update the observation
+            temp_env.unwrapped._env.physics.forward()
+            
+            # Get initial observation from environment (let the environment compute it)
+            obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
+            # Flatten the observation if it's a dict
+            if isinstance(obs, dict):
+                obs = np.concatenate([v.flatten() for v in obs.values()])
+            obs = obs.astype(np.float32)
             
             # Step through trajectory using MPC actions
             num_steps = ctrl_downsampled.shape[1]
@@ -325,6 +330,8 @@ class PercentMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
+        domain: str,                          # Environment domain (e.g., 'cartpole', 'walker')
+        task: str,                            # Environment task (e.g., 'swingup', 'walk')
         target_percentage: int=25,            # Target percentage of replay buffer to be MPC data (0-100)
         data_dir: str=None,                   # Path to directory with saved trajectories
         random_select: bool=True,             # If True, randomly select trajectories from data_dir
@@ -333,6 +340,8 @@ class PercentMPCInjectCallback(BaseCallback):
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
+        self.domain = domain
+        self.task = task
         self.target_percentage = target_percentage
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
         
@@ -366,6 +375,7 @@ class PercentMPCInjectCallback(BaseCallback):
         
         # Print initialization info
         print(f"\nPercent MPC Injection Callback initialized:")
+        print(f"  Environment: {domain}/{task}")
         print(f"  Target percentage: {target_percentage}%")
         if data_dir:
             print(f"  Loading from: {data_dir}")
@@ -444,14 +454,24 @@ class PercentMPCInjectCallback(BaseCallback):
         Note: We create a temporary environment for MPC trajectory generation
         to avoid modifying the training environment's state.
         """
-        # Get the MPC downsampled control for RL timestep alignment
-        # For cartpole: MPC runs at 0.001s, RL acts at 0.01s, so downsample by 10
-        downsample_factor = 10
+        # Determine downsample factor based on environment
+        # This should match the ratio of MPC timestep to RL control timestep
+        # Cartpole: MPC at 0.001s, RL at 0.01s -> downsample by 10
+        #           TODO: Try Cartpole data collection at 0.01s to match RL timestep?
+        # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
+        # NOTE: This can be calculated/seen from the env_modified.xml and the related
+        #       task.xml files for MPC vs the env.py and env.py files for RL in dm_control.
+        if self.domain == "cartpole":
+            downsample_factor = 10  # MPC at 0.001s, RL at 0.01s
+        elif self.domain == "walker":
+            downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
+        else:
+            raise ValueError(f"Unsupported domain: {self.domain}")
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        dm_env = suite.load(domain_name="cartpole", task_name="swingup")
+        dm_env = suite.load(domain_name=self.domain, task_name=self.task)
         temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
         temp_env = FlattenObservation(temp_env)
         
@@ -598,26 +618,19 @@ class PercentMPCInjectCallback(BaseCallback):
                 # Generate trajectory using MPC planner
                 raise NotImplementedError("On-the-fly MPC generation not yet implemented. Please provide data_dir.")
             
-            # Set the environment to the MPC initial state
-            # For cartpole swingup, convert qpos/qvel to observation format
-            # DM Control obs: [cart_pos, cos(pole_angle), sin(pole_angle), cart_vel, pole_vel]
-            cart_pos_init = qpos[0, 0]
-            pole_angle_init = qpos[1, 0]
-            cart_vel_init = qvel[0, 0]
-            pole_vel_init = qvel[1, 0]
-            
-            # Set the physics state directly
+            # Set the environment to the MPC initial state by setting physics directly
             temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
             temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
             
-            # Get initial observation from environment
-            obs = np.array([
-                cart_pos_init,
-                np.cos(pole_angle_init),
-                np.sin(pole_angle_init),
-                cart_vel_init,
-                pole_vel_init
-            ], dtype=np.float32)
+            # Forward the physics to update the observation
+            temp_env.unwrapped._env.physics.forward()
+            
+            # Get initial observation from environment (let the environment compute it)
+            obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
+            # Flatten the observation if it's a dict
+            if isinstance(obs, dict):
+                obs = np.concatenate([v.flatten() for v in obs.values()])
+            obs = obs.astype(np.float32)
             
             # Step through trajectory using MPC actions
             num_steps = ctrl_downsampled.shape[1]

@@ -50,7 +50,8 @@ def load_tensorboard_data(log_dir, tag='rollout/ep_rew_mean'):
     return np.array(steps), np.array(values)
 
 
-def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png', percentages_to_plot=None):
+def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png', percentages_to_plot=None, 
+                             env_pattern='cartpole-swingup', title_suffix='Cartpole Swingup'):
     """
     Plot rollout/ep_rew_mean from multiple experiment directories.
     
@@ -59,9 +60,11 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
         output_file: Output filename for the plot
         percentages_to_plot: List of percentages to plot (e.g., [0, 25, 50, 75, 100]).
                             If None, plots all available experiments.
+        env_pattern: Pattern to match environment directories (e.g., 'cartpole-swingup', 'walker-walk')
+        title_suffix: Suffix to add to plot title (e.g., 'Cartpole Swingup', 'Walker Walk')
     """
     # Find all experiment directories
-    pattern = os.path.join(base_dir, 'cartpole-swingup-*-percentage-*pct')
+    pattern = os.path.join(base_dir, f'{env_pattern}-*-percentage-*pct')
     exp_dirs = sorted(glob.glob(pattern))
     
     if not exp_dirs:
@@ -135,7 +138,7 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
     
     plt.xlabel('Training Steps', fontsize=12)
     plt.ylabel('Episode Reward Mean', fontsize=12)
-    plt.title('Cartpole Swingup: Episode Reward Mean vs Training Steps', fontsize=14, fontweight='bold')
+    plt.title(f'Episode Reward Mean vs Training Steps - {title_suffix}', fontsize=14, fontweight='bold')
     plt.legend(loc='best', fontsize=10, ncol=2)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -151,37 +154,59 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
 
 def main():
     """Main function to run the plotting script."""
-    # Base directory containing all experiment runs
+    
+    # ========== CONFIGURATION - CHANGE THESE AS NEEDED ==========
+    
+    # Select base directory containing experiment runs
+    # Uncomment the one you want to use:
     #base_dir = 'logs/1st_run'
     #base_dir = 'logs/2nd_run'
     #base_dir = 'logs/3rd_run'
     #base_dir = 'logs/4th_run'
     #base_dir = 'logs/5th_run'
     base_dir = 'logs/0pct_inj_reproducibility'
+    #base_dir = 'logs/25pct_inj_reproducibility'
+    
+    # Select environment to plot
+    # Option 1: Cartpole
+    env_pattern = 'cartpole-swingup'
+    title_suffix = 'Cartpole Swingup'
+    output_file = 'cartpole_experiment_comparison.png'
+    
+    # Option 2: Walker (uncomment these 3 lines and comment out the cartpole lines above)
+    #env_pattern = 'walker-walk'
+    #title_suffix = 'Walker Walk'
+    #output_file = 'walker_experiment_comparison.png'
+    
+    # Select which percentages to plot
+    # Option 1: Plot all available experiments (set to None)
+    #percentages_to_plot = None
+    
+    # Option 2: Plot specific percentages
+    percentages_to_plot = [0, 25, 50, 75, 100]
+    #percentages_to_plot = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+    #percentages_to_plot = [0, 50, 100]
+    
+    # =============================================================
     
     # Convert to absolute path if relative
     if not os.path.isabs(base_dir):
         base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), base_dir)
     
     print(f"Looking for experiments in: {base_dir}")
+    print(f"Environment pattern: {env_pattern}")
+    print(f"Percentages to plot: {percentages_to_plot if percentages_to_plot else 'All available'}")
     
     if not os.path.exists(base_dir):
         print(f"Error: Directory not found: {base_dir}")
         return
     
-    # ========== CONFIGURE WHICH PERCENTAGES TO PLOT ==========
-    # Option 1: Plot all available experiments (set to None)
-    # percentages_to_plot = None
-    
-    # Option 2: Plot specific percentages (uncomment and modify as needed)
-    percentages_to_plot = [0, 25, 50, 75, 100]
-    # percentages_to_plot = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-    # percentages_to_plot = [0, 50, 100]
-    
-    # ==========================================================
-    
     # Generate the plot
-    plot_multiple_experiments(base_dir, percentages_to_plot=percentages_to_plot)
+    plot_multiple_experiments(base_dir, 
+                            output_file=output_file,
+                            percentages_to_plot=percentages_to_plot,
+                            env_pattern=env_pattern,
+                            title_suffix=title_suffix)
 
 
 if __name__ == '__main__':
