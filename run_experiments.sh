@@ -18,6 +18,8 @@ INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
 RANDOM_SELECT="True"
 #DATA_DIR="data/cartpole_0_001dt/"
 DATA_DIR="data/walker_0_0025dt/"
+LOG_DIR="logs/SAC-MPC-walker-runs/6th_run/"
+SEED=3000 # 1 is default for train_sbx.py
 
 echo "Starting SAC-MPC percentage sweep experiments"
 echo "=============================================="
@@ -47,7 +49,9 @@ for percentage in {0..100..25}; do
         --inject_type="${INJECT_TYPE}" \
         --percentage="${percentage}" \
         --random_select="${RANDOM_SELECT}" \
-        --data_dir="${DATA_DIR}"
+        --data_dir="${DATA_DIR}" \
+        --logdir="${LOG_DIR}" \
+        --seed="${SEED}"
     
     # Check if the previous command succeeded
     if [ $? -ne 0 ]; then
