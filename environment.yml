@@ -16,7 +16,7 @@ dependencies:
 
       # choose exactly one of these two JAX lines:
       # - jax           # CPU only
-      - jax[cuda12]==0.6.2 # NVIDIA GPU - newer version for H100/sm_90a support
+      - jax[cuda12]==0.6.2
       - jaxlib==0.6.2
 
       # RSL-RL & Brax stack
@@ -34,6 +34,7 @@ dependencies:
       - sbx-rl
       - stable-baselines3
       - gymnasium[classical_control]
+      - gymnasium-robotics
       - shimmy[dm-control]
       - opencv-python
 

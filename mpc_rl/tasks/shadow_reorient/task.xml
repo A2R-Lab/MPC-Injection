@@ -4,6 +4,8 @@
   <size memory="1M"/>
 
   <custom>
+    <!-- agent -->
+    <!-- agent_planner: 0=Sampling, 1=Gradient, 2=iLQG, 3=iLQS, 4=Robust Sampling, 5=Cross Entropy, 6=Sample Gradient -->
     <numeric name="agent_planner" data="5" />
     <numeric name="agent_horizon" data="0.25" />
     <numeric name="agent_timestep" data="0.01" />
@@ -40,12 +42,14 @@
   </worldbody>
 
   <sensor>
+    <!-- weights -->
     <user name="In Hand" dim="3" user="1 20 0 100 0.02 2"/>
     <user name="Orientation" dim="3" user="0 5 0 10" />
     <user name="Cube Vel." dim="3" user="0 10 0 20" />
     <user name="Actuator" dim="20" user="0 0.1 0.0 1.0" />
     <user name="Grasp" dim="26" user="0 2.5 0.0 10.0" />
     <user name="Joint Vel." dim="26" user="0 1.0e-4 0.0 1.0e-1" />
+    
     <framepos name="palm_position" objtype="site" objname="grasp_site"/>
     <framequat name="cube_goal_orientation" objtype="body" objname="goal"/>
     <framepos name="trace0" objtype="body" objname="cube"/>

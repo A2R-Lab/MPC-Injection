@@ -22,6 +22,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.planner.mpc_planner import MPCPlanner
 
+# For shadow reorient
+def planner_test_shadow_reorient():
+    print("Testing MPCPlanner for Shadow Reorient...")
+    
+
 # For walker-walk-v0
 def planner_test_walker_walk():
     print("Testing MPCPlanner for Walker Walk...")

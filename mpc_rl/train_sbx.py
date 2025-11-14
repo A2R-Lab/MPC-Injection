@@ -18,7 +18,7 @@ try:
     compute_cap = result.stdout.strip().split('\n')[0].replace('.', '')
     print(f"Detected GPU compute capability: {compute_cap}")
     
-    # Configure for GPU
+    # Configuration flags for GPU
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
     os.environ["JAX_PLATFORMS"] = "cuda"
