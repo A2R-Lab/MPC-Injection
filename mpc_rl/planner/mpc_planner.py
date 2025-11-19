@@ -2,6 +2,7 @@ from mujoco_mpc import agent as agent_lib
 import numpy as np
 import mujoco
 import pathlib
+from gymnasium_robotics.utils.rotations import quat_mul
 
 class MPCPlanner():
     """
@@ -91,13 +92,93 @@ class MPCPlanner():
         # Default fallback if not found
         return self.physics_timestep
     
-    def plan(self, keyframe: str="home", init_qpos=None, init_qvel=None) -> None:
+    def _randomize_shadow_cube_and_goal(self):
+        """
+        Randomize Shadow Reorient task cube and goal poses.
+        This follows the manipulate_block.py specification from gymnasium_robotics.
+        
+        NOTE: Random seed should be set before calling this method.
+        """
+        # Randomize manipulated cube's initial pose
+        cube_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "cube")
+        cube_jnt_addr = self.model.body_jntadr[cube_body_id]
+        cube_qpos_start = self.model.jnt_qposadr[cube_jnt_addr]
+        
+        # Randomize position: base position + Gaussian noise (mean=0, std=0.005)
+        base_pos = np.array([0.325, 0.0, 0.075])
+        pos_noise = np.random.normal(0, 0.005, size=3)
+        random_pos = base_pos + pos_noise
+        
+        # Randomize orientation: random rotation around random axis
+        random_angle = np.random.uniform(-np.pi, np.pi)
+        axis_idx = np.random.randint(0, 3)
+        axis = np.zeros(3)
+        axis[axis_idx] = 1.0
+        
+        # Convert axis-angle to quaternion
+        half_angle = random_angle / 2
+        sin_half = np.sin(half_angle)
+        cube_init_quat = np.array([
+            np.cos(half_angle),       # w
+            axis[0] * sin_half,       # x
+            axis[1] * sin_half,       # y
+            axis[2] * sin_half        # z
+        ])
+        
+        # Set the randomized pose in qpos
+        self.data.qpos[cube_qpos_start:cube_qpos_start+3] = random_pos
+        self.data.qpos[cube_qpos_start+3:cube_qpos_start+7] = cube_init_quat
+        
+        # Randomize goal cube's orientation
+        goal_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "goal")
+        goal_jnt_addr = self.model.body_jntadr[goal_body_id]
+        goal_qpos_start = self.model.jnt_qposadr[goal_jnt_addr]
+        
+        # Sample orientation offset: random angle on a random axis
+        goal_angle_offset = np.random.uniform(-np.pi, np.pi)
+        goal_axis_idx = np.random.randint(0, 3)
+        goal_axis = np.zeros(3)
+        goal_axis[goal_axis_idx] = 1.0
+        
+        # Convert offset axis-angle to quaternion
+        half_offset = goal_angle_offset / 2
+        sin_half_offset = np.sin(half_offset)
+        offset_quat = np.array([
+            np.cos(half_offset),
+            goal_axis[0] * sin_half_offset,
+            goal_axis[1] * sin_half_offset,
+            goal_axis[2] * sin_half_offset
+        ])
+        
+        # Multiply quaternions: goal_quat = offset_quat * cube_init_quat
+        goal_quat = quat_mul(offset_quat, cube_init_quat)
+        self.data.qpos[goal_qpos_start:goal_qpos_start+4] = goal_quat
+        
+        # Forward kinematics to update both cubes
+        mujoco.mj_forward(self.model, self.data)
+        
+        if self.verbose > 0:
+            print(f"Randomized cube initial pose:")
+            print(f"  Position: {random_pos}")
+            print(f"  Quaternion: {cube_init_quat}")
+            print(f"  Rotation axis: {['X', 'Y', 'Z'][axis_idx]}, angle: {random_angle:.3f} rad ({np.degrees(random_angle):.1f}°)")
+            print(f"Goal cube orientation:")
+            print(f"  Quaternion: {goal_quat}")
+            print(f"  Offset axis: {['X', 'Y', 'Z'][goal_axis_idx]}, offset angle: {goal_angle_offset:.3f} rad ({np.degrees(goal_angle_offset):.1f}°)")
+    
+    def plan(self, keyframe: str="home", init_qpos=None, init_qvel=None, seed=None) -> None:
         """
         Plan an action sequence from the keyframe using MPC.
         NOTE: The keyframe is defined in the task XML file. The "home" keyframe is usually the default starting state. So if you want to start from a different initial state, define a new keyframe in the XML for now.
         
         The ctrl array will be at physics timestep resolution, but controls only update
         at agent_timestep intervals (with the same action held constant between updates).
+        
+        Args:
+            keyframe: Name of the keyframe to start from
+            init_qpos: Optional initial joint positions (overrides keyframe)
+            init_qvel: Optional initial joint velocities (overrides keyframe)
+            seed: Optional random seed for state noise initialization (used when init_state_noise_flag=True)
         """
         # Reset data
         mujoco.mj_resetData(self.model, self.data)
@@ -110,17 +191,26 @@ class MPCPlanner():
             mujoco.mj_resetDataKeyframe(self.model, self.data, keyframe_id)
         else:
             print(f"Warning: '{keyframe}' keyframe not found in model")
-
+        
+        # Apply initialization noise if requested
         if self.init_state_noise_flag:
-            np.random.seed(0)
-            self.qpos_noise = np.random.uniform(self.qpos_noise_rnge[0],
-                                                self.qpos_noise_rnge[1],
-                                                size=self.model.nq)
-            self.qvel_noise = np.random.uniform(self.qvel_noise_rnge[0],
-                                                self.qvel_noise_rnge[1],
-                                                size=self.model.nv)
-            self.data.qpos[:] += self.qpos_noise
-            self.data.qvel[:] += self.qvel_noise
+            # Set random seed for reproducibility
+            if seed is not None:
+                np.random.seed(seed)
+            
+            # For Shadow task, use custom randomization
+            if self.task_id == "Shadow":
+                self._randomize_shadow_cube_and_goal()
+            else:
+                # For other tasks, use standard qpos/qvel noise
+                self.qpos_noise = np.random.uniform(self.qpos_noise_rnge[0],
+                                                    self.qpos_noise_rnge[1],
+                                                    size=self.model.nq)
+                self.qvel_noise = np.random.uniform(self.qvel_noise_rnge[0],
+                                                    self.qvel_noise_rnge[1],
+                                                    size=self.model.nv)
+                self.data.qpos[:] += self.qpos_noise
+                self.data.qvel[:] += self.qvel_noise
 
         # If initial qpos/qvel are provided, override the keyframe state
         if init_qpos is not None:
@@ -179,7 +269,7 @@ class MPCPlanner():
         self.agent.reset()
 
     def plan_receding_horizon(self, keyframe: str="home", plan_frequency: int=10,
-                              init_qpos=None, init_qvel=None) -> None:
+                              init_qpos=None, init_qvel=None, seed=None) -> None:
         """
         Generate long trajectory using receding horizon MPC.
         
@@ -191,6 +281,7 @@ class MPCPlanner():
             plan_frequency: Re-plan every N timesteps (reduces gRPC calls)
             init_qpos: Optional initial joint positions (overrides keyframe)
             init_qvel: Optional initial joint velocities (overrides keyframe)
+            seed: Optional random seed for state noise initialization (used when init_state_noise_flag=True)
         """
         # Reset data
         mujoco.mj_resetData(self.model, self.data)
@@ -205,17 +296,25 @@ class MPCPlanner():
             if self.verbose > 0:
                 print(f"Warning: '{keyframe}' keyframe not found in model")
         
-        # Add noise if enabled
+        # Apply initialization noise if requested
         if self.init_state_noise_flag:
-            np.random.seed(0)
-            self.qpos_noise = np.random.uniform(self.qpos_noise_rnge[0],
-                                                self.qpos_noise_rnge[1],
-                                                size=self.model.nq)
-            self.qvel_noise = np.random.uniform(self.qvel_noise_rnge[0],
-                                                self.qvel_noise_rnge[1],
-                                                size=self.model.nv)
-            self.data.qpos[:] += self.qpos_noise
-            self.data.qvel[:] += self.qvel_noise
+            # Set random seed for reproducibility
+            if seed is not None:
+                np.random.seed(seed)
+            
+            # For Shadow task, use custom randomization
+            if self.task_id == "Shadow":
+                self._randomize_shadow_cube_and_goal()
+            else:
+                # For other tasks, use standard qpos/qvel noise
+                self.qpos_noise = np.random.uniform(self.qpos_noise_rnge[0],
+                                                    self.qpos_noise_rnge[1],
+                                                    size=self.model.nq)
+                self.qvel_noise = np.random.uniform(self.qvel_noise_rnge[0],
+                                                    self.qvel_noise_rnge[1],
+                                                    size=self.model.nv)
+                self.data.qpos[:] += self.qpos_noise
+                self.data.qvel[:] += self.qvel_noise
         
         # If initial qpos/qvel are provided, override the keyframe state
         if init_qpos is not None:
