@@ -18,10 +18,10 @@ INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
 RANDOM_SELECT="True"
 #DATA_DIR="data/cartpole_0_001dt/"
 DATA_DIR="data/walker_0_0025dt/"
-LOG_DIR="logs/SAC-MPC-walker-runs/6th_run/"
+LOG_DIR="logs/TD3-MPC-walker-runs/1st_run/"
 SEED=3000 # 1 is default for train_sbx.py
 
-echo "Starting SAC-MPC percentage sweep experiments"
+echo "Starting ${ALGORITHM} percentage sweep experiments"
 echo "=============================================="
 echo "Environment: ${ENV_NAME}"
 echo "Algorithm: ${ALGORITHM} with TaggedReplayBuffer"

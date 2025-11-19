@@ -17,7 +17,7 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from sbx.common.off_policy_algorithm import OffPolicyAlgorithmJax
 from sbx.common.type_aliases import ReplayBufferSamplesNp, RLTrainState
 from sbx.sac.policies import SACPolicy, SimbaSACPolicy
-# Relative import for SAC_MPCPolicy
+
 from .policies import SAC_MPCPolicy
 
 """
@@ -232,7 +232,7 @@ class SAC_MPC(OffPolicyAlgorithmJax):
             
             # If we have a target percentage set and we're below it, inject more MPC data
             if hasattr(self, 'target_mpc_percentage') and hasattr(self, 'mpc_inject_callback'):
-                # For 100% target, accept ≥99% if buffer is full (can't maintain exactly 100% with ongoing RL)
+                # For 100% target, accept \leq 99% if buffer is full (can't maintain exactly 100% with ongoing RL)
                 buffer_full = self.replay_buffer.size() >= self.replay_buffer.buffer_size
                 target_reached = (
                     actual_mpc_pct >= self.target_mpc_percentage or

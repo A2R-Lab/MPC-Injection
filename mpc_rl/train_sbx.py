@@ -72,10 +72,9 @@ logging.set_verbosity(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.planner.mpc_planner import MPCPlanner
-from mpc_rl.sac_mpc.mpc_inject_callbacks import FixedMPCInjectCallback, PercentMPCInjectCallback
+from mpc_rl.common import TaggedReplayBuffer, FixedMPCInjectCallback, PercentMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
-from mpc_rl.sac_mpc.tagged_replay_buffer import TaggedReplayBuffer
-
+from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 
 # Environment flags
 _ENV_NAME = flags.DEFINE_string(
@@ -96,7 +95,7 @@ _TASK = flags.DEFINE_string(
 
 # Training flags
 _ALGORITHM = flags.DEFINE_enum(
-    "algorithm", "SAC", ["SAC", "PPO", "TD3", "SAC-MPC"], "RL algorithm to use"
+    "algorithm", "SAC", ["SAC", "PPO", "TD3", "SAC-MPC", "TD3-MPC"], "RL algorithm to use"
 )
 _TOTAL_TIMESTEPS = flags.DEFINE_integer(
     "total_timesteps", 500_000, "Total number of timesteps to train"
@@ -235,8 +234,8 @@ def create_experiment_name(env_name: str, algorithm: str, suffix: str = None,
     timestamp = now.strftime("%Y%m%d-%H%M%S")
     exp_name = f"{env_name}-{algorithm}-{timestamp}"
     
-    # Add injection type for SAC-MPC
-    if algorithm == "SAC-MPC" and inject_type:
+    # Add injection type for SAC-MPC or TD3-MPC
+    if algorithm in ["SAC-MPC", "TD3-MPC"] and inject_type:
         exp_name += f"-{inject_type}"
         # Add percentage if using percentage-based injection
         if inject_type == "percentage" and percentage is not None:
@@ -257,7 +256,7 @@ def save_config(logdir: Path, config: dict):
 
 def load_model(algorithm: str, model_path: Path, env):
     """Load a trained model."""
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3}[algorithm]
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[algorithm]
     print(f"Loading model from: {model_path}")
     return algo_class.load(model_path, env=env)
 
@@ -270,7 +269,7 @@ def create_model(env, cfg):
     algorithm string. Calling algo_class(...) invokes the class constructor (__init__) to
     create a new agent instance with the specified hyperparameters.
     """
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC}[cfg.algorithm]
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[cfg.algorithm]
     
     if cfg.algorithm == "SAC":
         model = algo_class(
@@ -297,6 +296,21 @@ def create_model(env, cfg):
             tau=cfg.tau,
             gamma=cfg.gamma,
             replay_buffer_class=TaggedReplayBuffer,  # Use custom tagged replay buffer
+            verbose=1,
+            seed=cfg.seed,
+            tensorboard_log=cfg.tensorboard_log,
+        )
+    elif cfg.algorithm == "TD3-MPC":
+        model = algo_class(
+            "MlpPolicy",
+            env,
+            learning_rate=cfg.learning_rate,
+            buffer_size=cfg.buffer_size,
+            learning_starts=cfg.learning_starts,
+            batch_size=cfg.batch_size,
+            tau=cfg.tau,
+            gamma=cfg.gamma,
+            replay_buffer_class=TaggedReplayBuffer,
             verbose=1,
             seed=cfg.seed,
             tensorboard_log=cfg.tensorboard_log,
@@ -396,8 +410,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         )
         callbacks.append(eval_callback)
     
-    # Add MPC injection callback if using SAC-MPC
-    if cfg.algorithm == "SAC-MPC":
+    # Add MPC injection callback if using SAC-MPC or TD3-MPC
+    if cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
         if _INJECT_TYPE.value == "fixed":
             print("\nSetting up FIXED MPC Injection from pre-generated trajectories...")
             inject_callback = FixedMPCInjectCallback(
@@ -418,14 +432,13 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 target_percentage=cfg.percentage,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
-                #trajectory_files=['qpos_[0.01,3.15]_qvel_[0.01,-0.02]_rh_10000.npz'],
                 seed=seed,  # Pass seed for reproducible trajectory selection
                 verbose=1,
             )
         callbacks.append(inject_callback)
         
         # Store reference to callback in list so model can access it later
-        return (callbacks if callbacks else None), eval_env, inject_callback if cfg.algorithm == "SAC-MPC" else None
+        return (callbacks if callbacks else None), eval_env, inject_callback if cfg.algorithm in ["SAC-MPC", "TD3-MPC"] else None
     
     return (callbacks if callbacks else None), eval_env, None
 
@@ -570,8 +583,8 @@ def main(argv):
             env_name, 
             _ALGORITHM.value, 
             _SUFFIX.value,
-            inject_type=_INJECT_TYPE.value if _ALGORITHM.value == "SAC-MPC" else None,
-            percentage=_PERCENTAGE.value if _ALGORITHM.value == "SAC-MPC" else None
+            inject_type=_INJECT_TYPE.value if _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] else None,
+            percentage=_PERCENTAGE.value if _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] else None
         )
         logdir = Path(_LOGDIR.value) / run_name
         logdir.mkdir(parents=True, exist_ok=True)
@@ -686,10 +699,12 @@ def main(argv):
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
-        if _ALGORITHM.value == "SAC-MPC" and _INJECT_TYPE.value == "percentage" and mpc_inject_callback is not None:
+        if (_ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] and
+            _INJECT_TYPE.value == "percentage" and
+            mpc_inject_callback is not None):
             model.target_mpc_percentage = config.percentage
             model.mpc_inject_callback = mpc_inject_callback
-            print(f"Connected MPC injection callback to SAC_MPC (target: {config.percentage}%)")
+            print(f"Connected MPC injection callback to {_ALGORITHM.value} (target: {config.percentage}%)")
         
         # Train the model
         # When resuming, reset_num_timesteps=False continues from loaded timestep count
