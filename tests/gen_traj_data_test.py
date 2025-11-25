@@ -278,11 +278,28 @@ def test_trajectory_in_environment(data_dir, domain_name='cartpole', task_name='
         # For gymnasium shadow_hand, access the MuJoCo data directly
         env.unwrapped.data.qpos[:] = init_qpos
         env.unwrapped.data.qvel[:] = init_qvel
-        # Forward the physics to ensure consistent state
+        
+        # Also update the goal in the environment to match the trajectory
+        # The goal is stored in qpos[0:4] (ball joint - quaternion only)
+        # and needs to be set in both data.qpos and env.goal
+        goal_quat = init_qpos[0:4]  # Extract goal orientation from trajectory
+        
+        # Update the environment's goal to match the trajectory
+        # The goal in shadow hand is 7D: [x, y, z, qw, qx, qy, qz]
+        # We need to get the goal position from the goal body and combine with saved quat
         import mujoco
+        goal_body_id = mujoco.mj_name2id(env.unwrapped.model, mujoco.mjtObj.mjOBJ_BODY, "goal")
+        goal_pos = env.unwrapped.data.xpos[goal_body_id].copy()  # Get current goal position
+        
+        # Set the environment's goal (used for reward calculation)
+        env.unwrapped.goal = np.concatenate([goal_pos, goal_quat])
+        
+        # Forward the physics to ensure consistent state
         mujoco.mj_forward(env.unwrapped.model, env.unwrapped.data)
     
     print(f"Environment initialized to initial state from trajectory")
+    if domain_name == 'shadow_hand':
+        print(f"  Goal orientation set to: {goal_quat}")
     
     # Collect frames by applying downsampled controls
     print("Applying downsampled controls to environment...")
