@@ -88,7 +88,7 @@ def gen_traj_shadow_hand(
     task_params=None,
     output_dir=None,
     verbose=2,
-    orientation_error_threshold=1.0,  # Threshold for successful trajectory
+    orientation_error_threshold=0.05,  # Threshold for successful trajectory
     partition_idx=None,
     num_partitions=None
     ):
@@ -767,7 +767,7 @@ def main():
         angle_interval = args.interval if args.interval is not None else 0.05
         rollout_horizon = args.rollout_horizon if args.rollout_horizon is not None else 500
         opt_steps = args.opt_steps if args.opt_steps is not None else 1
-        orientation_threshold = args.orientation_threshold if args.orientation_threshold is not None else 0.7
+        orientation_threshold = args.orientation_threshold if args.orientation_threshold is not None else 0.1
         
         gen_traj_shadow_hand(
             cube_angle_range=(-np.pi, np.pi),

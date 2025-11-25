@@ -362,8 +362,8 @@ def train_shadow_hand(
         learning_starts=max(1000, num_envs * 50),  # Start after enough initial samples
         tau=0.005,
         gamma=0.98,  # Slightly lower gamma for better short-term learning
-        train_freq=(1, "episode"),  # Train after each episode for better sample efficiency
-        gradient_steps=-1,  # Do as many gradient steps as steps done in the env
+        train_freq=1,  # Train after every step (works with multiple envs)
+        gradient_steps=1,  # Do 1 gradient step per env step
         verbose=1,
         tensorboard_log=str(log_path / "tensorboard"),
         seed=seed,
@@ -376,8 +376,8 @@ def train_shadow_hand(
     print(f"  Buffer size: {buffer_size:,}")
     print(f"  Batch size: {batch_size}")
     print(f"  Gamma: 0.98")
-    print(f"  Train freq: after each episode")
-    print(f"  Gradient steps: -1 (match env steps)")
+    print(f"  Train freq: every step")
+    print(f"  Gradient steps: 1 per env step")
     
     # Train the model
     print(f"\nStarting training for {total_timesteps:,} timesteps...")
@@ -460,13 +460,6 @@ def main():
     
     print("\nProof of concept completed successfully!")
     print(f"Model trained for {config['total_timesteps']:,} timesteps")
-    #print(f"Final performance: {mean_reward:.2f} reward, {success_rate:.2%} success rate")
-    """print("\nNOTE: The Shadow Hand manipulation tasks are extremely challenging.")
-    print("Expected results for HandManipulateBlockRotateZ-v1 with dense rewards:")
-    print("  - Initial reward: ~ -10 to -15")
-    print("  - After 1M steps: ~ -3 to -8 (showing learning)")
-    print("  - After 2M steps: ~ -2 to -5 (reasonable performance)")
-    print("  - Success typically requires 3-5M steps or HER algorithm")"""
     print(f"\nLogs and videos saved to: {config['log_dir']}")
     
     return model

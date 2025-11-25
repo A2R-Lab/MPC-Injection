@@ -145,11 +145,19 @@ def plot_training_time(base_dir, output_file='training_time_comparison.png', per
         if percentages_to_plot is not None and percentage not in percentages_to_plot:
             continue
         
-        # Find tensorboard directory
-        tb_dir = os.path.join(exp_dir, 'tensorboard', 'SAC_1')
+        # Find tensorboard directory - check for both SAC_1 and TD3_1
+        tb_base = os.path.join(exp_dir, 'tensorboard')
+        tb_dir = None
         
-        if not os.path.exists(tb_dir):
-            print(f"Warning: Tensorboard directory not found: {tb_dir}")
+        # Try SAC_1 first, then TD3_1
+        for subdir in ['SAC_1', 'TD3_1']:
+            potential_dir = os.path.join(tb_base, subdir)
+            if os.path.exists(potential_dir):
+                tb_dir = potential_dir
+                break
+        
+        if tb_dir is None:
+            print(f"Warning: Tensorboard directory not found in: {tb_base}")
             continue
         
         # Try to load time/time_elapsed first
@@ -265,11 +273,19 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
         if percentages_to_plot is not None and percentage not in percentages_to_plot:
             continue
         
-        # Find tensorboard directory
-        tb_dir = os.path.join(exp_dir, 'tensorboard', 'SAC_1')
+        # Find tensorboard directory - check for both SAC_1 and TD3_1
+        tb_base = os.path.join(exp_dir, 'tensorboard')
+        tb_dir = None
         
-        if not os.path.exists(tb_dir):
-            print(f"Warning: Tensorboard directory not found: {tb_dir}")
+        # Try SAC_1 first, then TD3_1
+        for subdir in ['SAC_1', 'TD3_1']:
+            potential_dir = os.path.join(tb_base, subdir)
+            if os.path.exists(potential_dir):
+                tb_dir = potential_dir
+                break
+        
+        if tb_dir is None:
+            print(f"Warning: Tensorboard directory not found in: {tb_base}")
             continue
         
         # Load data
@@ -336,7 +352,7 @@ def main():
     # Select base directory containing experiment runs
     # Uncomment the one you want to use:
     #base_dir = 'logs/SAC-MPC-walker-runs/1st_run/'
-    base_dir = 'logs/SAC-MPC-walker-runs/6th_run/'
+    base_dir = 'logs/TD3-MPC-walker-runs/5th_run/'
     
     # Select environment to plot
     # Option 1: Cartpole

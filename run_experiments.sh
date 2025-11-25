@@ -12,14 +12,17 @@
 # Common parameters
 #ENV_NAME="cartpole-swingup"
 ENV_NAME="walker-walk"
-ALGORITHM="SAC-MPC"
+
+#ALGORITHM="SAC-MPC"
+ALGORITHM="TD3-MPC"
+
 TOTAL_TIMESTEPS=500000
 INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
 RANDOM_SELECT="True"
 #DATA_DIR="data/cartpole_0_001dt/"
 DATA_DIR="data/walker_0_0025dt/"
-LOG_DIR="logs/TD3-MPC-walker-runs/1st_run/"
-SEED=3000 # 1 is default for train_sbx.py
+LOG_DIR="logs/TD3-MPC-walker-runs/5th_run/"
+SEED=5000 # 1 is default for train_sbx.py
 
 echo "Starting ${ALGORITHM} percentage sweep experiments"
 echo "=============================================="

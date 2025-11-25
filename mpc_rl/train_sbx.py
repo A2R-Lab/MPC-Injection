@@ -76,6 +76,9 @@ from mpc_rl.common import TaggedReplayBuffer, FixedMPCInjectCallback, PercentMPC
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 
+# From custom gymnasium environment for the shadow hand
+import shadow_hand_gym
+
 # Environment flags
 _ENV_NAME = flags.DEFINE_string(
     "env_name",
@@ -209,6 +212,23 @@ def parse_env_name(env_name: str) -> tuple[str, str]:
     return domain, task
 
 
+def is_shadow_hand_env(env_name: str) -> bool:
+    """
+    Check if the environment is a shadow hand environment.
+    
+    Args:
+        env_name: Environment name
+    
+    Returns:
+        True if it's a shadow hand environment
+    """
+    shadow_hand_envs = [
+        "ShadowHandManipulateBlockRotateXYZ-v1",
+        "ShadowHandManipulateBlockRotateXYZDense-v1",
+    ]
+    return env_name in shadow_hand_envs
+
+
 def make_dm_env(domain: str, task: str, render_mode=None):
     """
     Create a dm_control environment wrapped for gymnasium.
@@ -223,6 +243,22 @@ def make_dm_env(domain: str, task: str, render_mode=None):
     """
     dm_env = suite.load(domain_name=domain, task_name=task)
     gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
+    gym_env = FlattenObservation(gym_env)
+    return gym_env
+
+
+def make_shadow_hand_env(env_name: str, render_mode=None):
+    """
+    Create a shadow hand gymnasium environment.
+    
+    Args:
+        env_name: Full environment name (e.g., 'ShadowHandManipulateBlockRotateXYZ-v1')
+        render_mode: Render mode for the environment
+    
+    Returns:
+        Shadow hand gymnasium environment
+    """
+    gym_env = gym.make(env_name, render_mode=render_mode)
     gym_env = FlattenObservation(gym_env)
     return gym_env
 
@@ -382,11 +418,20 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     if enable_logging:
         # Create eval environment for evaluation callback
         # Must be wrapped the same way as training env (with VecNormalize)
-        eval_env = make_vec_env(
-            lambda: make_dm_env(domain, task),
-            n_envs=1,
-            seed=seed+1000,
-        )
+        # Determine environment type from domain
+        is_shadow_hand = (domain == "shadow_hand")
+        if is_shadow_hand:
+            eval_env = make_vec_env(
+                lambda: make_shadow_hand_env(task),  # task contains the full env name
+                n_envs=1,
+                seed=seed+1000,
+            )
+        else:
+            eval_env = make_vec_env(
+                lambda: make_dm_env(domain, task),
+                n_envs=1,
+                seed=seed+1000,
+            )
         eval_env = VecNormalize(
             eval_env,
             training=False,  # Don't update stats during evaluation
@@ -451,7 +496,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     Args:
         model: Trained model
         domain: Environment domain
-        task: Environment task
+        task: Environment task (for shadow_hand, this is the full env name)
         num_episodes: Number of episodes to evaluate
         num_videos: Number of videos to record
         video_dir: Directory to save videos
@@ -463,9 +508,15 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     episode_rewards = []
     episode_lengths = []
     
+    # Determine if this is a shadow hand environment
+    is_shadow_hand = (domain == "shadow_hand")
+    
     for episode in range(num_episodes):
         # Create evaluation environment
-        eval_env_base = make_dm_env(domain, task, render_mode="rgb_array")
+        if is_shadow_hand:
+            eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
+        else:
+            eval_env_base = make_dm_env(domain, task, render_mode="rgb_array")
         
         # Wrap in VecEnv for compatibility with model
         eval_env = DummyVecEnv([lambda: eval_env_base])
@@ -556,16 +607,25 @@ def main(argv):
     print(f"=" * 60)
     # ============================================================================
     
+    # Check if this is a shadow hand environment
+    is_shadow_hand = is_shadow_hand_env(_ENV_NAME.value)
+    
     # Parse environment name
-    if _DOMAIN.value and _TASK.value:
+    if is_shadow_hand:
+        # Shadow hand environments use the full registered name
+        env_name = _ENV_NAME.value
+        domain = "shadow_hand"
+        task = env_name  # Use full name as task for consistency
+        print(f"Environment: Shadow Hand - {env_name}")
+    elif _DOMAIN.value and _TASK.value:
         domain = _DOMAIN.value
         task = _TASK.value
         env_name = f"{domain}-{task}"
+        print(f"Environment: {domain}/{task}")
     else:
         domain, task = parse_env_name(_ENV_NAME.value)
         env_name = _ENV_NAME.value
-    
-    print(f"Environment: {domain}/{task}")
+        print(f"Environment: {domain}/{task}")
     
     # Determine if we're loading a checkpoint
     if _LOAD_RUN_NAME.value:
@@ -638,11 +698,18 @@ def main(argv):
     
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
-    vec_env = make_vec_env(
-        lambda: make_dm_env(domain, task), # lambda fxn so make_vec_env() can make multiple envs
-        n_envs=_NUM_ENVS.value,
-        seed=_SEED.value,
-    )
+    if is_shadow_hand:
+        vec_env = make_vec_env(
+            lambda: make_shadow_hand_env(env_name),
+            n_envs=_NUM_ENVS.value,
+            seed=_SEED.value,
+        )
+    else:
+        vec_env = make_vec_env(
+            lambda: make_dm_env(domain, task), # lambda fxn so make_vec_env() can make multiple envs
+            n_envs=_NUM_ENVS.value,
+            seed=_SEED.value,
+        )
 
     # VecNormalize standardizes observations and rewards to ~N(0,1), which is critical for
     # stable learning in continuous control (prevents different-scale features from dominating)
