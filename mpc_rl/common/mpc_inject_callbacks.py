@@ -4,6 +4,9 @@ from stable_baselines3.common.callbacks import BaseCallback
 from dm_control import suite
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
+import gymnasium as gym
+import mujoco
+import shadow_hand_gym
 
 
 class FixedMPCInjectCallback(BaseCallback):
@@ -152,19 +155,28 @@ class FixedMPCInjectCallback(BaseCallback):
         # This should match the ratio of MPC timestep to RL control timestep
         # Cartpole: MPC at 0.01s, RL at 0.01s -> downsample by 1
         # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
+        # Shadow Hand: MPC at 0.002s, RL at 0.002s -> downsample by 1
         if self.domain == "cartpole":
             downsample_factor = 1  # MPC and RL both at 0.01s
         elif self.domain == "walker":
             downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
+        elif self.domain == "shadow_hand":
+            downsample_factor = 1  # MPC and RL both at 0.002s
         else:
             raise ValueError(f"Unsupported domain: {self.domain}")
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        dm_env = suite.load(domain_name=self.domain, task_name=self.task)
-        temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
-        temp_env = FlattenObservation(temp_env)
+        if self.domain == "shadow_hand":
+            # For shadow_hand, task is the full gym env name
+            temp_env = gym.make(self.task, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
+        else:
+            # For dm_control environments
+            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
         
         # Seed the temporary environment for reproducibility
         if self.seed is not None:
@@ -234,14 +246,23 @@ class FixedMPCInjectCallback(BaseCallback):
             obs, _ = temp_env.reset()
             
             # Set the environment to the MPC initial state by setting physics directly
-            temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
-            temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+            if self.domain == "shadow_hand":
+                # For shadow_hand (gymnasium environment)
+                temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
+                # Get observation from environment
+                obs = temp_env.unwrapped._get_obs()
+            else:
+                # For dm_control environments
+                temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                temp_env.unwrapped._env.physics.forward()
+                # Get initial observation from environment (let the environment compute it)
+                obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             
-            # Forward the physics to update the observation
-            temp_env.unwrapped._env.physics.forward()
-            
-            # Get initial observation from environment (let the environment compute it)
-            obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             # Flatten the observation if it's a dict
             if isinstance(obs, dict):
                 obs = np.concatenate([v.flatten() for v in obs.values()])
@@ -477,21 +498,30 @@ class PercentMPCInjectCallback(BaseCallback):
         # Cartpole: MPC at 0.001s, RL at 0.01s -> downsample by 10
         #           TODO: Try Cartpole data collection at 0.01s to match RL timestep?
         # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
+        # Shadow Hand: MPC at 0.002s, RL at 0.002s -> downsample by 1
         # NOTE: This can be calculated/seen from the env_modified.xml and the related
         #       task.xml files for MPC vs the env.py and env.py files for RL in dm_control.
         if self.domain == "cartpole":
             downsample_factor = 10  # MPC at 0.001s, RL at 0.01s
         elif self.domain == "walker":
             downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
+        elif self.domain == "shadow_hand":
+            downsample_factor = 1  # MPC and RL both at 0.002s
         else:
             raise ValueError(f"Unsupported domain: {self.domain}")
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        dm_env = suite.load(domain_name=self.domain, task_name=self.task)
-        temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
-        temp_env = FlattenObservation(temp_env)
+        if self.domain == "shadow_hand":
+            # For shadow_hand, task is the full gym env name
+            temp_env = gym.make(self.task, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
+        else:
+            # For dm_control environments
+            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
         
         # Seed the temporary environment for reproducibility
         if self.seed is not None:
@@ -654,14 +684,23 @@ class PercentMPCInjectCallback(BaseCallback):
                 raise NotImplementedError("On-the-fly MPC generation not yet implemented. Please provide data_dir.")
             
             # Set the environment to the MPC initial state by setting physics directly
-            temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
-            temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+            if self.domain == "shadow_hand":
+                # For shadow_hand (gymnasium environment)
+                temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
+                # Get observation from environment
+                obs = temp_env.unwrapped._get_obs()
+            else:
+                # For dm_control environments
+                temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                temp_env.unwrapped._env.physics.forward()
+                # Get initial observation from environment (let the environment compute it)
+                obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             
-            # Forward the physics to update the observation
-            temp_env.unwrapped._env.physics.forward()
-            
-            # Get initial observation from environment (let the environment compute it)
-            obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             # Flatten the observation if it's a dict
             if isinstance(obs, dict):
                 obs = np.concatenate([v.flatten() for v in obs.values()])
