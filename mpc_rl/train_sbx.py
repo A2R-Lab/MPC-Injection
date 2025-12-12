@@ -197,8 +197,7 @@ def parse_env_name(env_name: str) -> tuple[str, str]:
     Returns:
         Tuple of (domain, task)
     """
-    # Replace underscores with hyphens and split
-    env_name = env_name.replace("_", "-")
+    # Split on hyphen only (preserve underscores in task names like 'swingup_sparse')
     parts = env_name.split("-")
     
     if len(parts) < 2:
@@ -553,7 +552,11 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
             
             # Capture frames for video
             if record_video:
-                frame = eval_env_base.render()
+                # Use tracking camera for walker environments
+                if domain == "walker":
+                    frame = eval_env.unwrapped.envs[0].unwrapped._env.physics.render(camera_id='side', height=480, width=640)
+                else:
+                    frame = eval_env_base.render()
                 if frame is not None:
                     frames.append(frame)
             

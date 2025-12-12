@@ -352,7 +352,8 @@ def main():
     # Select base directory containing experiment runs
     # Uncomment the one you want to use:
     #base_dir = 'logs/SAC-MPC-walker-runs/1st_run/'
-    base_dir = 'logs/TD3-MPC-walker-runs/5th_run/'
+    #base_dir = 'logs/TD3-MPC-walker-runs/5th_run/'
+    base_dir = 'logs/SAC-MPC-walker-velocity_only_reward/1st_run'
     
     # Select environment to plot
     # Option 1: Cartpole
