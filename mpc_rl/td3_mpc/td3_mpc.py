@@ -1,68 +1,35 @@
 from functools import partial
-from typing import Any, ClassVar, Literal, Optional, Union
+from typing import Any, ClassVar, Optional, Union
 
 import flax
-import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from flax.training.train_state import TrainState
 from gymnasium import spaces
-from jax.typing import ArrayLike
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 
 from sbx.common.off_policy_algorithm import OffPolicyAlgorithmJax
 from sbx.common.type_aliases import ReplayBufferSamplesNp, RLTrainState
-from sbx.sac.policies import SACPolicy, SimbaSACPolicy
-
-from .policies import SAC_MPCPolicy
-
-"""
-NOTE: This file is derived from SBX's implementation of SAC. We are modifying it to be able to
-inject MPC trajectories into the replay buffer during training to evaluate the effect on learning
-since MPC is essentially solving an approximate solution to the MDP.
-"""
-
-class EntropyCoef(nn.Module):
-    ent_coef_init: float = 1.0
-
-    @nn.compact
-    def __call__(self) -> jnp.ndarray:
-        log_ent_coef = self.param("log_ent_coef", init_fn=lambda key: jnp.full((), jnp.log(self.ent_coef_init)))
-        return jnp.exp(log_ent_coef)
+from sbx.td3.policies import TD3Policy
 
 
-class ConstantEntropyCoef(nn.Module):
-    ent_coef_init: float = 1.0
-
-    @nn.compact
-    def __call__(self) -> float:
-        # Hack to not optimize the entropy coefficient while not having to use if/else for the jit
-        # TODO: add parameter in train to remove that hack
-        self.param("dummy_param", init_fn=lambda key: jnp.full((), self.ent_coef_init))
-        return self.ent_coef_init
-    
-
-class SAC_MPC(OffPolicyAlgorithmJax):
+class TD3_MPC(OffPolicyAlgorithmJax):
     """
-    Soft Actor-Critic (SAC) with MPC-augmented replay buffer.
+    Twin Delayed DDPG (TD3) with MPC-augmented replay buffer.
 
-    This implementation is based on the original SAC algorithm, with modifications to allow
+    This implementation is based on the original TD3 algorithm, with modifications to allow
     injecting MPC-generated trajectories into the replay buffer during training.
     """
-    policy_aliases: ClassVar[dict[str, type[SACPolicy]]] = {  # type: ignore[assignment]
-        "MlpPolicy": SAC_MPCPolicy, # TODO: Add and remove SACPolicy. Not sure, but first try to get this as vanilla SAC to work I think
-        "MlpPolicy": SACPolicy,
-        # Residual net, from https://github.com/SonyResearch/simba
-        "SimbaPolicy": SimbaSACPolicy,
+    policy_aliases: ClassVar[dict[str, type[TD3Policy]]] = {  # type: ignore[assignment]
+        "MlpPolicy": TD3Policy,
         # Minimal dict support using flatten()
-        "MultiInputPolicy": SACPolicy,
+        "MultiInputPolicy": TD3Policy,
     }
 
-    policy: SACPolicy
+    policy: TD3Policy
     action_space: spaces.Box  # type: ignore[assignment]
 
     def __init__(
@@ -78,18 +45,15 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         gamma: float = 0.99,
         train_freq: Union[int, tuple[int, str]] = 1,
         gradient_steps: int = 1,
-        policy_delay: int = 1,
+        policy_delay: int = 2,
+        target_policy_noise: float = 0.2,
+        target_noise_clip: float = 0.5,
         action_noise: Optional[ActionNoise] = None,
         replay_buffer_class: Optional[type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
         n_steps: int = 1,
-        ent_coef: Union[str, float] = "auto",
-        target_entropy: Union[Literal["auto"], float] = "auto",
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        use_sde_at_warmup: bool = False,
-        stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
+        stats_window_size: int = 100,
         policy_kwargs: Optional[dict[str, Any]] = None,
         param_resets: Optional[list[int]] = None,  # List of timesteps after which to reset the params
         verbose: int = 0,
@@ -113,9 +77,7 @@ class SAC_MPC(OffPolicyAlgorithmJax):
             replay_buffer_class=replay_buffer_class,
             replay_buffer_kwargs=replay_buffer_kwargs,
             n_steps=n_steps,
-            use_sde=use_sde,
-            sde_sample_freq=sde_sample_freq,
-            use_sde_at_warmup=use_sde_at_warmup,
+            use_sde=False,
             stats_window_size=stats_window_size,
             policy_kwargs=policy_kwargs,
             param_resets=param_resets,
@@ -127,8 +89,8 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         )
 
         self.policy_delay = policy_delay
-        self.ent_coef_init = ent_coef
-        self.target_entropy = target_entropy
+        self.target_policy_noise = target_policy_noise
+        self.target_noise_clip = target_noise_clip
 
         if _init_setup_model:
             self._setup_model()
@@ -148,52 +110,15 @@ class SAC_MPC(OffPolicyAlgorithmJax):
 
             self.key = self.policy.build(self.key, self.lr_schedule, self.qf_learning_rate)
 
-            self.key, ent_key = jax.random.split(self.key, 2)
-
             self.actor = self.policy.actor  # type: ignore[assignment]
             self.qf = self.policy.qf  # type: ignore[assignment]
 
-            # The entropy coefficient or entropy can be learned automatically
-            # see Automating Entropy Adjustment for Maximum Entropy RL section
-            # of https://arxiv.org/abs/1812.05905
-            if isinstance(self.ent_coef_init, str) and self.ent_coef_init.startswith("auto"):
-                # Default initial value of ent_coef when learned
-                ent_coef_init = 1.0
-                if "_" in self.ent_coef_init:
-                    ent_coef_init = float(self.ent_coef_init.split("_")[1])
-                    assert ent_coef_init > 0.0, "The initial value of ent_coef must be greater than 0"
-
-                self.ent_coef = EntropyCoef(ent_coef_init)
-            else:
-                # This will throw an error if a malformed string (different from 'auto') is passed
-                assert isinstance(
-                    self.ent_coef_init, float
-                ), f"Entropy coef must be float when not equal to 'auto', actual: {self.ent_coef_init}"
-                self.ent_coef = ConstantEntropyCoef(self.ent_coef_init)  # type: ignore[assignment]
-
-            self.ent_coef_state = TrainState.create(
-                apply_fn=self.ent_coef.apply,
-                params=self.ent_coef.init(ent_key)["params"],
-                tx=optax.adam(
-                    learning_rate=self.lr_schedule(1),
-                ),
-            )
-
-        # Target entropy is used when learning the entropy coefficient
-        if self.target_entropy == "auto":
-            # automatically set target entropy if needed
-            self.target_entropy = -np.prod(self.env.action_space.shape).astype(np.float32)  # type: ignore
-        else:
-            # Force conversion
-            # this will also throw an error for unexpected string
-            self.target_entropy = float(self.target_entropy)
-
-    def _excluded_save_params(self) -> list[str]:
+    def _excluded_save_params(self):
         """
-        Returns the names of the parameters that should be excluded from being saved.
-        
-        We exclude the MPC injection callback and target percentage because:
-        1. Callbacks contain unpicklable objects (file handles, environments)
+        Returns the names of the parameters that should be excluded from being saved
+
+        We exclude the MPC injection callback and target percentage since:
+        1. Callbacks contain unpickleable objects (e.g. file handles, envs)
         2. These are runtime-only attributes set by train_sbx.py
         3. They need to be reconnected when loading the model
         """
@@ -207,7 +132,7 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "SAC",
+        tb_log_name: str = "TD3",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ):
@@ -222,45 +147,33 @@ class SAC_MPC(OffPolicyAlgorithmJax):
 
     def train(self, gradient_steps: int, batch_size: int) -> None:
         assert self.replay_buffer is not None
-        
-        # Check MPC percentage before sampling (if using TaggedReplayBuffer)
-        if hasattr(self.replay_buffer, 'get_mpc_percentage'):
+
+        # Check MPC percentage before sampling if using TaggedReplayBuffer
+        if hasattr(self.replay_buffer, "get_mpc_percentage"):
             actual_mpc_pct = self.replay_buffer.get_mpc_percentage()
-            
+
             # Log actual percentage for monitoring
             self.logger.record("replay_buffer/mpc_percentage_actual", actual_mpc_pct)
-            
-            # If we have a target percentage set and we're below it, inject more MPC data
+
+            # If we have a target % set and we're below it, inject more MPC data
             if hasattr(self, 'target_mpc_percentage') and hasattr(self, 'mpc_inject_callback'):
-                # For 100% target, accept \leq 99% if buffer is full (can't maintain exactly 100% with ongoing RL)
+                # For 100% target, accept \leq 99% if buffer is full (since we can't maintain exactly 100%)
                 buffer_full = self.replay_buffer.size() >= self.replay_buffer.buffer_size
                 target_reached = (
                     actual_mpc_pct >= self.target_mpc_percentage or
                     (self.target_mpc_percentage >= 100 and actual_mpc_pct >= 99.0 and buffer_full)
                 )
-                
+
                 if not target_reached:
                     if self.verbose > 0:
                         print(f"\n[Train Update {self._n_updates}] MPC percentage low: {actual_mpc_pct:.2f}% < {self.target_mpc_percentage}%")
                         print(f"Injecting MPC trajectories before sampling...")
                     
                     # Call the injection method from the callback
-                    self.mpc_inject_callback._inject_mpc_trajectories()
-        
+                    self.mpc_inject_callback._inject_mpc_trajectories()                        
+
         # Sample all at once for efficiency (so we can jit the for loop)
         data = self.replay_buffer.sample(batch_size * gradient_steps, env=self._vec_normalize_env)
-
-        self._update_learning_rate(
-            self.policy.actor_state.opt_state,
-            learning_rate=self.lr_schedule(self._current_progress_remaining),
-            name="learning_rate_actor",
-        )
-        # Note: for now same schedule for actor and critic unless qf_lr = cst
-        self._update_learning_rate(
-            self.policy.qf_state.opt_state,
-            learning_rate=self.initial_qf_learning_rate or self.lr_schedule(self._current_progress_remaining),
-            name="learning_rate_critic",
-        )
 
         # Maybe reset the parameters/optimizers fully
         self._maybe_reset_params()
@@ -292,42 +205,40 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         (
             self.policy.qf_state,
             self.policy.actor_state,
-            self.ent_coef_state,
             self.key,
-            (actor_loss_value, qf_loss_value, ent_coef_loss_value, ent_coef_value),
+            (actor_loss_value, qf_loss_value),
         ) = self._train(
             self.tau,
-            self.target_entropy,
             gradient_steps,
             data,
             self.policy_delay,
             (self._n_updates + 1) % self.policy_delay,
+            self.target_policy_noise,
+            self.target_noise_clip,
             self.policy.qf_state,
             self.policy.actor_state,
-            self.ent_coef_state,
             self.key,
         )
         self._n_updates += gradient_steps
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/actor_loss", actor_loss_value.item())
         self.logger.record("train/critic_loss", qf_loss_value.item())
-        self.logger.record("train/ent_coef_loss", ent_coef_loss_value.item())
-        self.logger.record("train/ent_coef", ent_coef_value.item())
 
     def dump_logs(self) -> None:
         """
         Write log data.
-        
+
         Overrides the base class to include time_elapsed in TensorBoard logs.
-        By default, SB3/SBX excludes time_elapsed from TensorBoard.
+        By default SB3/SBX excludes time_elapsed from TensorBoard.
         """
         import sys
         import time
         from stable_baselines3.common.utils import safe_mean
-        
+
         assert self.ep_info_buffer is not None
         assert self.ep_success_buffer is not None
-
+        
+        # TODO: Probably don't need this fps estimate anymore, also remove in SAC-MPC
         time_elapsed = max((time.time_ns() - self.start_time) / 1e9, sys.float_info.epsilon)
         fps = int((self.num_timesteps - self._num_timesteps_at_start) / time_elapsed)
         self.logger.record("time/episodes", self._episode_num, exclude="tensorboard")
@@ -340,36 +251,37 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         self.logger.record("time/time_elapsed", int(time_elapsed))
         self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
         if self.use_sde:
-            self.logger.record("train/std", (self.actor.get_std()).mean().item())  # type: ignore[operator]
-
+            self.logger.record("train/std", (self.actor.get_std()).mean().item())
+        
         if len(self.ep_success_buffer) > 0:
             self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
-            
+        
         # Pass the number of timesteps for tensorboard
         self.logger.dump(step=self.num_timesteps)
 
     @staticmethod
     @jax.jit
     def update_critic(
-        actor_state: TrainState,
+        actor_state: RLTrainState,
         qf_state: RLTrainState,
-        ent_coef_state: TrainState,
         observations: jax.Array,
         actions: jax.Array,
         next_observations: jax.Array,
         rewards: jax.Array,
         dones: jax.Array,
         discounts: jax.Array,
+        target_policy_noise: float,
+        target_noise_clip: float,
         key: jax.Array,
     ):
         key, noise_key, dropout_key_target, dropout_key_current = jax.random.split(key, 4)
-        # sample action from the actor
-        dist = actor_state.apply_fn(actor_state.params, next_observations)
-        next_state_actions = dist.sample(seed=noise_key)
-        next_log_prob = dist.log_prob(next_state_actions)
+        # Select action according to target net and add clipped noise
+        next_state_actions = actor_state.apply_fn(actor_state.target_params, next_observations)
+        noise = jax.random.normal(noise_key, actions.shape) * target_policy_noise
+        noise = jnp.clip(noise, -target_noise_clip, target_noise_clip)
+        next_state_actions = jnp.clip(next_state_actions + noise, -1.0, 1.0)
 
-        ent_coef_value = ent_coef_state.apply_fn({"params": ent_coef_state.params})
-
+        #  Compute the next Q-values: min over all critics targets
         qf_next_values = qf_state.apply_fn(
             qf_state.target_params,
             next_observations,
@@ -378,8 +290,6 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         )
 
         next_q_values = jnp.min(qf_next_values, axis=0)
-        # td error + entropy term
-        next_q_values = next_q_values - ent_coef_value * next_log_prob[:, None]
         # shape is (batch_size, 1)
         target_q_values = rewards[:, None] + (1 - dones[:, None]) * discounts[:, None] * next_q_values
 
@@ -393,7 +303,7 @@ class SAC_MPC(OffPolicyAlgorithmJax):
 
         return (
             qf_state,
-            (qf_loss_value, ent_coef_value),
+            qf_loss_value,
             key,
         )
 
@@ -402,16 +312,13 @@ class SAC_MPC(OffPolicyAlgorithmJax):
     def update_actor(
         actor_state: RLTrainState,
         qf_state: RLTrainState,
-        ent_coef_state: TrainState,
         observations: jax.Array,
         key: jax.Array,
     ):
-        key, dropout_key, noise_key = jax.random.split(key, 3)
+        key, dropout_key = jax.random.split(key, 2)
 
-        def actor_loss(params: flax.core.FrozenDict) -> tuple[jax.Array, jax.Array]:
-            dist = actor_state.apply_fn(params, observations)
-            actor_actions = dist.sample(seed=noise_key)
-            log_prob = dist.log_prob(actor_actions).reshape(-1, 1)
+        def actor_loss(params: flax.core.FrozenDict) -> jax.Array:
+            actor_actions = actor_state.apply_fn(params, observations)
 
             qf_pi = qf_state.apply_fn(
                 qf_state.params,
@@ -421,69 +328,36 @@ class SAC_MPC(OffPolicyAlgorithmJax):
             )
             # Take min among all critics (mean for droq)
             min_qf_pi = jnp.min(qf_pi, axis=0)
-            ent_coef_value = ent_coef_state.apply_fn({"params": ent_coef_state.params})
-            actor_loss = (ent_coef_value * log_prob - min_qf_pi).mean()
-            return actor_loss, -log_prob.mean()
+            actor_loss = -min_qf_pi.mean()
+            return actor_loss
 
-        (actor_loss_value, entropy), grads = jax.value_and_grad(actor_loss, has_aux=True)(actor_state.params)
+        actor_loss_value, grads = jax.value_and_grad(actor_loss, has_aux=False)(actor_state.params)
         actor_state = actor_state.apply_gradients(grads=grads)
 
-        return actor_state, qf_state, actor_loss_value, key, entropy
+        return actor_state, qf_state, actor_loss_value, key
 
     @staticmethod
     @jax.jit
-    def soft_update(tau: float, qf_state: RLTrainState) -> RLTrainState:
+    def soft_update(tau: float, qf_state: RLTrainState, actor_state: RLTrainState) -> tuple[RLTrainState, RLTrainState]:
         qf_state = qf_state.replace(target_params=optax.incremental_update(qf_state.params, qf_state.target_params, tau))
-        return qf_state
-
-    @staticmethod
-    @jax.jit
-    def update_temperature(target_entropy: ArrayLike, ent_coef_state: TrainState, entropy: float):
-        def temperature_loss(temp_params: flax.core.FrozenDict) -> jax.Array:
-            # Note: we optimize the log of the entropy coeff which is slightly different from the paper
-            # as discussed in https://github.com/rail-berkeley/softlearning/issues/37
-            ent_coef_value = ent_coef_state.apply_fn({"params": temp_params})
-            ent_coef_loss = jnp.log(ent_coef_value) * (entropy - target_entropy).mean()  # type: ignore[union-attr]
-            return ent_coef_loss
-
-        ent_coef_loss, grads = jax.value_and_grad(temperature_loss)(ent_coef_state.params)
-        ent_coef_state = ent_coef_state.apply_gradients(grads=grads)
-
-        return ent_coef_state, ent_coef_loss
-
-    @classmethod
-    def update_actor_and_temperature(
-        cls,
-        actor_state: RLTrainState,
-        qf_state: RLTrainState,
-        ent_coef_state: TrainState,
-        observations: jax.Array,
-        target_entropy: ArrayLike,
-        key: jax.Array,
-    ):
-        (actor_state, qf_state, actor_loss_value, key, entropy) = cls.update_actor(
-            actor_state,
-            qf_state,
-            ent_coef_state,
-            observations,
-            key,
+        actor_state = actor_state.replace(
+            target_params=optax.incremental_update(actor_state.params, actor_state.target_params, tau)
         )
-        ent_coef_state, ent_coef_loss_value = cls.update_temperature(target_entropy, ent_coef_state, entropy)
-        return actor_state, qf_state, ent_coef_state, actor_loss_value, ent_coef_loss_value, key
+        return qf_state, actor_state
 
     @classmethod
     @partial(jax.jit, static_argnames=["cls", "gradient_steps", "policy_delay", "policy_delay_offset"])
     def _train(
         cls,
         tau: float,
-        target_entropy: ArrayLike,
         gradient_steps: int,
         data: ReplayBufferSamplesNp,
         policy_delay: int,
         policy_delay_offset: int,
+        target_policy_noise: float,
+        target_noise_clip: float,
         qf_state: RLTrainState,
-        actor_state: TrainState,
-        ent_coef_state: TrainState,
+        actor_state: RLTrainState,
         key: jax.Array,
     ):
         assert data.observations.shape[0] % gradient_steps == 0
@@ -492,13 +366,10 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         carry = {
             "actor_state": actor_state,
             "qf_state": qf_state,
-            "ent_coef_state": ent_coef_state,
             "key": key,
             "info": {
                 "actor_loss": jnp.array(0.0),
                 "qf_loss": jnp.array(0.0),
-                "ent_coef_loss": jnp.array(0.0),
-                "ent_coef_value": jnp.array(0.0),
             },
         }
 
@@ -507,7 +378,6 @@ class SAC_MPC(OffPolicyAlgorithmJax):
             # `fori_loop` expect a signature fn(index, carry) -> carry
             actor_state = carry["actor_state"]
             qf_state = carry["qf_state"]
-            ent_coef_state = carry["ent_coef_state"]
             key = carry["key"]
             info = carry["info"]
             batch_obs = jax.lax.dynamic_slice_in_dim(data.observations, i * batch_size, batch_size)
@@ -518,46 +388,39 @@ class SAC_MPC(OffPolicyAlgorithmJax):
             batch_discounts = jax.lax.dynamic_slice_in_dim(data.discounts, i * batch_size, batch_size)
             (
                 qf_state,
-                (qf_loss_value, ent_coef_value),
+                qf_loss_value,
                 key,
             ) = cls.update_critic(
                 actor_state,
                 qf_state,
-                ent_coef_state,
                 batch_obs,
                 batch_actions,
                 batch_next_obs,
                 batch_rewards,
                 batch_dones,
                 batch_discounts,
+                target_policy_noise,
+                target_noise_clip,
                 key,
             )
-            qf_state = cls.soft_update(tau, qf_state)
+            qf_state, actor_state = cls.soft_update(tau, qf_state, actor_state)
 
-            (actor_state, qf_state, ent_coef_state, actor_loss_value, ent_coef_loss_value, key) = jax.lax.cond(
+            (actor_state, qf_state, actor_loss_value, key) = jax.lax.cond(
                 (policy_delay_offset + i) % policy_delay == 0,
                 # If True:
-                cls.update_actor_and_temperature,
+                cls.update_actor,
                 # If False:
-                lambda *_: (actor_state, qf_state, ent_coef_state, info["actor_loss"], info["ent_coef_loss"], key),
+                lambda *_: (actor_state, qf_state, info["actor_loss"], key),
                 actor_state,
                 qf_state,
-                ent_coef_state,
                 batch_obs,
-                target_entropy,
                 key,
             )
-            info = {
-                "actor_loss": actor_loss_value,
-                "qf_loss": qf_loss_value,
-                "ent_coef_loss": ent_coef_loss_value,
-                "ent_coef_value": ent_coef_value,
-            }
+            info = {"actor_loss": actor_loss_value, "qf_loss": qf_loss_value}
 
             return {
                 "actor_state": actor_state,
                 "qf_state": qf_state,
-                "ent_coef_state": ent_coef_state,
                 "key": key,
                 "info": info,
             }
@@ -567,12 +430,6 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         return (
             update_carry["qf_state"],
             update_carry["actor_state"],
-            update_carry["ent_coef_state"],
             update_carry["key"],
-            (
-                update_carry["info"]["actor_loss"],
-                update_carry["info"]["qf_loss"],
-                update_carry["info"]["ent_coef_loss"],
-                update_carry["info"]["ent_coef_value"],
-            ),
+            (update_carry["info"]["actor_loss"], update_carry["info"]["qf_loss"]),
         )

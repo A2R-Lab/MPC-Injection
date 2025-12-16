@@ -1,5 +1,5 @@
 <mujoco model="Cartpole">
-  <option timestep="0.001">
+  <option timestep="0.01"> <!-- modified from 0.001 to 0.01 to match dm_control -->
     <flag contact="disable"/>
   </option>
 

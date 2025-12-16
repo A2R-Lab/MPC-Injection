@@ -61,8 +61,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.planner.mpc_planner import MPCPlanner
-from mpc_rl.sac_mpc.mpc_inject_callbacks import FixedMPCInjectCallback, AdaptiveMPCInjectCallback
-from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
+from mpc_rl.common import FixedMPCInjectCallback, AdaptiveMPCInjectCallback
+from mpc_rl.sac_mpc import SAC_MPC
 
 # Import JAX and verify backend
 import jax

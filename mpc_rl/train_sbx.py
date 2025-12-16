@@ -18,7 +18,7 @@ try:
     compute_cap = result.stdout.strip().split('\n')[0].replace('.', '')
     print(f"Detected GPU compute capability: {compute_cap}")
     
-    # Configure for GPU
+    # Configuration flags for GPU
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
     os.environ["JAX_PLATFORMS"] = "cuda"
@@ -72,10 +72,12 @@ logging.set_verbosity(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.planner.mpc_planner import MPCPlanner
-from mpc_rl.sac_mpc.mpc_inject_callbacks import FixedMPCInjectCallback, PercentMPCInjectCallback
+from mpc_rl.common import TaggedReplayBuffer, FixedMPCInjectCallback, PercentMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
-from mpc_rl.sac_mpc.tagged_replay_buffer import TaggedReplayBuffer
+from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 
+# From custom gymnasium environment for the shadow hand
+import shadow_hand_gym
 
 # Environment flags
 _ENV_NAME = flags.DEFINE_string(
@@ -96,7 +98,7 @@ _TASK = flags.DEFINE_string(
 
 # Training flags
 _ALGORITHM = flags.DEFINE_enum(
-    "algorithm", "SAC", ["SAC", "PPO", "TD3", "SAC-MPC"], "RL algorithm to use"
+    "algorithm", "SAC", ["SAC", "PPO", "TD3", "SAC-MPC", "TD3-MPC"], "RL algorithm to use"
 )
 _TOTAL_TIMESTEPS = flags.DEFINE_integer(
     "total_timesteps", 500_000, "Total number of timesteps to train"
@@ -154,7 +156,7 @@ _RANDOM_SELECT = flags.DEFINE_boolean(
     "random_select", True, "Randomly select trajectories to inject"
 )
 _DATA_DIR = flags.DEFINE_string(
-    "data_dir", "data/cartpole_0_001dt/", "Directory containing pre-generated MPC trajectories"
+    "data_dir", None, "Directory containing pre-generated MPC trajectories (e.g., 'data/cartpole_0_010dt/' or 'data/walker_0_0025dt/')"
 )
 
 # Checkpoint flags
@@ -195,8 +197,7 @@ def parse_env_name(env_name: str) -> tuple[str, str]:
     Returns:
         Tuple of (domain, task)
     """
-    # Replace underscores with hyphens and split
-    env_name = env_name.replace("_", "-")
+    # Split on hyphen only (preserve underscores in task names like 'swingup_sparse')
     parts = env_name.split("-")
     
     if len(parts) < 2:
@@ -208,6 +209,23 @@ def parse_env_name(env_name: str) -> tuple[str, str]:
     domain = parts[0]
     task = "-".join(parts[1:])  # Handle tasks with hyphens like 'stand-and-reach'
     return domain, task
+
+
+def is_shadow_hand_env(env_name: str) -> bool:
+    """
+    Check if the environment is a shadow hand environment.
+    
+    Args:
+        env_name: Environment name
+    
+    Returns:
+        True if it's a shadow hand environment
+    """
+    shadow_hand_envs = [
+        "ShadowHandManipulateBlockRotateXYZ-v1",
+        "ShadowHandManipulateBlockRotateXYZDense-v1",
+    ]
+    return env_name in shadow_hand_envs
 
 
 def make_dm_env(domain: str, task: str, render_mode=None):
@@ -228,6 +246,22 @@ def make_dm_env(domain: str, task: str, render_mode=None):
     return gym_env
 
 
+def make_shadow_hand_env(env_name: str, render_mode=None):
+    """
+    Create a shadow hand gymnasium environment.
+    
+    Args:
+        env_name: Full environment name (e.g., 'ShadowHandManipulateBlockRotateXYZ-v1')
+        render_mode: Render mode for the environment
+    
+    Returns:
+        Shadow hand gymnasium environment
+    """
+    gym_env = gym.make(env_name, render_mode=render_mode)
+    gym_env = FlattenObservation(gym_env)
+    return gym_env
+
+
 def create_experiment_name(env_name: str, algorithm: str, suffix: str = None,
                           inject_type: str = None, percentage: int = None) -> str:
     """Create unique experiment name with timestamp and algorithm."""
@@ -235,8 +269,8 @@ def create_experiment_name(env_name: str, algorithm: str, suffix: str = None,
     timestamp = now.strftime("%Y%m%d-%H%M%S")
     exp_name = f"{env_name}-{algorithm}-{timestamp}"
     
-    # Add injection type for SAC-MPC
-    if algorithm == "SAC-MPC" and inject_type:
+    # Add injection type for SAC-MPC or TD3-MPC
+    if algorithm in ["SAC-MPC", "TD3-MPC"] and inject_type:
         exp_name += f"-{inject_type}"
         # Add percentage if using percentage-based injection
         if inject_type == "percentage" and percentage is not None:
@@ -257,7 +291,7 @@ def save_config(logdir: Path, config: dict):
 
 def load_model(algorithm: str, model_path: Path, env):
     """Load a trained model."""
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3}[algorithm]
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[algorithm]
     print(f"Loading model from: {model_path}")
     return algo_class.load(model_path, env=env)
 
@@ -270,7 +304,7 @@ def create_model(env, cfg):
     algorithm string. Calling algo_class(...) invokes the class constructor (__init__) to
     create a new agent instance with the specified hyperparameters.
     """
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC}[cfg.algorithm]
+    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[cfg.algorithm]
     
     if cfg.algorithm == "SAC":
         model = algo_class(
@@ -297,6 +331,21 @@ def create_model(env, cfg):
             tau=cfg.tau,
             gamma=cfg.gamma,
             replay_buffer_class=TaggedReplayBuffer,  # Use custom tagged replay buffer
+            verbose=1,
+            seed=cfg.seed,
+            tensorboard_log=cfg.tensorboard_log,
+        )
+    elif cfg.algorithm == "TD3-MPC":
+        model = algo_class(
+            "MlpPolicy",
+            env,
+            learning_rate=cfg.learning_rate,
+            buffer_size=cfg.buffer_size,
+            learning_starts=cfg.learning_starts,
+            batch_size=cfg.batch_size,
+            tau=cfg.tau,
+            gamma=cfg.gamma,
+            replay_buffer_class=TaggedReplayBuffer,
             verbose=1,
             seed=cfg.seed,
             tensorboard_log=cfg.tensorboard_log,
@@ -368,11 +417,20 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     if enable_logging:
         # Create eval environment for evaluation callback
         # Must be wrapped the same way as training env (with VecNormalize)
-        eval_env = make_vec_env(
-            lambda: make_dm_env(domain, task),
-            n_envs=1,
-            seed=seed+1000,
-        )
+        # Determine environment type from domain
+        is_shadow_hand = (domain == "shadow_hand")
+        if is_shadow_hand:
+            eval_env = make_vec_env(
+                lambda: make_shadow_hand_env(task),  # task contains the full env name
+                n_envs=1,
+                seed=seed+1000,
+            )
+        else:
+            eval_env = make_vec_env(
+                lambda: make_dm_env(domain, task),
+                n_envs=1,
+                seed=seed+1000,
+            )
         eval_env = VecNormalize(
             eval_env,
             training=False,  # Don't update stats during evaluation
@@ -396,11 +454,13 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         )
         callbacks.append(eval_callback)
     
-    # Add MPC injection callback if using SAC-MPC
-    if cfg.algorithm == "SAC-MPC":
+    # Add MPC injection callback if using SAC-MPC or TD3-MPC
+    if cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
         if _INJECT_TYPE.value == "fixed":
             print("\nSetting up FIXED MPC Injection from pre-generated trajectories...")
             inject_callback = FixedMPCInjectCallback(
+                domain=domain,
+                task=task,
                 inject_every_n_timesteps=cfg.inject_n_timesteps,
                 num_mpc_trajectories=cfg.num_traj,
                 data_dir=cfg.data_dir,
@@ -411,17 +471,18 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         elif _INJECT_TYPE.value == "percentage":
             print("\nSetting up PERCENTAGE MPC Injection from pre-generated trajectories...")
             inject_callback = PercentMPCInjectCallback(
+                domain=domain,
+                task=task,
                 target_percentage=cfg.percentage,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
-                #trajectory_files=['qpos_[0.01,3.15]_qvel_[0.01,-0.02]_rh_10000.npz'],
                 seed=seed,  # Pass seed for reproducible trajectory selection
                 verbose=1,
             )
         callbacks.append(inject_callback)
         
         # Store reference to callback in list so model can access it later
-        return (callbacks if callbacks else None), eval_env, inject_callback if cfg.algorithm == "SAC-MPC" else None
+        return (callbacks if callbacks else None), eval_env, inject_callback if cfg.algorithm in ["SAC-MPC", "TD3-MPC"] else None
     
     return (callbacks if callbacks else None), eval_env, None
 
@@ -434,7 +495,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     Args:
         model: Trained model
         domain: Environment domain
-        task: Environment task
+        task: Environment task (for shadow_hand, this is the full env name)
         num_episodes: Number of episodes to evaluate
         num_videos: Number of videos to record
         video_dir: Directory to save videos
@@ -446,9 +507,15 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     episode_rewards = []
     episode_lengths = []
     
+    # Determine if this is a shadow hand environment
+    is_shadow_hand = (domain == "shadow_hand")
+    
     for episode in range(num_episodes):
         # Create evaluation environment
-        eval_env_base = make_dm_env(domain, task, render_mode="rgb_array")
+        if is_shadow_hand:
+            eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
+        else:
+            eval_env_base = make_dm_env(domain, task, render_mode="rgb_array")
         
         # Wrap in VecEnv for compatibility with model
         eval_env = DummyVecEnv([lambda: eval_env_base])
@@ -485,7 +552,11 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
             
             # Capture frames for video
             if record_video:
-                frame = eval_env_base.render()
+                # Use tracking camera for walker environments
+                if domain == "walker":
+                    frame = eval_env.unwrapped.envs[0].unwrapped._env.physics.render(camera_id='side', height=480, width=640)
+                else:
+                    frame = eval_env_base.render()
                 if frame is not None:
                     frames.append(frame)
             
@@ -539,16 +610,25 @@ def main(argv):
     print(f"=" * 60)
     # ============================================================================
     
+    # Check if this is a shadow hand environment
+    is_shadow_hand = is_shadow_hand_env(_ENV_NAME.value)
+    
     # Parse environment name
-    if _DOMAIN.value and _TASK.value:
+    if is_shadow_hand:
+        # Shadow hand environments use the full registered name
+        env_name = _ENV_NAME.value
+        domain = "shadow_hand"
+        task = env_name  # Use full name as task for consistency
+        print(f"Environment: Shadow Hand - {env_name}")
+    elif _DOMAIN.value and _TASK.value:
         domain = _DOMAIN.value
         task = _TASK.value
         env_name = f"{domain}-{task}"
+        print(f"Environment: {domain}/{task}")
     else:
         domain, task = parse_env_name(_ENV_NAME.value)
         env_name = _ENV_NAME.value
-    
-    print(f"Environment: {domain}/{task}")
+        print(f"Environment: {domain}/{task}")
     
     # Determine if we're loading a checkpoint
     if _LOAD_RUN_NAME.value:
@@ -566,8 +646,8 @@ def main(argv):
             env_name, 
             _ALGORITHM.value, 
             _SUFFIX.value,
-            inject_type=_INJECT_TYPE.value if _ALGORITHM.value == "SAC-MPC" else None,
-            percentage=_PERCENTAGE.value if _ALGORITHM.value == "SAC-MPC" else None
+            inject_type=_INJECT_TYPE.value if _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] else None,
+            percentage=_PERCENTAGE.value if _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] else None
         )
         logdir = Path(_LOGDIR.value) / run_name
         logdir.mkdir(parents=True, exist_ok=True)
@@ -621,11 +701,18 @@ def main(argv):
     
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
-    vec_env = make_vec_env(
-        lambda: make_dm_env(domain, task), # lambda fxn so make_vec_env() can make multiple envs
-        n_envs=_NUM_ENVS.value,
-        seed=_SEED.value,
-    )
+    if is_shadow_hand:
+        vec_env = make_vec_env(
+            lambda: make_shadow_hand_env(env_name),
+            n_envs=_NUM_ENVS.value,
+            seed=_SEED.value,
+        )
+    else:
+        vec_env = make_vec_env(
+            lambda: make_dm_env(domain, task), # lambda fxn so make_vec_env() can make multiple envs
+            n_envs=_NUM_ENVS.value,
+            seed=_SEED.value,
+        )
 
     # VecNormalize standardizes observations and rewards to ~N(0,1), which is critical for
     # stable learning in continuous control (prevents different-scale features from dominating)
@@ -682,10 +769,12 @@ def main(argv):
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
-        if _ALGORITHM.value == "SAC-MPC" and _INJECT_TYPE.value == "percentage" and mpc_inject_callback is not None:
+        if (_ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] and
+            _INJECT_TYPE.value == "percentage" and
+            mpc_inject_callback is not None):
             model.target_mpc_percentage = config.percentage
             model.mpc_inject_callback = mpc_inject_callback
-            print(f"Connected MPC injection callback to SAC_MPC (target: {config.percentage}%)")
+            print(f"Connected MPC injection callback to {_ALGORITHM.value} (target: {config.percentage}%)")
         
         # Train the model
         # When resuming, reset_num_timesteps=False continues from loaded timestep count

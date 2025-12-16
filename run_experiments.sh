@@ -10,14 +10,28 @@
 # - TensorBoard logs show real-time buffer composition
 
 # Common parameters
-ENV_NAME="cartpole-swingup"
-ALGORITHM="SAC-MPC"
+#ENV_NAME="cartpole-swingup"
+#ENV_NAME=cartpole-swingup_sparse
+ENV_NAME="walker-walk"
+
+#ALGORITHM="SAC-MPC"
+ALGORITHM="TD3-MPC"
+
 TOTAL_TIMESTEPS=500000
 INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
 RANDOM_SELECT="True"
-DATA_DIR="data/cartpole_0_001dt/"
 
-echo "Starting SAC-MPC percentage sweep experiments"
+#DATA_DIR="data/cartpole_0_001dt/"
+DATA_DIR="data/walker_0_0025dt/"
+
+#LOG_DIR="logs/TD3-MPC-walker-velocity_only_reward/2nd_run"
+#LOG_DIR="logs/SAC-MPC-walker-runs/5th_run/"
+#LOG_DIR="logs/TD3-MPC-walker-runs/5th_run/"
+LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/1st_run"
+
+SEED=1 # 1 is default for train_sbx.py
+
+echo "Starting ${ALGORITHM} percentage sweep experiments"
 echo "=============================================="
 echo "Environment: ${ENV_NAME}"
 echo "Algorithm: ${ALGORITHM} with TaggedReplayBuffer"
@@ -45,7 +59,9 @@ for percentage in {0..100..25}; do
         --inject_type="${INJECT_TYPE}" \
         --percentage="${percentage}" \
         --random_select="${RANDOM_SELECT}" \
-        --data_dir="${DATA_DIR}"
+        --data_dir="${DATA_DIR}" \
+        --logdir="${LOG_DIR}" \
+        --seed="${SEED}"
     
     # Check if the previous command succeeded
     if [ $? -ne 0 ]; then

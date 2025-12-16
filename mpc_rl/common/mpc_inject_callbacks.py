@@ -1,8 +1,12 @@
 import numpy as np
+import zipfile
 from stable_baselines3.common.callbacks import BaseCallback
 from dm_control import suite
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
+import gymnasium as gym
+import mujoco
+import shadow_hand_gym
 
 
 class FixedMPCInjectCallback(BaseCallback):
@@ -20,6 +24,8 @@ class FixedMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
+        domain: str,                          # Environment domain (e.g., 'cartpole', 'walker')
+        task: str,                            # Environment task (e.g., 'swingup', 'walk')
         mpc_planner=None,                     # MPCPlanner instance (not used if loading from file)
         inject_every_n_timesteps: int=10000,  # Inject after every N timesteps
         num_mpc_trajectories: int=1,          # How many MPC rollouts to inject
@@ -30,6 +36,8 @@ class FixedMPCInjectCallback(BaseCallback):
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
+        self.domain = domain
+        self.task = task
         self.mpc_planner = mpc_planner
         self.inject_freq = inject_every_n_timesteps
         self.num_mpc_trajectories = num_mpc_trajectories
@@ -67,6 +75,7 @@ class FixedMPCInjectCallback(BaseCallback):
         
         # Print initialization info
         print(f"\nMPC Injection Callback initialized:")
+        print(f"  Environment: {domain}/{task}")
         print(f"  Inject every: {inject_every_n_timesteps} timesteps")
         print(f"  Trajectories per injection: {num_mpc_trajectories}")
         if data_dir:
@@ -142,16 +151,32 @@ class FixedMPCInjectCallback(BaseCallback):
         Note: We create a temporary environment for MPC trajectory generation
         to avoid modifying the training environment's state.
         """
-        # Get the MPC downsampled control for RL timestep alignment
-        # For cartpole: MPC runs at 0.001s, RL acts at 0.01s, so downsample by 10
-        downsample_factor = 10
+        # Determine downsample factor based on environment
+        # This should match the ratio of MPC timestep to RL control timestep
+        # Cartpole: MPC at 0.01s, RL at 0.01s -> downsample by 1
+        # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
+        # Shadow Hand: MPC at 0.002s, RL at 0.002s -> downsample by 1
+        if self.domain == "cartpole":
+            downsample_factor = 1  # MPC and RL both at 0.01s
+        elif self.domain == "walker":
+            downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
+        elif self.domain == "shadow_hand":
+            downsample_factor = 1  # MPC and RL both at 0.002s
+        else:
+            raise ValueError(f"Unsupported domain: {self.domain}")
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        dm_env = suite.load(domain_name="cartpole", task_name="swingup")
-        temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
-        temp_env = FlattenObservation(temp_env)
+        if self.domain == "shadow_hand":
+            # For shadow_hand, task is the full gym env name
+            temp_env = gym.make(self.task, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
+        else:
+            # For dm_control environments
+            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
         
         # Seed the temporary environment for reproducibility
         if self.seed is not None:
@@ -163,21 +188,38 @@ class FixedMPCInjectCallback(BaseCallback):
         for traj_idx in range(self.num_mpc_trajectories):
             # Load or generate trajectory
             if self.data_dir is not None:
-                # Load from file
-                if self.verbose > 1:
-                    print(f"  Loading MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
-                
-                traj_file = self._select_trajectory_file()
-                data = np.load(traj_file)
-                qpos = data["qpos"]
-                qvel = data["qvel"]
-                ctrl = data["ctrl"]
-                time = data["time"]
-                
-                if self.verbose > 1:
-                    init_qpos = data["init_qpos"]
-                    init_qvel = data["init_qvel"]
-                    print(f"    Loaded: init_qpos={init_qpos}, init_qvel={init_qvel}")
+                # Load from file with error handling for corrupted files
+                max_retries = 5
+                for retry in range(max_retries):
+                    try:
+                        if self.verbose > 1:
+                            print(f"  Loading MPC trajectory {traj_idx + 1}/{self.num_mpc_trajectories}...")
+                        
+                        traj_file = self._select_trajectory_file()
+                        data = np.load(traj_file)
+                        qpos = data["qpos"]
+                        qvel = data["qvel"]
+                        ctrl = data["ctrl"]
+                        time = data["time"]
+                        
+                        if self.verbose > 1:
+                            init_qpos = data["init_qpos"]
+                            init_qvel = data["init_qvel"]
+                            print(f"    Loaded: init_qpos={init_qpos}, init_qvel={init_qvel}")
+                        
+                        # Successfully loaded, break out of retry loop
+                        break
+                        
+                    except (zipfile.BadZipFile, EOFError, IOError) as e:
+                        if retry < max_retries - 1:
+                            if self.verbose > 0:
+                                print(f"    Warning: Failed to load {traj_file.name}: {e}")
+                                print(f"    Retrying with different file ({retry + 1}/{max_retries})...")
+                            continue
+                        else:
+                            # All retries exhausted
+                            raise RuntimeError(f"Failed to load valid trajectory file after {max_retries} attempts. "
+                                             f"Last error: {e}. Check your data directory for corrupted files.")
             else:
                 # Generate with MPC planner
                 if self.verbose > 1:
@@ -203,26 +245,28 @@ class FixedMPCInjectCallback(BaseCallback):
             # Gymnasium API returns (observation, info)
             obs, _ = temp_env.reset()
             
-            # Set the environment to the MPC initial state
-            # For cartpole swingup, convert qpos/qvel to observation format
-            # DM Control obs: [cart_pos, cos(pole_angle), sin(pole_angle), cart_vel, pole_vel]
-            cart_pos_init = qpos[0, 0]
-            pole_angle_init = qpos[1, 0]
-            cart_vel_init = qvel[0, 0]
-            pole_vel_init = qvel[1, 0]
+            # Set the environment to the MPC initial state by setting physics directly
+            if self.domain == "shadow_hand":
+                # For shadow_hand (gymnasium environment)
+                temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
+                # Get observation from environment
+                obs = temp_env.unwrapped._get_obs()
+            else:
+                # For dm_control environments
+                temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                temp_env.unwrapped._env.physics.forward()
+                # Get initial observation from environment (let the environment compute it)
+                obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             
-            # Set the physics state directly
-            temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
-            temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
-            
-            # Get initial observation from environment
-            obs = np.array([
-                cart_pos_init,
-                np.cos(pole_angle_init),
-                np.sin(pole_angle_init),
-                cart_vel_init,
-                pole_vel_init
-            ], dtype=np.float32)
+            # Flatten the observation if it's a dict
+            if isinstance(obs, dict):
+                obs = np.concatenate([v.flatten() for v in obs.values()])
+            obs = obs.astype(np.float32)
             
             # Step through trajectory using MPC actions
             num_steps = ctrl_downsampled.shape[1]
@@ -325,6 +369,8 @@ class PercentMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
+        domain: str,                          # Environment domain (e.g., 'cartpole', 'walker')
+        task: str,                            # Environment task (e.g., 'swingup', 'walk')
         target_percentage: int=25,            # Target percentage of replay buffer to be MPC data (0-100)
         data_dir: str=None,                   # Path to directory with saved trajectories
         random_select: bool=True,             # If True, randomly select trajectories from data_dir
@@ -333,6 +379,8 @@ class PercentMPCInjectCallback(BaseCallback):
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
+        self.domain = domain
+        self.task = task
         self.target_percentage = target_percentage
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
         
@@ -366,6 +414,7 @@ class PercentMPCInjectCallback(BaseCallback):
         
         # Print initialization info
         print(f"\nPercent MPC Injection Callback initialized:")
+        print(f"  Environment: {domain}/{task}")
         print(f"  Target percentage: {target_percentage}%")
         if data_dir:
             print(f"  Loading from: {data_dir}")
@@ -444,16 +493,35 @@ class PercentMPCInjectCallback(BaseCallback):
         Note: We create a temporary environment for MPC trajectory generation
         to avoid modifying the training environment's state.
         """
-        # Get the MPC downsampled control for RL timestep alignment
-        # For cartpole: MPC runs at 0.001s, RL acts at 0.01s, so downsample by 10
-        downsample_factor = 10
+        # Determine downsample factor based on environment
+        # This should match the ratio of MPC timestep to RL control timestep
+        # Cartpole: MPC at 0.001s, RL at 0.01s -> downsample by 10
+        #           TODO: Try Cartpole data collection at 0.01s to match RL timestep?
+        # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
+        # Shadow Hand: MPC at 0.002s, RL at 0.002s -> downsample by 1
+        # NOTE: This can be calculated/seen from the env_modified.xml and the related
+        #       task.xml files for MPC vs the env.py and env.py files for RL in dm_control.
+        if self.domain == "cartpole":
+            downsample_factor = 10  # MPC at 0.001s, RL at 0.01s
+        elif self.domain == "walker":
+            downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
+        elif self.domain == "shadow_hand":
+            downsample_factor = 1  # MPC and RL both at 0.002s
+        else:
+            raise ValueError(f"Unsupported domain: {self.domain}")
         
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        dm_env = suite.load(domain_name="cartpole", task_name="swingup")
-        temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
-        temp_env = FlattenObservation(temp_env)
+        if self.domain == "shadow_hand":
+            # For shadow_hand, task is the full gym env name
+            temp_env = gym.make(self.task, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
+        else:
+            # For dm_control environments
+            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
+            temp_env = FlattenObservation(temp_env)
         
         # Seed the temporary environment for reproducibility
         if self.seed is not None:
@@ -579,45 +647,64 @@ class PercentMPCInjectCallback(BaseCallback):
             
             # Load or generate trajectory
             if self.data_dir is not None:
-                # Load from file
-                selected_file = self._select_trajectory_file()
-                
-                # Load the MPC trajectory data
-                traj_data = np.load(selected_file)
-                qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
-                qvel = traj_data['qvel']
-                ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
-                
-                # Downsample controls to match RL action timestep
-                ctrl_downsampled = ctrl[:, ::downsample_factor]
-                
-                if self.verbose > 2:
-                    print(f"    Loaded trajectory: MPC steps={ctrl.shape[1]}, Downsampled steps={ctrl_downsampled.shape[1]}")
+                # Load from file with error handling for corrupted files
+                max_retries = 5
+                for retry in range(max_retries):
+                    try:
+                        selected_file = self._select_trajectory_file()
+                        
+                        # Load the MPC trajectory data
+                        traj_data = np.load(selected_file)
+                        qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
+                        qvel = traj_data['qvel']
+                        ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
+                        
+                        # Downsample controls to match RL action timestep
+                        ctrl_downsampled = ctrl[:, ::downsample_factor]
+                        
+                        if self.verbose > 2:
+                            print(f"    Loaded trajectory: MPC steps={ctrl.shape[1]}, Downsampled steps={ctrl_downsampled.shape[1]}")
+                        
+                        # Successfully loaded, break out of retry loop
+                        break
+                        
+                    except (zipfile.BadZipFile, EOFError, IOError) as e:
+                        if retry < max_retries - 1:
+                            if self.verbose > 0:
+                                print(f"    Warning: Failed to load {selected_file.name}: {e}")
+                                print(f"    Retrying with different file ({retry + 1}/{max_retries})...")
+                            continue
+                        else:
+                            # All retries exhausted
+                            raise RuntimeError(f"Failed to load valid trajectory file after {max_retries} attempts. "
+                                             f"Last error: {e}. Check your data directory for corrupted files.")
             
             else:
                 # Generate trajectory using MPC planner
                 raise NotImplementedError("On-the-fly MPC generation not yet implemented. Please provide data_dir.")
             
-            # Set the environment to the MPC initial state
-            # For cartpole swingup, convert qpos/qvel to observation format
-            # DM Control obs: [cart_pos, cos(pole_angle), sin(pole_angle), cart_vel, pole_vel]
-            cart_pos_init = qpos[0, 0]
-            pole_angle_init = qpos[1, 0]
-            cart_vel_init = qvel[0, 0]
-            pole_vel_init = qvel[1, 0]
+            # Set the environment to the MPC initial state by setting physics directly
+            if self.domain == "shadow_hand":
+                # For shadow_hand (gymnasium environment)
+                temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
+                # Get observation from environment
+                obs = temp_env.unwrapped._get_obs()
+            else:
+                # For dm_control environments
+                temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                # Forward the physics to update the observation
+                temp_env.unwrapped._env.physics.forward()
+                # Get initial observation from environment (let the environment compute it)
+                obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             
-            # Set the physics state directly
-            temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
-            temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
-            
-            # Get initial observation from environment
-            obs = np.array([
-                cart_pos_init,
-                np.cos(pole_angle_init),
-                np.sin(pole_angle_init),
-                cart_vel_init,
-                pole_vel_init
-            ], dtype=np.float32)
+            # Flatten the observation if it's a dict
+            if isinstance(obs, dict):
+                obs = np.concatenate([v.flatten() for v in obs.values()])
+            obs = obs.astype(np.float32)
             
             # Step through trajectory using MPC actions
             num_steps = ctrl_downsampled.shape[1]

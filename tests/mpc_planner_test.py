@@ -14,38 +14,373 @@ import matplotlib.pyplot as plt
 from matplotlib import animation
 import sys
 from pathlib import Path
+from mujoco_mpc import agent as agent_lib
+import mujoco
 
 # Add parent directory to path to import from mpc_rl
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.planner.mpc_planner import MPCPlanner
 
-def planner_test():
-    print("Testing MPCPlanner...")
+# For shadow reorient
+def planner_test_shadow_reorient():
+    print("Testing MPCPlanner for Shadow Reorient...")
+
+    model_path = (
+        Path(__file__).parent.parent
+        / "mpc_rl/tasks/shadow_reorient/task.xml"
+    )
+
+    weights = {
+        'In Hand': 20.0,        # Distance b/w cube pos and palm pos
+        'Orientation': 10.0,    # Orientation err b/w cube and goal
+        'Cube Vel.': 10.0,      # Linear velocity of cube (penalizing fast movements)
+        'Actuator': 0.1,        # Control effort
+        'Grasp': 1.0,           # Deviation of hand joints from keyframe "gasp" config
+        'Joint Vel.': 1.0e-4,   # Angular velocities of hand joints
+    }
+    # NOTE: No task params for shadow reorient task
+
+    # NOTE: Shadow task doesn't use qpos_noise_rnge and qvel_noise_rnge for randomization.
+    #       It has its own custom randomization procedure that follows gymnasium_robotics
+    #       manipulate_block.py specification. Setting these to (0,0) as they're unused.
+    qpos_noise_rnge = (-0.0, 0.0)
+    qvel_noise_rnge = (-0.0, 0.0)
     
-    # Create MPC planner instance
     planner = MPCPlanner(
-        rollout_horizon=10000,
-        opt_steps=10,
-        weights={
-            "Vertical": 10.0,
-            "Centered": 10.0,
-            "Velocity": 0.1,
-            "Control": 0.1
-        },
-        task_params={"Goal": 0.0},
-        init_state_noise_flag=False,
-        qpos_noise_rnge=(-0.02, 0.02),
-        qvel_noise_rnge=(-0.02, 0.02)
+        model_path=model_path,
+        task_id="Shadow",
+        rollout_horizon=500,
+        opt_steps=1,
+        weights=weights,
+        task_params={},
+        init_state_noise_flag=True,  # Enable randomization for Shadow task
+        qpos_noise_rnge=qpos_noise_rnge,
+        qvel_noise_rnge=qvel_noise_rnge,
+        verbose=1
     )
     
     print(f"Rollout horizon: {planner.get_rollout_horizon()}")
     print(f"Initial state noise: {planner.get_init_state_noise_flag()}")
-    print(f"qpos noise range: {planner.get_qpos_noise_range()}")
-    print(f"qvel noise range: {planner.get_qvel_noise_range()}")
+    print(f"Physics timestep: {planner.physics_timestep}s")
+    print(f"Agent timestep: {planner.agent_timestep}s")
+    print(f"Steps per agent update: {planner.steps_per_agent_update}")
+    
+    # Run MPC planning with Shadow randomization
+    print("\nRunning MPC trajectory optimization for Shadow Reorient...")
+    planner.plan(keyframe="grasp", seed=0)  # Use seed for reproducibility
+    print("Planning complete!")
+    
+    # Get trajectories and costs
+    qpos, qvel, ctrl, time = planner.get_trajectories()
+    cost_total, cost_terms = planner.get_costs()
+    
+    print(f"\nTrajectory shapes:")
+    print(f"  qpos: {qpos.shape}")
+    print(f"  qvel: {qvel.shape}")
+    print(f"  ctrl: {ctrl.shape}")
+    print(f"  time: {time.shape}")
+    
+    # Shadow Hand has 37 qpos DOFs: 4 (goal quat) + 7 (cube pos+quat) + 26 (hand joints)
+    # And 20 actuators for the hand
+    
+    # Extract cube and goal poses
+    model = planner.model
+    cube_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "cube")
+    cube_jnt_addr = model.body_jntadr[cube_body_id]
+    cube_qpos_start = model.jnt_qposadr[cube_jnt_addr]
+    
+    goal_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "goal")
+    goal_jnt_addr = model.body_jntadr[goal_body_id]
+    goal_qpos_start = model.jnt_qposadr[goal_jnt_addr]
+    
+    # Extract trajectories
+    cube_pos = qpos[cube_qpos_start:cube_qpos_start+3, :]  # x, y, z
+    cube_quat = qpos[cube_qpos_start+3:cube_qpos_start+7, :]  # w, x, y, z
+    goal_quat = qpos[goal_qpos_start:goal_qpos_start+4, :]  # w, x, y, z
+    
+    # Plot cube position trajectory
+    fig1 = plt.figure(figsize=(12, 8))
+    
+    plt.subplot(3, 1, 1)
+    plt.plot(time, cube_pos[0, :], label="Cube X", color="blue")
+    plt.legend()
+    plt.ylabel("X Position (m)")
+    plt.grid(True)
+    plt.title("Shadow Hand: Cube Position Trajectories")
+    
+    plt.subplot(3, 1, 2)
+    plt.plot(time, cube_pos[1, :], label="Cube Y", color="orange")
+    plt.legend()
+    plt.ylabel("Y Position (m)")
+    plt.grid(True)
+    
+    plt.subplot(3, 1, 3)
+    plt.plot(time, cube_pos[2, :], label="Cube Z", color="green")
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Z Position (m)")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Plot cube and goal orientations (as quaternions)
+    fig2 = plt.figure(figsize=(12, 10))
+    
+    plt.subplot(4, 1, 1)
+    plt.plot(time, cube_quat[0, :], label="Cube qw", color="red")
+    plt.plot(time, goal_quat[0, :], label="Goal qw", color="red", linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.ylabel("qw")
+    plt.grid(True)
+    plt.title("Shadow Hand: Cube and Goal Orientations")
+    
+    plt.subplot(4, 1, 2)
+    plt.plot(time, cube_quat[1, :], label="Cube qx", color="orange")
+    plt.plot(time, goal_quat[1, :], label="Goal qx", color="orange", linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.ylabel("qx")
+    plt.grid(True)
+    
+    plt.subplot(4, 1, 3)
+    plt.plot(time, cube_quat[2, :], label="Cube qy", color="green")
+    plt.plot(time, goal_quat[2, :], label="Goal qy", color="green", linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.ylabel("qy")
+    plt.grid(True)
+    
+    plt.subplot(4, 1, 4)
+    plt.plot(time, cube_quat[3, :], label="Cube qz", color="blue")
+    plt.plot(time, goal_quat[3, :], label="Goal qz", color="blue", linestyle='--', alpha=0.7)
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("qz")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Plot selected hand joint positions (a few key joints for clarity)
+    fig3 = plt.figure(figsize=(12, 8))
+    
+    hand_start = cube_qpos_start + 7  # Hand joints start after goal quat and cube pose
+    
+    # Plot wrist joints
+    plt.subplot(3, 1, 1)
+    plt.plot(time, qpos[hand_start+0, :], label="WRJ2 (wrist)", color="purple")
+    plt.plot(time, qpos[hand_start+1, :], label="WRJ1 (wrist)", color="violet")
+    plt.legend()
+    plt.ylabel("Joint Angle (rad)")
+    plt.grid(True)
+    plt.title("Shadow Hand: Selected Joint Trajectories")
+    
+    # Plot thumb joints
+    plt.subplot(3, 1, 2)
+    plt.plot(time, qpos[hand_start+2, :], label="THJ5 (thumb)", color="red")
+    plt.plot(time, qpos[hand_start+3, :], label="THJ4 (thumb)", color="darkred")
+    plt.plot(time, qpos[hand_start+4, :], label="THJ3 (thumb)", color="lightcoral")
+    plt.legend()
+    plt.ylabel("Joint Angle (rad)")
+    plt.grid(True)
+    
+    # Plot index finger joints
+    plt.subplot(3, 1, 3)
+    plt.plot(time, qpos[hand_start+7, :], label="FFJ4 (index)", color="blue")
+    plt.plot(time, qpos[hand_start+8, :], label="FFJ3 (index)", color="darkblue")
+    plt.plot(time, qpos[hand_start+9, :], label="FFJ0 (index)", color="lightblue")
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Joint Angle (rad)")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Plot control signals for all 20 actuators
+    fig4 = plt.figure(figsize=(16, 10))
+    
+    actuator_names = [
+        "WRJ2", "WRJ1", 
+        "THJ5", "THJ4", "THJ3", "THJ2", "THJ1",
+        "FFJ4", "FFJ3", "FFJ0",
+        "MFJ4", "MFJ3", "MFJ0",
+        "RFJ4", "RFJ3", "RFJ0",
+        "LFJ5", "LFJ4", "LFJ3", "LFJ0"
+    ]
+    
+    for i in range(min(20, model.nu)):
+        plt.subplot(5, 4, i+1)
+        plt.plot(time[:-1], ctrl[i, :], linewidth=1.5)
+        plt.ylabel("Control")
+        if i < len(actuator_names):
+            plt.title(actuator_names[i], fontsize=8)
+        else:
+            plt.title(f"Actuator {i}", fontsize=8)
+        plt.grid(True, alpha=0.3)
+        if i >= 16:
+            plt.xlabel("Time (s)", fontsize=8)
+        plt.tick_params(labelsize=7)
+    
+    plt.suptitle("Shadow Hand Control Signals", fontsize=14, y=0.995)
+    plt.tight_layout()
+    
+    # Plot costs
+    fig5 = plt.figure(figsize=(14, 6))
+    
+    # Get cost term names
+    cost_names = ['In Hand', 'Orientation', 'Cube Vel.', 'Actuator', 'Grasp', 'Joint Vel.']
+    colors_cost = ["blue", "orange", "green", "red", "purple", "brown"]
+    
+    for i, (name, color) in enumerate(zip(cost_names, colors_cost)):
+        if i < len(cost_terms):
+            plt.plot(time[:-1], cost_terms[i, :], label=name, color=color, alpha=0.7)
+    
+    plt.plot(time[:-1], cost_total, label="Total (weighted)", color="black", linewidth=2)
+    plt.legend(loc='upper right')
+    plt.xlabel("Time (s)")
+    plt.ylabel("Cost")
+    plt.title("Shadow Hand Reorient Cost Terms")
+    plt.grid(True)
+    plt.tight_layout()
+    
+    plt.show()
+    
+    # Create animation of shadow hand using the MPC controls
+    # NOTE: THIS WON'T WORK SINCE THE GYMNASIUM MODEL IS DIFFERENT FROM MPC MODEL
+    #       TODO: CREATE A CUSTOM GYMNASIUM ENVIRONMENT WITH THE SAME XML AS MPC
+    print("\nCreating Shadow Hand animation with MPC controls...")
+
+    # The MPC ctrl array is at physics timestep resolution (0.002s)
+    # But the agent_timestep is 0.01s, so we need to downsample by factor of 5
+    # Gymnasium-Robotics HandManipulateBlockRotateXYZ-v1 uses dt=0.04s
+    # So we need to further downsample from 0.01s to 0.04s (factor of 4)
+    # Total downsample factor from physics timestep: 5 * 4 = 20
+    
+    ctrl_downsampled = planner.get_ctrl_downsampled()  # Downsamples to agent_timestep (0.01s)
+    print(f"Downsampled controls from {ctrl.shape[1]} to {ctrl_downsampled.shape[1]} steps")
+    print(f"MPC physics timestep: {planner.physics_timestep}s")
+    print(f"MPC agent timestep: {planner.agent_timestep}s")
+    print(f"Downsample factor: {planner.steps_per_agent_update}")
+    
+    # Further downsample to match gymnasium-robotics dt=0.04s
+    gym_dt = 0.04
+    additional_downsample = int(gym_dt / planner.agent_timestep)
+    ctrl_gym = ctrl_downsampled[:, ::additional_downsample]
+    print(f"Further downsampled to match Gym dt={gym_dt}s: {ctrl_gym.shape[1]} steps")
+    print(f"Additional downsample factor: {additional_downsample}")
+    
+    # Create Shadow Hand environment from gymnasium-robotics
+    print("\nCreating Gymnasium-Robotics HandManipulateBlockRotateXYZ-v1 environment...")
+    import gymnasium as gym
+    import gymnasium_robotics
+    gym.register_envs(gymnasium_robotics)
+    
+    env = gym.make('HandManipulateBlockRotateXYZ-v1', render_mode="rgb_array")
+    
+    print(f"Gymnasium env dt: {env.unwrapped.dt}s")
+    print(f"Gymnasium model timestep: {env.unwrapped.model.opt.timestep}s")
+    print(f"Action space: {env.action_space}")
+    
+    # Reset environment
+    obs, info = env.reset(seed=42)
+    
+    # Note: We cannot set the exact same initial state as MPC because the
+    # Gymnasium-Robotics model structure is different (different joint ordering, etc.)
+    # We'll just apply the MPC controls and see what happens
+    
+    # Collect frames by applying MPC controls
+    print("Applying MPC controls to Gymnasium Shadow Hand environment...")
+    print("(Note: Actions are not directly compatible due to model differences)")
+    frames = []
+    
+    # Get initial frame
+    frame = env.render()
+    frames.append(frame)
+    
+    # Apply each control action
+    num_steps = min(ctrl_gym.shape[1], 500)  # Limit to 500 steps for reasonable animation
+    for t in range(num_steps):
+        action = ctrl_gym[:, t]
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        # Render and save frame
+        frame = env.render()
+        frames.append(frame)
+        
+        if terminated or truncated:
+            print(f"Episode ended at step {t}")
+            break
+    
+    env.close()
+    print(f"Collected {len(frames)} frames")
+    
+    # Create animation
+    print("Creating animation...")
+    fig_anim = plt.figure(figsize=(10, 6))
+    img = plt.imshow(frames[0])
+    plt.axis('off')
+    plt.title("Shadow Hand with MPC Controls (Gymnasium-Robotics)")
+    
+    def animate(i):
+        img.set_data(frames[i])
+        return [img]
+    
+    # Display at 30 FPS for smooth playback
+    display_fps = 30
+    
+    anim = animation.FuncAnimation(fig_anim, animate, frames=len(frames), 
+                                   interval=1000/display_fps, blit=True, repeat=True)
+    print(f"Animation created with {len(frames)} frames at {display_fps} FPS")
+    
+    plt.show()
+    
+    print("\nShadow Hand Reorient Test complete!")
+
+    
+
+# For walker-walk-v0
+def planner_test_walker_walk():
+    print("Testing MPCPlanner for Walker Walk...")
+    
+    model_path = (
+        Path(__file__).parent.parent
+        / "mpc_rl/tasks/walker/task.xml"
+    )
+
+    weights = {
+        'Speed': 1.0,
+        'Height': 10.0,
+        'Rotation': 3.0,
+        'Control': 0.1
+    }
+
+    task_params = {
+        'Speed Goal': 1.0,
+        'Height Goal': 1.2
+    }
+
+    qpos_noise_rnge = (-0.0, 0.0)
+    qvel_noise_rnge = (-0.0, 0.0)
+
+    planner = MPCPlanner(
+        model_path=model_path,
+        task_id="Walker",
+        rollout_horizon=5000,
+        opt_steps=1,
+        weights=weights,
+        task_params=task_params,
+        init_state_noise_flag=False,
+        qpos_noise_rnge=qpos_noise_rnge,
+        qvel_noise_rnge=qvel_noise_rnge,
+        verbose=1
+    )
+    
+    print(f"Rollout horizon: {planner.get_rollout_horizon()}")
+    print(f"Initial state noise: {planner.get_init_state_noise_flag()}")
+    print(f"Physics timestep: {planner.physics_timestep}s")
+    print(f"Agent timestep: {planner.agent_timestep}s")
+    print(f"Steps per agent update: {planner.steps_per_agent_update}")
     
     # Run MPC planning
-    print("\nRunning MPC trajectory optimization...")
+    print("\nRunning MPC trajectory optimization for Walker...")
     planner.plan(keyframe="home")
     print("Planning complete!")
     
@@ -59,56 +394,387 @@ def planner_test():
     print(f"  ctrl: {ctrl.shape}")
     print(f"  time: {time.shape}")
     
-    # Plot position
-    fig1 = plt.figure(figsize=(10, 6))
-    plt.plot(time, qpos[0, :], label="q0 (cart position)", color="blue")
-    plt.plot(time, qpos[1, :], label="q1 (pole angle)", color="orange")
+    # Walker has 9 joints: rootz, rootx, rooty, right_hip, right_knee, right_ankle, left_hip, left_knee, left_ankle
+    # And 6 actuators: right_hip, right_knee, right_ankle, left_hip, left_knee, left_ankle
+    
+    # Plot key joint positions
+    fig1 = plt.figure(figsize=(12, 8))
+    
+    plt.subplot(3, 1, 1)
+    plt.plot(time, qpos[0, :], label="rootz (height)", color="blue")
+    plt.plot(time, qpos[1, :], label="rootx (forward)", color="orange")
+    plt.legend()
+    plt.ylabel("Root Position")
+    plt.grid(True)
+    plt.title("Walker Root Position Trajectories")
+    
+    plt.subplot(3, 1, 2)
+    plt.plot(time, qpos[3, :], label="right_hip", color="red")
+    plt.plot(time, qpos[4, :], label="right_knee", color="darkred")
+    plt.plot(time, qpos[5, :], label="right_ankle", color="lightcoral")
+    plt.legend()
+    plt.ylabel("Right Leg Joints (rad)")
+    plt.grid(True)
+    
+    plt.subplot(3, 1, 3)
+    plt.plot(time, qpos[6, :], label="left_hip", color="green")
+    plt.plot(time, qpos[7, :], label="left_knee", color="darkgreen")
+    plt.plot(time, qpos[8, :], label="left_ankle", color="lightgreen")
     plt.legend()
     plt.xlabel("Time (s)")
-    plt.ylabel("States")
-    plt.title("State Trajectories")
+    plt.ylabel("Left Leg Joints (rad)")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Plot velocities
+    fig2 = plt.figure(figsize=(12, 6))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(time, qvel[0, :], label="rootz velocity", color="blue")
+    plt.plot(time, qvel[1, :], label="rootx velocity", color="orange")
+    plt.legend()
+    plt.ylabel("Root Velocity")
+    plt.grid(True)
+    plt.title("Walker Root Velocity Trajectories")
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(time, qvel[3, :], label="right_hip", color="red")
+    plt.plot(time, qvel[6, :], label="left_hip", color="green")
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Hip Velocities")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Plot controls (6 actuators)
+    fig3 = plt.figure(figsize=(12, 8))
+    
+    control_names = ["right_hip", "right_knee", "right_ankle", 
+                     "left_hip", "left_knee", "left_ankle"]
+    colors = ["red", "darkred", "lightcoral", "green", "darkgreen", "lightgreen"]
+    
+    for i, (name, color) in enumerate(zip(control_names, colors)):
+        plt.subplot(3, 2, i+1)
+        plt.plot(time[:-1], ctrl[i, :], color=color)
+        plt.ylabel("Control")
+        plt.title(name)
+        plt.grid(True)
+        if i >= 4:
+            plt.xlabel("Time (s)")
+    
+    plt.tight_layout()
+    
+    # Plot costs
+    fig4 = plt.figure(figsize=(10, 6))
+    
+    # Get cost term names from walker task.xml
+    cost_names = ["Control", "Height", "Rotation", "Speed"]
+    colors_cost = ["blue", "orange", "green", "red"]
+    
+    for i, (name, color) in enumerate(zip(cost_names, colors_cost)):
+        plt.plot(time[:-1], cost_terms[i, :], label=name, color=color)
+    
+    plt.plot(time[:-1], cost_total, label="Total (weighted)", color="black", linewidth=2)
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Costs")
+    plt.title("Walker Walk Cost Terms")
     plt.grid(True)
     plt.tight_layout()
     
-    # Plot velocity
-    fig2 = plt.figure(figsize=(10, 6))
-    plt.plot(time, qvel[0, :], label="v0 (cart velocity)", color="blue")
-    plt.plot(time, qvel[1, :], label="v1 (pole velocity)", color="orange")
+    plt.show()
+    
+    # Create animation of walker using the MPC controls
+    print("\nCreating walker animation with MPC controls...")
+    
+    # The MPC ctrl array is at physics timestep resolution (0.0025s)
+    # DM Control expects actions at control_timestep resolution (0.025s)
+    # Use the planner's automatic downsampling based on agent_timestep
+    ctrl_downsampled = planner.get_ctrl_downsampled()
+    print(f"Downsampled controls from {ctrl.shape[1]} to {ctrl_downsampled.shape[1]} steps")
+    print(f"MPC physics timestep: {planner.physics_timestep}s")
+    print(f"MPC agent timestep: {planner.agent_timestep}s")
+    print(f"Downsample factor: {planner.steps_per_agent_update}")
+    
+    # Create walker environment from dm_control with fixed random seed for consistency
+    # Use tracking camera that follows the walker
+    dm_env = suite.load(domain_name="walker", task_name="walk", 
+                        task_kwargs={'random': np.random.RandomState(42)})
+    
+    # Wrap with gymnasium compatibility and set render parameters
+    env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
+    env = FlattenObservation(env)
+    
+    # Override the default camera to use the tracking camera
+    # This must be done on the dm_control environment before rendering
+    env.unwrapped._env.physics.model.vis.global_.offwidth = 640
+    env.unwrapped._env.physics.model.vis.global_.offheight = 480
+    
+    # Reset environment and set to the same initial state as MPC planner
+    obs, info = env.reset()
+    
+    # Set walker to the same initial state used by MPC planner (from keyframe "home")
+    physics = env.unwrapped._env.physics
+    with physics.reset_context():
+        physics.data.qpos[:] = qpos[:, 0]  # Use the initial qpos from MPC trajectory
+        physics.data.qvel[:] = qvel[:, 0]  # Use the initial qvel from MPC trajectory
+    physics.forward()
+    
+    # Collect frames by applying downsampled controls
+    print("Applying MPC controls to walker environment...")
+    frames = []
+    
+    # Get initial frame with side camera (DM Control walker has 'side' and 'back' cameras)
+    frame = env.unwrapped._env.physics.render(camera_id="side", height=480, width=640)
+    frames.append(frame)
+    
+    # Apply each downsampled control action
+    num_steps = ctrl_downsampled.shape[1]
+    for t in range(num_steps):
+        action = ctrl_downsampled[:, t]  # Use the DOWNSAMPLED control
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        # Render with side camera
+        frame = env.unwrapped._env.physics.render(camera_id="side", height=480, width=640)
+        frames.append(frame)
+        
+        if terminated or truncated:
+            print(f"Episode ended at step {t}")
+            break
+    
+    env.close()
+    print(f"Collected {len(frames)} frames")
+    
+    # Create animation
+    print("Creating animation...")
+    fig_anim = plt.figure(figsize=(10, 6))
+    img = plt.imshow(frames[0])
+    plt.axis('off')
+    plt.title("Walker with MPC Controls")
+    
+    def animate(i):
+        img.set_data(frames[i])
+        return [img]
+    
+    # Display at 30 FPS for smooth playback (regardless of actual simulation rate)
+    display_fps = 30
+    
+    anim = animation.FuncAnimation(fig_anim, animate, frames=len(frames), 
+                                   interval=1000/display_fps, blit=True, repeat=True)
+    print(f"Animation created with {len(frames)} frames at {display_fps} FPS")
+    
+    plt.show()
+    
+    print("\nWalker Walk Test complete!")
+
+
+# For cartpole swingup
+def planner_test_cartpole_swingup():
+    print("Testing MPCPlanner for Cartpole Swingup...")
+    
+    model_path = (
+        Path(__file__).parent.parent
+        / "mpc_rl/tasks/cartpole/task.xml"
+    )
+
+    weights = {
+        'Vertical': 10.0,
+        'Centered': 10.0,
+        'Velocity': 0.1,
+        'Control': 0.1
+    }
+
+    task_params = {
+        'Goal': 0.0
+    }
+
+    qpos_noise_rnge = (-0.0, 0.0)
+    qvel_noise_rnge = (-0.0, 0.0)
+
+    planner = MPCPlanner(
+        model_path=model_path,
+        task_id="Cartpole",
+        rollout_horizon=500,
+        opt_steps=1,
+        weights=weights,
+        task_params=task_params,
+        init_state_noise_flag=False,
+        qpos_noise_rnge=qpos_noise_rnge,
+        qvel_noise_rnge=qvel_noise_rnge,
+        verbose=1
+    )
+    
+    print(f"Rollout horizon: {planner.get_rollout_horizon()}")
+    print(f"Initial state noise: {planner.get_init_state_noise_flag()}")
+    print(f"Physics timestep: {planner.physics_timestep}s")
+    print(f"Agent timestep: {planner.agent_timestep}s")
+    print(f"Steps per agent update: {planner.steps_per_agent_update}")
+    
+    # Run MPC planning
+    print("\nRunning MPC trajectory optimization for Cartpole...")
+    planner.plan(keyframe="home")
+    print("Planning complete!")
+    
+    # Get trajectories and costs
+    qpos, qvel, ctrl, time = planner.get_trajectories()
+    cost_total, cost_terms = planner.get_costs()
+    
+    print(f"\nTrajectory shapes:")
+    print(f"  qpos: {qpos.shape}")
+    print(f"  qvel: {qvel.shape}")
+    print(f"  ctrl: {ctrl.shape}")
+    print(f"  time: {time.shape}")
+    
+    # Cartpole has 2 joints: slider (cart position), hinge_1 (pole angle)
+    # And 1 actuator: slide (cart force)
+    
+    # Plot joint positions
+    fig1 = plt.figure(figsize=(12, 8))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(time, qpos[0, :], label="slider (cart position)", color="blue")
+    plt.legend()
+    plt.ylabel("Cart Position (m)")
+    plt.grid(True)
+    plt.title("Cartpole Position Trajectories")
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(time, qpos[1, :], label="hinge_1 (pole angle)", color="orange")
+    plt.axhline(y=np.pi, color='red', linestyle='--', alpha=0.5, label="upright (π)")
+    plt.axhline(y=-np.pi, color='red', linestyle='--', alpha=0.5)
     plt.legend()
     plt.xlabel("Time (s)")
-    plt.ylabel("Velocity")
-    plt.title("Velocity Trajectories")
+    plt.ylabel("Pole Angle (rad)")
     plt.grid(True)
+    
     plt.tight_layout()
     
-    # Plot control
-    fig3 = plt.figure(figsize=(10, 4))
-    plt.plot(time[:-1], ctrl[0, :], color="blue")
+    # Plot velocities
+    fig2 = plt.figure(figsize=(12, 6))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(time, qvel[0, :], label="cart velocity", color="blue")
+    plt.legend()
+    plt.ylabel("Cart Velocity (m/s)")
+    plt.grid(True)
+    plt.title("Cartpole Velocity Trajectories")
+    
+    plt.subplot(2, 1, 2)
+    plt.plot(time, qvel[1, :], label="pole angular velocity", color="orange")
+    plt.legend()
+    plt.xlabel("Time (s)")
+    plt.ylabel("Pole Angular Velocity (rad/s)")
+    plt.grid(True)
+    
+    plt.tight_layout()
+    
+    # Plot control (1 actuator)
+    fig3 = plt.figure(figsize=(12, 4))
+    
+    plt.plot(time[:-1], ctrl[0, :], color="blue", label="slide force")
+    plt.legend()
     plt.xlabel("Time (s)")
     plt.ylabel("Control")
-    plt.title("Control Signal")
+    plt.title("Cartpole Control Signal")
     plt.grid(True)
     plt.tight_layout()
     
     # Plot costs
     fig4 = plt.figure(figsize=(10, 6))
     
-    # Get cost term names (matching mjpc_ex.py style)
+    # Get cost term names from cartpole task.xml
     cost_names = ["Vertical", "Centered", "Velocity", "Control"]
-    for i, name in enumerate(cost_names):
-        plt.plot(time[:-1], cost_terms[i, :], label=name)
+    colors_cost = ["blue", "orange", "green", "red"]
+    
+    for i, (name, color) in enumerate(zip(cost_names, colors_cost)):
+        plt.plot(time[:-1], cost_terms[i, :], label=name, color=color)
     
     plt.plot(time[:-1], cost_total, label="Total (weighted)", color="black", linewidth=2)
     plt.legend()
     plt.xlabel("Time (s)")
     plt.ylabel("Costs")
-    plt.title("Cost Terms")
+    plt.title("Cartpole Swingup Cost Terms")
     plt.grid(True)
     plt.tight_layout()
     
     plt.show()
     
-    print("\nTest complete!")
+    # Create animation of cartpole using the MPC controls
+    print("\nCreating cartpole animation with MPC controls...")
+    
+    # The MPC ctrl array is at physics timestep resolution (0.01s)
+    # DM Control expects actions at control_timestep resolution (0.01s)
+    # Use the planner's automatic downsampling based on agent_timestep
+    ctrl_downsampled = planner.get_ctrl_downsampled()
+    print(f"Downsampled controls from {ctrl.shape[1]} to {ctrl_downsampled.shape[1]} steps")
+    print(f"MPC physics timestep: {planner.physics_timestep}s")
+    print(f"MPC agent timestep: {planner.agent_timestep}s")
+    print(f"Downsample factor: {planner.steps_per_agent_update}")
+    
+    # Create cartpole environment from dm_control with fixed random seed for consistency
+    dm_env = suite.load(domain_name="cartpole", task_name="swingup", 
+                        task_kwargs={'random': np.random.RandomState(42)})
+    env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
+    env = FlattenObservation(env)
+    
+    # Reset environment and set to the same initial state as MPC planner
+    obs, info = env.reset()
+    
+    # Set cartpole to the same initial state used by MPC planner (from keyframe "home")
+    physics = env.unwrapped._env.physics
+    with physics.reset_context():
+        physics.data.qpos[:] = qpos[:, 0]  # Use the initial qpos from MPC trajectory
+        physics.data.qvel[:] = qvel[:, 0]  # Use the initial qvel from MPC trajectory
+    physics.forward()
+    
+    # Collect frames by applying downsampled controls
+    print("Applying MPC controls to cartpole environment...")
+    frames = []
+    
+    # Get initial frame
+    frame = env.render()
+    frames.append(frame)
+    
+    # Apply each downsampled control action
+    num_steps = ctrl_downsampled.shape[1]
+    for t in range(num_steps):
+        action = ctrl_downsampled[:, t]  # Use the DOWNSAMPLED control
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        # Render and save frame
+        frame = env.render()
+        frames.append(frame)
+        
+        if terminated or truncated:
+            print(f"Episode ended at step {t}")
+            break
+    
+    env.close()
+    print(f"Collected {len(frames)} frames")
+    
+    # Create animation
+    print("Creating animation...")
+    fig_anim = plt.figure(figsize=(10, 6))
+    img = plt.imshow(frames[0])
+    plt.axis('off')
+    plt.title("Cartpole with MPC Controls")
+    
+    def animate(i):
+        img.set_data(frames[i])
+        return [img]
+    
+    # Display at 30 FPS for smooth playback (regardless of actual simulation rate)
+    display_fps = 30
+    
+    anim = animation.FuncAnimation(fig_anim, animate, frames=len(frames), 
+                                   interval=1000/display_fps, blit=True, repeat=True)
+    print(f"Animation created with {len(frames)} frames at {display_fps} FPS")
+    
+    plt.show()
+    
+    print("\nCartpole Swingup Test complete!")
 
 def planner_receding_horizon_test():
     print("Testing MPCPlanner with Receding Horizon...")
@@ -227,6 +893,9 @@ def downsample_test():
     """
     This is a sanity check test to verify that downsampling the action trajectory from the planner
     results in the same expected trajectory in the RL environment.
+
+    NOTE: You don't need this if you change the .xml files to have matching timesteps with the
+    dm_control environments.
     """
     # Create MPC planner instance
     planner = MPCPlanner(
@@ -337,11 +1006,13 @@ def downsample_test():
     
     plt.show()
 
-
-if __name__ == "__main__":
-    # Uncomment the test you want to run:
-    
-    #planner_test()  # Test standard MPC planning
-    planner_receding_horizon_test()  # Test receding horizon MPC planning (faster!)
+if __name__ == "__main__":  
+    planner_test_shadow_reorient()  # Test Shadow Reorient MPC planning
+    #planner_test_walker_walk()  # Test Walker MPC planning
+    #planner_test_cartpole_swingup()  # Test standard MPC planning
+    #planner_receding_horizon_test()  # Test receding horizon MPC planning (faster!)
     #plan_and_save_traj()  # Save a trajectory for later use
     #downsample_test()  # Test downsampling and visualization
+
+    
+

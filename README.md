@@ -35,7 +35,7 @@ We recommend using [VSCode](https://code.visualstudio.com/) and 2 of its extensi
 5. Build and run the `mjpc` target in "release" mode (VSCode defaults to "debug"). This will open and run the graphical user interface.
 
 ### Installing MuJoCo-MPC Python Bindings
-Make sure you're doing this in the mpc-rl conda environment and after you've built the project as seen above. Next, change to mujoco_mpc's python directory:
+Make sure you're doing this in the mpc-rl conda environment and after you've built the project as seen above. Next, change to mujoco_mpc's python directory (or else the script can't find certain file paths):
 ```bash
 cd MPC-RL/mujoco_mpc/python
 ```
