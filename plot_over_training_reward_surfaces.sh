@@ -11,7 +11,9 @@ source ~/.bash_conda && conda activate mpc-rl
 # =============================================================================
 
 # Training run directory containing checkpoints
-TRAINING_RUN_DIR="logs/SAC-MPC-walker-velocity_only_reward/1st_run/walker-walk-SAC-MPC-20251205-102823-percentage-0pct"
+#TRAINING_RUN_DIR="logs/SAC-MPC-walker-velocity_only_reward/2nd_run/walker-walk-SAC-MPC-20251205-122914-percentage-0pct"
+
+TRAINING_RUN_DIR="logs/SAC-MPC-walker-velocity_only_reward/2nd_run/walker-walk-SAC-MPC-20251205-124716-percentage-50pct"
 
 # Surface generation parameters
 GRID_SIZE=31

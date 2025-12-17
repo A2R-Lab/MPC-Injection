@@ -43,17 +43,17 @@ Generate evaluation jobs for a 31x31 grid around your best model:
 ```bash
 python reward_surfaces/scripts/generate_plane_jobs.py \
   logs/walker-walk-SAC-MPC-TIMESTAMP/best_model/ \
-  logs/walker_surface/ \
+  plots/walker_surface/ \
   --grid-size=31 \
   --magnitude=1.0 \
   --num-episodes=50
 ```
 
 This creates:
-- `logs/walker_surface/jobs.sh` - Shell script with all evaluation commands
-- `logs/walker_surface/dir1.npz` - First random direction
-- `logs/walker_surface/dir2.npz` - Second random direction
-- `logs/walker_surface/info.json` - Metadata
+- `plots/walker_surface/jobs.sh` - Shell script with all evaluation commands
+- `plots/walker_surface/dir1.npz` - First random direction
+- `plots/walker_surface/dir2.npz` - Second random direction
+- `plots/walker_surface/info.json` - Metadata
 
 ### 3. Run Evaluations
 
@@ -62,13 +62,13 @@ Run all evaluations in parallel:
 ```bash
 python reward_surfaces/scripts/run_jobs_multiproc.py \
   --num-cpus=8 \
-  logs/walker_surface/jobs.sh
+  plots/walker_surface/jobs.sh
 ```
 
 Or run sequentially:
 
 ```bash
-bash logs/walker_surface/jobs.sh
+bash plots/walker_surface/jobs.sh
 ```
 
 ### 4. Convert Results to CSV
@@ -77,10 +77,10 @@ Aggregate individual results:
 
 ```bash
 python reward_surfaces/scripts/job_results_to_csv.py \
-  logs/walker_surface/
+  plots/walker_surface/
 ```
 
-This creates `logs/walker_surface/results.csv`
+This creates `plots/walker_surface/results.csv`
 
 ### 5. Plot the Surface
 
@@ -88,7 +88,7 @@ Generate visualizations:
 
 ```bash
 python reward_surfaces/scripts/plot_plane.py \
-  logs/walker_surface/results.csv \
+  plots/walker_surface/results.csv \
   --outname=walker_surface \
   --env-name="Walker-Walk" \
   --type=mesh
