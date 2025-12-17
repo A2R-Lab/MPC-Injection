@@ -1,0 +1,11 @@
+{
+    "checkpoint_path": "logs/SAC-MPC-walker-velocity_only_reward/1st_run/walker-walk-SAC-MPC-20251205-104146-percentage-50pct/best_model/best_model.zip",
+    "env_name": "walker-walk",
+    "domain": "walker",
+    "task": "walk",
+    "vecnormalize_path": "logs/SAC-MPC-walker-velocity_only_reward/1st_run/walker-walk-SAC-MPC-20251205-104146-percentage-50pct/vec_normalize.pkl",
+    "experiment_type": "plane",
+    "grid_size": 31,
+    "magnitude": 0.5,
+    "num_episodes": 25
+}

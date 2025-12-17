@@ -1,0 +1,13 @@
+{
+  "episode_rewards": 265.4097595214844,
+  "episode_std_rewards": 100.0520248413086,
+  "episode_stderr_rewards": 20.010404968261717,
+  "episode_avg_len": 1000.0,
+  "episode_std_avg_len": 0.0,
+  "dim0": -0.4,
+  "dim1": 0.4,
+  "offset1": -6.0,
+  "offset2": 6.0,
+  "magnitude": 0.5,
+  "grid_size": 31
+}
