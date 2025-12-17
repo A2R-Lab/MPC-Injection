@@ -72,13 +72,14 @@ def main():
         raise ValueError(f"Shape mismatch: base has {len(base_weights)} params, "
                         f"dir1 has {len(dir1_vec)}, dir2 has {len(dir2_vec)}")
     
-    # Apply offsets
+    # Apply offsets with magnitude scaling
     offset1_scalar = args.offset1 / (grid_size // 2)
     offset2_scalar = args.offset2 / (grid_size // 2)
     
     perturbed_weights = []
     for base, d1, d2 in zip(base_weights, dir1_vec, dir2_vec):
-        perturbed = base + offset1_scalar * d1 + offset2_scalar * d2
+        # Multiply by magnitude to scale the perturbation
+        perturbed = base + magnitude * offset1_scalar * d1 + magnitude * offset2_scalar * d2
         perturbed_weights.append(perturbed)
     
     # Set perturbed weights
