@@ -1,7 +1,7 @@
 {
-  "episode_rewards": 213.31668090820312,
-  "episode_std_rewards": 56.3487663269043,
-  "episode_stderr_rewards": 11.26975326538086,
+  "episode_rewards": 281.37078857421875,
+  "episode_std_rewards": 41.849063873291016,
+  "episode_stderr_rewards": 8.369812774658204,
   "episode_avg_len": 1000.0,
   "episode_std_avg_len": 0.0,
   "dim0": -0.6,
