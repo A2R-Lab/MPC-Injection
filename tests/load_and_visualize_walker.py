@@ -180,8 +180,8 @@ def create_animated_plot(frames, total_reward, episode_length, save_path: Path =
 def main():
     """Main function to load model and create visualization."""
     # Paths
-    run_dir = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/2nd_run/walker-walk-SAC-MPC-20251205-124716-percentage-50pct")
-    #run_dir = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/2nd_run/walker-walk-SAC-MPC-20251205-122914-percentage-0pct")
+    #run_dir = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
+    run_dir = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
     
     # Load configuration
     print("Loading configuration...")
@@ -191,7 +191,7 @@ def main():
     
     # Load model and VecNormalize
     # You can specify a checkpoint step (e.g., 500000) or use None for final model
-    checkpoint_step = 200000  # Change this to load different checkpoints, or set to None for final
+    checkpoint_step = 200_000  # Change this to load different checkpoints, or set to None for final
     print(f"\nLoading model (checkpoint: {checkpoint_step if checkpoint_step else 'final'})...")
     model, vec_env = load_model_and_vecnormalize(run_dir, config, checkpoint_step)
     

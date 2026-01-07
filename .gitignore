@@ -209,6 +209,9 @@ __marimo__/
 # Ignore RL logs
 logs/
 
+# Ignore plots (for now while it's being developed)
+plots/
+
 # Ignore MuJoCo logs
 MUJOCO_LOG.TXT
 

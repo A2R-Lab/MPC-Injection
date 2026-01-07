@@ -16,8 +16,8 @@ source ~/.bash_conda && conda activate mpc-rl
 TRAINING_RUN_DIR="logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
 
 # Surface generation parameters
-GRID_SIZE=31
-MAGNITUDE=3
+GRID_SIZE=41
+MAGNITUDE=5
 NUM_EPISODES=25
 NUM_CPUS=16
 
