@@ -380,7 +380,7 @@ def create_model(env, cfg):
 
 def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path, 
                      domain: str, task: str, seed: int,
-                     checkpoint_freq: int, eval_freq: int):
+                     checkpoint_freq: int, eval_freq: int, num_envs: int):
     """
     Factory function to create all callbacks based on configuration.
     
@@ -391,8 +391,9 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         domain: Environment domain name
         task: Environment task name
         seed: Random seed for eval environment
-        checkpoint_freq: Frequency to save checkpoints
-        eval_freq: Frequency to run evaluation
+        checkpoint_freq: Frequency to save checkpoints (in environment steps)
+        eval_freq: Frequency to run evaluation (in environment steps)
+        num_envs: Number of parallel environments
     
     Returns:
         Tuple of (callbacks list, eval_env or None, inject_callback or None)
@@ -404,8 +405,10 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
+        # CheckpointCallback's save_freq is per training step (which processes num_envs environments)
+        # So we divide by num_envs to get the correct frequency in environment steps
         checkpoint_callback = CheckpointCallback(
-            save_freq=checkpoint_freq,
+            save_freq=checkpoint_freq // num_envs,
             save_path=str(logdir / "checkpoints"),
             name_prefix="model",
             save_replay_buffer=True,
@@ -443,11 +446,12 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         #eval_env.observation_space.seed(seed + 1000)
         
         # Create callback for evaluating the trained model
+        # EvalCallback's eval_freq is also per training step, so divide by num_envs
         eval_callback = EvalCallback(
             eval_env,
             best_model_save_path=str(logdir / "best_model"),
             log_path=str(logdir / "eval_logs"),
-            eval_freq=eval_freq,
+            eval_freq=eval_freq // num_envs,
             deterministic=True,
             render=False,
             n_eval_episodes=5,
@@ -766,6 +770,7 @@ def main(argv):
             seed=_SEED.value,
             checkpoint_freq=_CHECKPOINT_FREQ.value,
             eval_freq=_EVAL_FREQ.value,
+            num_envs=_NUM_ENVS.value,
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model

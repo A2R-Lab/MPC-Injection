@@ -14,8 +14,8 @@
 #ENV_NAME=cartpole-swingup_sparse
 ENV_NAME="walker-walk"
 
-#ALGORITHM="SAC-MPC"
-ALGORITHM="TD3-MPC"
+ALGORITHM="SAC-MPC"
+#ALGORITHM="TD3-MPC"
 
 TOTAL_TIMESTEPS=500000
 INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
@@ -25,9 +25,11 @@ RANDOM_SELECT="True"
 DATA_DIR="data/walker_0_0025dt/"
 
 #LOG_DIR="logs/TD3-MPC-walker-velocity_only_reward/2nd_run"
-#LOG_DIR="logs/SAC-MPC-walker-runs/5th_run/"
+LOG_DIR="logs/SAC-MPC-walker-velocity_only_reward/3rd_run"
 #LOG_DIR="logs/TD3-MPC-walker-runs/5th_run/"
-LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/1st_run"
+#LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/1st_run"
+
+CHECKPOINT_FREQ=25000
 
 SEED=1 # 1 is default for train_sbx.py
 
@@ -61,8 +63,9 @@ for percentage in {0..100..25}; do
         --random_select="${RANDOM_SELECT}" \
         --data_dir="${DATA_DIR}" \
         --logdir="${LOG_DIR}" \
-        --seed="${SEED}"
-    
+        --seed="${SEED}" \
+    	--checkpoint_freq="${CHECKPOINT_FREQ}"
+
     # Check if the previous command succeeded
     if [ $? -ne 0 ]; then
         echo ""
