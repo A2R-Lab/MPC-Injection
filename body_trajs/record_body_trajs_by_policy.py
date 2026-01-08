@@ -122,6 +122,11 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
     body_orientations = {name: [] for name in body_names}
     rewards = []
     
+    # Track foot-specific data
+    foot_clearances = {'right_foot': [], 'left_foot': []}  # Height above ground
+    foot_contacts = {'right_foot': [], 'left_foot': []}  # Binary contact state
+    torso_height = []  # Torso height above ground
+    
     done = False
     step_count = 0
     
@@ -135,6 +140,36 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
             # Get orientation as quaternion (w, x, y, z)
             quat = physics.named.data.xquat[body_name].copy()
             body_orientations[body_name].append(quat)
+        
+        # Record foot clearance (z-coordinate, height above ground)
+        foot_clearances['right_foot'].append(physics.named.data.xpos['right_foot'][2])
+        foot_clearances['left_foot'].append(physics.named.data.xpos['left_foot'][2])
+        
+        # Record torso height
+        torso_height.append(physics.named.data.xpos['torso'][2])
+        
+        # Check foot contact with ground
+        # In MuJoCo, we check if there are any active contacts involving the foot geoms
+        right_foot_in_contact = False
+        left_foot_in_contact = False
+        
+        for i in range(physics.data.ncon):
+            contact = physics.data.contact[i]
+            geom1_name = physics.model.id2name(contact.geom1, 'geom')
+            geom2_name = physics.model.id2name(contact.geom2, 'geom')
+            
+            # Check if right_foot is in contact with floor
+            if (geom1_name == 'right_foot' and geom2_name == 'floor') or \
+               (geom2_name == 'right_foot' and geom1_name == 'floor'):
+                right_foot_in_contact = True
+            
+            # Check if left_foot is in contact with floor
+            if (geom1_name == 'left_foot' and geom2_name == 'floor') or \
+               (geom2_name == 'left_foot' and geom1_name == 'floor'):
+                left_foot_in_contact = True
+        
+        foot_contacts['right_foot'].append(right_foot_in_contact)
+        foot_contacts['left_foot'].append(left_foot_in_contact)
         
         # Get action from model
         action, _ = model.predict(obs, deterministic=True)
@@ -153,7 +188,10 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         'timesteps': step_count,
         'rewards': np.array(rewards),
         'done': done,
-        'seed': seed
+        'seed': seed,
+        'foot_clearances': {name: np.array(clearances) for name, clearances in foot_clearances.items()},
+        'foot_contacts': {name: np.array(contacts, dtype=bool) for name, contacts in foot_contacts.items()},
+        'torso_height': np.array(torso_height)
     }
     
     return trajectory_data
@@ -188,6 +226,22 @@ def save_trajectory_data(trajectory_data: dict, output_dir: Path, checkpoint_ste
     # Add body orientations
     for body_name, orientations in trajectory_data['body_orientations'].items():
         save_dict[f'quat_{body_name}'] = orientations
+    
+    # Add foot clearances
+    for foot_name, clearances in trajectory_data['foot_clearances'].items():
+        save_dict[f'clearance_{foot_name}'] = clearances
+    
+    # Add foot contacts (binary arrays)
+    for foot_name, contacts in trajectory_data['foot_contacts'].items():
+        save_dict[f'contact_{foot_name}'] = contacts
+        # Calculate and save percentage of time in contact
+        contact_percentage = (contacts.sum() / len(contacts)) * 100
+        save_dict[f'contact_pct_{foot_name}'] = contact_percentage
+    
+    # Add torso height data
+    save_dict['torso_height'] = trajectory_data['torso_height']
+    save_dict['torso_height_mean'] = trajectory_data['torso_height'].mean()
+    save_dict['torso_height_std'] = trajectory_data['torso_height'].std()
     
     np.savez_compressed(output_file, **save_dict)
     print(f"  Saved trajectory data to: {output_file}")
@@ -273,6 +327,17 @@ def main():
             print(f"  Episode completed: {trajectory_data['timesteps']} steps")
             print(f"  Total reward: {trajectory_data['rewards'].sum():.2f}")
             print(f"  Early termination: {trajectory_data['done']}")
+            
+            # Print foot contact statistics
+            right_contact_pct = (trajectory_data['foot_contacts']['right_foot'].sum() / trajectory_data['timesteps']) * 100
+            left_contact_pct = (trajectory_data['foot_contacts']['left_foot'].sum() / trajectory_data['timesteps']) * 100
+            print(f"  Right foot contact: {right_contact_pct:.1f}%")
+            print(f"  Left foot contact: {left_contact_pct:.1f}%")
+            
+            # Print torso height statistics
+            torso_mean_height = trajectory_data['torso_height'].mean()
+            torso_std_height = trajectory_data['torso_height'].std()
+            print(f"  Torso height: {torso_mean_height:.3f} ± {torso_std_height:.3f} m")
             
             # Save data
             save_trajectory_data(trajectory_data, output_subdir, checkpoint_step)
