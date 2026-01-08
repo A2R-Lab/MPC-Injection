@@ -191,7 +191,7 @@ def main():
     
     # Load model and VecNormalize
     # You can specify a checkpoint step (e.g., 500000) or use None for final model
-    checkpoint_step = 200_000  # Change this to load different checkpoints, or set to None for final
+    checkpoint_step = 125_000  # Change this to load different checkpoints, or set to None for final
     print(f"\nLoading model (checkpoint: {checkpoint_step if checkpoint_step else 'final'})...")
     model, vec_env = load_model_and_vecnormalize(run_dir, config, checkpoint_step)
     
