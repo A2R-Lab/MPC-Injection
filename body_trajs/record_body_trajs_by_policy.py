@@ -63,7 +63,7 @@ def load_model_and_vecnormalize(run_dir: Path, config: dict, checkpoint_step: in
     vec_env = DummyVecEnv([env_fn])
 
     # Load VecNormalize stats
-    vecnormalize_path = run_dir / "checkpoints" / f"vecnormalize_{checkpoint_step}.pkl"
+    vecnormalize_path = run_dir / "checkpoints" / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
     model_path = run_dir / "checkpoints" / f"model_{checkpoint_step}_steps.zip"
 
     if not vecnormalize_path.exists():
@@ -258,7 +258,8 @@ def main():
     # ============================================================================
     
     # Path to the run directory containing checkpoints
-    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
     
     # Range of checkpoints to process (inclusive, step by 25000)
     START_CHECKPOINT = 25_000
@@ -274,7 +275,7 @@ def main():
                   'left_thigh', 'left_leg', 'left_foot']
     
     # Algorithm type ('SAC' or 'TD3')
-    ALGORITHM = 'SAC'
+    ALGORITHM = 'SAC-MPC'
     
     # Output directory (relative to this script)
     OUTPUT_DIR = Path(__file__).parent / "model_traj_data"

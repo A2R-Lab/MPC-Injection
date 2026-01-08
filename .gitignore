@@ -212,6 +212,9 @@ logs/
 # Ignore plots (for now while it's being developed)
 plots/
 
+# Ignore body trajectory data
+body_trajs/model_traj_data/walker*
+
 # Ignore MuJoCo logs
 MUJOCO_LOG.TXT
 
