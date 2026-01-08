@@ -121,6 +121,8 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
     body_positions = {name: [] for name in body_names}
     body_orientations = {name: [] for name in body_names}
     rewards = []
+    observations = []  # Store observations at each timestep
+    actions = []  # Store actions at each timestep
     
     # Track foot-specific data
     foot_clearances = {'right_foot': [], 'left_foot': []}  # Height above ground
@@ -131,6 +133,9 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
     step_count = 0
     
     while not done and step_count < max_steps:
+        # Record the observation (what the policy sees)
+        observations.append(obs[0].copy())
+        
         # Record body states
         for body_name in body_names:
             # Get position (x, y, z)
@@ -173,6 +178,7 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         
         # Get action from model
         action, _ = model.predict(obs, deterministic=True)
+        actions.append(action[0].copy())  # Store the action
         
         # Step environment
         obs, reward, done, info = vec_env.step(action)
@@ -189,6 +195,8 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         'rewards': np.array(rewards),
         'done': done,
         'seed': seed,
+        'observations': np.array(observations),
+        'actions': np.array(actions),
         'foot_clearances': {name: np.array(clearances) for name, clearances in foot_clearances.items()},
         'foot_contacts': {name: np.array(contacts, dtype=bool) for name, contacts in foot_contacts.items()},
         'torso_height': np.array(torso_height)
@@ -216,7 +224,9 @@ def save_trajectory_data(trajectory_data: dict, output_dir: Path, checkpoint_ste
         'timesteps': trajectory_data['timesteps'],
         'rewards': trajectory_data['rewards'],
         'done': trajectory_data['done'],
-        'seed': trajectory_data['seed']
+        'seed': trajectory_data['seed'],
+        'observations': trajectory_data['observations'],
+        'actions': trajectory_data['actions']
     }
     
     # Add body positions
@@ -258,8 +268,8 @@ def main():
     # ============================================================================
     
     # Path to the run directory containing checkpoints
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
-    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
+    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
     
     # Range of checkpoints to process (inclusive, step by 25000)
     START_CHECKPOINT = 25_000
