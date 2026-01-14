@@ -173,7 +173,7 @@ def plot_torso_position(checkpoints=[25000, 100000, 150000, 200000]):
         print(f"Checkpoint range: {common_checkpoints[0]} to {common_checkpoints[-1]}")
     
     # Create 3D plot
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(14, 10), constrained_layout=True)
     ax = fig.add_subplot(111, projection='3d')
     
     # Plot trajectories for each checkpoint
@@ -229,14 +229,14 @@ def plot_torso_position(checkpoints=[25000, 100000, 150000, 200000]):
     # elev: vertical angle (higher = more from above), azim: horizontal rotation
     ax.view_init(elev=35, azim=45)
     
-    plt.tight_layout()
+    #plt.tight_layout()
     
     # Save plot
     output_dir = Path(__file__).parent.parent / "plots/body_trajectory_plots"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "torso_xz_trajectory_evolution.png"
     
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', pad_inches=0.15)
     print(f"\nSaved trajectory evolution plot to: {output_path}")
     
     # Show the plot

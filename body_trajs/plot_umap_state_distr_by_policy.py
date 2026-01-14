@@ -142,7 +142,7 @@ def create_umap_comparison_plot(obs1, obs2, label1, label2, checkpoint_num, outp
     reducer = UMAP(
         n_neighbors=10,
         min_dist=0.3,
-        n_components=2,
+        n_components=3,
         random_state=42,
         metric='correlation'
     )
@@ -156,20 +156,21 @@ def create_umap_comparison_plot(obs1, obs2, label1, label2, checkpoint_num, outp
     # Create plot
     fig, ax = plt.subplots(figsize=(10, 8))
     # commented out 3D plot
-    #fig = plt.figure(figsize=(10, 8))
-    #ax = fig.add_subplot(111, projection='3d')
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
     
     # Plot both distributions
-    ax.scatter(embedding1[:, 0], embedding1[:, 1], #embedding1[:, 2],
+    ax.scatter(embedding1[:, 0], embedding1[:, 1], embedding1[:, 2], # embedding1[:, 2] for 3D
               c='#1f77b4', alpha=0.6, s=10, label=label1, rasterized=True)
-    ax.scatter(embedding2[:, 0], embedding2[:, 1], #embedding2[:, 2],
+    ax.scatter(embedding2[:, 0], embedding2[:, 1], embedding2[:, 2], # embedding1[:, 2] for 3D
               c='#ff7f0e', alpha=0.6, s=10, label=label2, rasterized=True)
     
     ax.set_xlabel('UMAP Dimension 1', fontsize=12)
     ax.set_ylabel('UMAP Dimension 2', fontsize=12)
+    ax.set_zlabel('UMAP Dimension 3', fontsize=12)  # For 3D plot
     
     # Create title based on data type
-    data_type_label = 'Observations' if data_type == 'observations' else 'Body Physics'
+    data_type_label = 'Observations' if data_type == 'observations' else 'State'
     ax.set_title(f'{data_type_label} Distribution Comparison at Checkpoint {checkpoint_num:,}', 
                 fontsize=14, fontweight='bold')
     ax.legend(fontsize=11, loc='best')
@@ -206,7 +207,7 @@ def main():
     DATA_TYPE = 'body_physics'
     
     # Output directory for plots
-    OUTPUT_DIR = Path(__file__).parent.parent / "plots/umap_plots"
+    OUTPUT_DIR = Path(__file__).parent.parent / "plots/umap_plots3d"
     
     # Output filename pattern
     OUTPUT_PATTERN = "umap_graph_0pct_50pct_at_checkpoint_{checkpoint}.png"
