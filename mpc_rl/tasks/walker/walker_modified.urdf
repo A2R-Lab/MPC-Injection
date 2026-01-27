@@ -14,7 +14,7 @@
          <mass value="10.673037441795724" />
          <inertia ixx="0.44315580337296034" iyy="0.44315580337296034" izz="0.025444931762681082" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.07" length="0.6" /></geometry><material name="torso_material"><color rgba="0.4 0.6 0.8 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.07" length="0.6" /></geometry><material name="torso_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 0.3" rpy="0 0 0" /><geometry><sphere radius="0.07" /></geometry><material name="torso_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 -0.3" rpy="0 0 0" /><geometry><sphere radius="0.07" /></geometry><material name="torso_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="rootz_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
@@ -64,7 +64,7 @@
          <mass value="4.057890510886818" />
          <inertia ixx="0.09329875682692193" iyy="0.09329875682692193" izz="0.004941463444708948" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 -0.225" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.05" length="0.45" /></geometry><material name="right_thigh_material"><color rgba="0.8 0.4 0.4 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 -0.225" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.05" length="0.45" /></geometry><material name="right_thigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 0.0" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="right_thigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 -0.45" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="right_thigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="right_hip_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
@@ -90,7 +90,7 @@
          <mass value="2.7813566959781637" />
          <inertia ixx="0.07230254017320971" iyy="0.07230254017320971" izz="0.0021821921450855186" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.04" length="0.5" /></geometry><material name="right_leg_material"><color rgba="0.8 0.4 0.4 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.04" length="0.5" /></geometry><material name="right_leg_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 0.25" rpy="0 0 0" /><geometry><sphere radius="0.04" /></geometry><material name="right_leg_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 -0.25" rpy="0 0 0" /><geometry><sphere radius="0.04" /></geometry><material name="right_leg_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="right_knee_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
@@ -116,7 +116,7 @@
          <mass value="2.094395102393196" />
          <inertia ixx="0.013940817400304714" iyy="0.013940817400304714" izz="0.00248709418409192" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 1.5708 0.0" /><geometry><cylinder radius="0.05" length="0.2" /></geometry><material name="right_foot_material"><color rgba="0.8 0.4 0.4 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 1.5708 0.0" /><geometry><cylinder radius="0.05" length="0.2" /></geometry><material name="right_foot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.09999999999932538 0.0 -3.673205103346574e-07" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="right_foot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.09999999999932538 0.0 3.673205103346574e-07" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="right_foot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="right_ankle_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
@@ -142,7 +142,7 @@
          <mass value="4.057890510886818" />
          <inertia ixx="0.09329875682692193" iyy="0.09329875682692193" izz="0.004941463444708948" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 -0.225" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.05" length="0.45" /></geometry><material name="left_thigh_material"><color rgba="0.4 0.8 0.4 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 -0.225" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.05" length="0.45" /></geometry><material name="left_thigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 0.0" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="left_thigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 -0.45" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="left_thigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="left_hip_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
@@ -168,7 +168,7 @@
          <mass value="2.7813566959781637" />
          <inertia ixx="0.07230254017320971" iyy="0.07230254017320971" izz="0.0021821921450855186" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.04" length="0.5" /></geometry><material name="left_leg_material"><color rgba="0.4 0.8 0.4 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" /><geometry><cylinder radius="0.04" length="0.5" /></geometry><material name="left_leg_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 0.25" rpy="0 0 0" /><geometry><sphere radius="0.04" /></geometry><material name="left_leg_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.0 0.0 -0.25" rpy="0 0 0" /><geometry><sphere radius="0.04" /></geometry><material name="left_leg_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="left_knee_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
@@ -194,7 +194,7 @@
          <mass value="2.094395102393196" />
          <inertia ixx="0.013940817400304714" iyy="0.013940817400304714" izz="0.00248709418409192" ixy="0" ixz="0" iyz="0" />
       </inertial>
-   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 1.5708 0.0" /><geometry><cylinder radius="0.05" length="0.2" /></geometry><material name="left_foot_material"><color rgba="0.4 0.8 0.4 1.0" /></material></visual></link>
+   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 1.5708 0.0" /><geometry><cylinder radius="0.05" length="0.2" /></geometry><material name="left_foot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.09999999999932538 0.0 -3.673205103346574e-07" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="left_foot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.09999999999932538 0.0 3.673205103346574e-07" rpy="0 0 0" /><geometry><sphere radius="0.05" /></geometry><material name="left_foot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
    <link name="left_ankle_jointbody">
       <inertial>
          <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />

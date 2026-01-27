@@ -65,10 +65,10 @@ class MujocoTrajVisualizer:
         # Add ground plane
         self.server.scene.add_grid(
             "/grid",
-            width=20,
-            height=20,
+            width=200,
+            height=200,
             position=(0, 0, 0),
-            plane="xy" # TODO: check if xz or xy
+            plane="xy"
         )
 
         # Setup GUI controls
@@ -93,11 +93,11 @@ class MujocoTrajVisualizer:
                 "Play", initial_value=False, hint="Toggle trajectory playback"
             )
             self.speed_slider = self.server.gui.add_slider(
-                "Speed", min=0.1, max=1.0, step=0.1, initial_value=1.0,
+                "Speed", min=0.1, max=1.0, step=0.05, initial_value=0.1,
                 hint="Playback speed multiplier"
             )
             self.frame_slider = self.server.gui.add_slider(
-                "Frame", min=0, max=500, step=1, initial_value=0,
+                "Frame", min=0, max=1000, step=1, initial_value=0,
                 hint="Current frame"
             )
             self.loop_checkbox = self.server.gui.add_checkbox(
@@ -280,7 +280,7 @@ class MujocoTrajVisualizer:
                 # Create a sphere for contact indicator
                 self._contact_indicators[indicator_name] = self.server.scene.add_icosphere(
                     indicator_name,
-                    radius=0.03,
+                    radius=0.1,
                     color=(0, 255, 0) if foot_name == 'left_foot' else (255, 0, 0),
                     position=foot_pos
                 )
