@@ -51,3 +51,4 @@ dependencies:
       - matplotlib
       - jupyter
       - umap-learn
+      - viser
