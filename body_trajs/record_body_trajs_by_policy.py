@@ -123,11 +123,15 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
     rewards = []
     observations = []  # Store observations at each timestep
     actions = []  # Store actions at each timestep
+    joint_angles = []  # Store joint angles/positions at each timestep
     
     # Track foot-specific data
     foot_clearances = {'right_foot': [], 'left_foot': []}  # Height above ground
     foot_contacts = {'right_foot': [], 'left_foot': []}  # Binary contact state
     torso_height = []  # Torso height above ground
+    
+    # Get joint names for reference
+    joint_names = [physics.model.id2name(i, 'joint') for i in range(physics.model.njnt)]
     
     done = False
     step_count = 0
@@ -152,6 +156,9 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         
         # Record torso height
         torso_height.append(physics.named.data.xpos['torso'][2])
+        
+        # Record joint angles/positions
+        joint_angles.append(physics.data.qpos.copy())
         
         # Check foot contact with ground
         # In MuJoCo, we check if there are any active contacts involving the foot geoms
@@ -197,6 +204,8 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         'seed': seed,
         'observations': np.array(observations),
         'actions': np.array(actions),
+        'joint_angles': np.array(joint_angles),
+        'joint_names': joint_names,
         'foot_clearances': {name: np.array(clearances) for name, clearances in foot_clearances.items()},
         'foot_contacts': {name: np.array(contacts, dtype=bool) for name, contacts in foot_contacts.items()},
         'torso_height': np.array(torso_height)
@@ -226,7 +235,9 @@ def save_trajectory_data(trajectory_data: dict, output_dir: Path, checkpoint_ste
         'done': trajectory_data['done'],
         'seed': trajectory_data['seed'],
         'observations': trajectory_data['observations'],
-        'actions': trajectory_data['actions']
+        'actions': trajectory_data['actions'],
+        'joint_angles': trajectory_data['joint_angles'],
+        'joint_names': trajectory_data['joint_names']
     }
     
     # Add body positions

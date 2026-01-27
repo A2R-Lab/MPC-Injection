@@ -272,6 +272,54 @@ def main_urdf_robo_viz(
     while True:
         time.sleep(10.0)
 
+def se_hwan_jeon_humanoid():
+    """
+    Se Hwan's script for reference (THIS DOES NOT WORK HERE)
+    """
+    import torch
+    import os
+    import numpy as np
+    import viser
+    from viser.extras import ViserUrdf
+    import yourdfpy
+
+    # Load URDF
+    CURRENT_DIR = os.getcwd()
+    URDF_DIR = os.path.join(CURRENT_DIR, "../../../resources/robots/mit_humanoid/urdf")
+    humanoid_urdf = yourdfpy.URDF.load(os.path.join(URDF_DIR, "humanoid_full.urdf"))
+
+    def visualize_humanoid(server, instance_name, q, mesh_rgba=None):
+        base = server.scene.add_frame(instance_name, show_axes=False)
+        base_SO3 = viser.transforms.SO3.from_rpy_radians(q[3], q[4], q[5])
+        base.position = q[:3]
+        base.wxyz = base_SO3.wxyz
+        viser_urdf = ViserUrdf(server, humanoid_urdf,
+                            root_node_name=base.name,
+                            mesh_color_override=mesh_rgba)
+        viser_urdf.update_cfg(q[6:])
+
+    # Viser setup
+    server = viser.ViserServer()
+
+    grid = server.scene.add_grid(
+        "/grid", width=10, height=10, position=(0.0, 0.0, 0.0))
+
+    # Load trajectory data
+    residual_traj = torch.load(f'../data/header_residual_traj.pt',
+                            map_location='cpu', weights_only=True)
+    mpc_traj = mpc_traj.numpy()
+    residual_traj = residual_traj.numpy()
+
+    N_state = mpc_traj.shape[0]
+    N_traj = mpc_traj.shape[1]
+    N_viz = 5
+    N_skip = 20
+
+    # Residual visualization
+    for i in range(N_viz):
+        start_idx = 365
+        time_idx = start_idx + i*N_skip
+        visualize_humanoid(server, f"/residual_{i+1}", residual_traj[:24, time_idx], (255, 165, 0, (i+1)/N_viz))
 
 
 if __name__ == "__main__":
