@@ -279,8 +279,8 @@ def main():
     # ============================================================================
     
     # Path to the run directory containing checkpoints
-    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
     
     # Range of checkpoints to process (inclusive, step by 25000)
     START_CHECKPOINT = 25_000
