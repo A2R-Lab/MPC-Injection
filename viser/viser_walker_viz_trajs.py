@@ -93,7 +93,7 @@ class MujocoTrajVisualizer:
                 "Play", initial_value=False, hint="Toggle trajectory playback"
             )
             self.speed_slider = self.server.gui.add_slider(
-                "Speed", min=0.1, max=5.0, step=0.1, initial_value=1.0,
+                "Speed", min=0.1, max=1.0, step=0.1, initial_value=1.0,
                 hint="Playback speed multiplier"
             )
             self.frame_slider = self.server.gui.add_slider(
