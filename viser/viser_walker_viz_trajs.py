@@ -20,6 +20,7 @@ import yourdfpy
 class MujocoTrajVisualizer:
     """
     Visualize saved MuJoCo trajectories using viser and an MJCF-to-URDF converted model.
+    Supports visualizing up to two trajectories simultaneously.
     """
 
     def __init__(
@@ -30,6 +31,8 @@ class MujocoTrajVisualizer:
             show_contacts: bool = True,
             show_body_part_trajectory: bool = True,
             num_ghost_frames: int = 5,
+            dual_mode: bool = False,
+            robot2_y_offset: float = -3.0,
         ):
         """
         Initializes the visualizer with a urdf model.
@@ -41,6 +44,8 @@ class MujocoTrajVisualizer:
             show_contacts: Whether to show foot contact indicators.
             show_body_part_trajectory: Whether to show the trajectory path of body parts.
             num_ghost_frames: Maximum number of ghost frames to show (creates this many URDF instances).
+            dual_mode: Whether to enable dual trajectory visualization.
+            robot2_y_offset: Y-axis offset for the second robot (only used in dual mode).
         """
         self.server = viser.ViserServer(port=port)
         self.dt = dt
@@ -48,6 +53,8 @@ class MujocoTrajVisualizer:
         self.show_body_part_trajectory = show_body_part_trajectory
         self.port = port  # Store port for later use
         self.max_ghost_frames = num_ghost_frames
+        self.dual_mode = dual_mode
+        self.robot2_y_offset = robot2_y_offset
 
         # Convert to Path for ViserUrdf
         urdf_path = Path(urdf_path)
@@ -56,17 +63,58 @@ class MujocoTrajVisualizer:
         # Load URDF to get joint info
         self.urdf = yourdfpy.URDF.load(str(urdf_path), load_collision_meshes=False)
 
-        # Create world frame for main robot
+        # Create world frame for main robot (robot1)
         self.world_node = self.server.scene.add_frame(name="/world", show_axes=False)
 
-        # Load URDF visualization - ViserUrdf expects a Path object
+        # Load URDF visualization for robot1 - ViserUrdf expects a Path object
         self.urdf_handle = ViserUrdf(
             target=self.server,
             urdf_or_path=urdf_path,
             root_node_name="/world",
         )
 
-        # Create ghost frame instances (for showing multiple frames at once)
+        # Robot 2 components (only created if dual_mode is enabled)
+        self.world_node_2 = None
+        self.urdf_handle_2 = None
+        self._ghost_frames_2 = []
+        self._ghost_urdf_handles_2 = []
+        self._ghost_contact_indicators_2 = []
+        self._ghost_alphas_2 = []
+        self._contact_indicators_2 = {}
+        self._trajectory_line_2 = None
+        self.body_part_trajectory_2 = []
+        self.trajectory_data_2 = None
+        
+        if self.dual_mode:
+            # Create world frame for second robot
+            self.world_node_2 = self.server.scene.add_frame(name="/world2", show_axes=False)
+            
+            # Load URDF visualization for robot2 with different color
+            self.urdf_handle_2 = ViserUrdf(
+                target=self.server,
+                urdf_or_path=urdf_path,
+                root_node_name="/world2",
+                mesh_color_override=(0.2, 0.5, 1.0),  # Blue color for robot2
+            )
+            
+            # Create ghost frame instances for robot2
+            for i in range(self.max_ghost_frames):
+                ghost_world = self.server.scene.add_frame(
+                    name=f"/ghost2_{i}", 
+                    show_axes=False
+                )
+                ghost_urdf = ViserUrdf(
+                    target=self.server,
+                    urdf_or_path=urdf_path,
+                    root_node_name=f"/ghost2_{i}",
+                    mesh_color_override=(0.2, 0.5, 1.0, 1.0),
+                )
+                self._ghost_frames_2.append(ghost_world)
+                self._ghost_urdf_handles_2.append(ghost_urdf)
+                self._ghost_contact_indicators_2.append({})
+                self._ghost_alphas_2.append(1.0)
+
+        # Create ghost frame instances for robot1 (for showing multiple frames at once)
         # Each ghost has its own world frame and URDF handle
         self._ghost_frames = []
         self._ghost_urdf_handles = []
@@ -90,6 +138,8 @@ class MujocoTrajVisualizer:
         
         # Initially hide all ghosts
         self._set_ghost_visibility(visible=False)
+        if self.dual_mode:
+            self._set_ghost_visibility(visible=False, robot_idx=2)
 
         # Add ground plane
         self.server.scene.add_grid(
@@ -185,7 +235,7 @@ class MujocoTrajVisualizer:
                 "Info", initial_value="No trajectory loaded", disabled=True
             )
 
-    def load_trajectory(self, npz_path: str):
+    def load_trajectory(self, npz_path: str, robot_idx: int = 1):
         """
         Load trajectory data from .npz file
 
@@ -200,28 +250,41 @@ class MujocoTrajVisualizer:
         - rewards: (num_frames,) rewards
         - contact_<foot_name>: (num_frames,) boolean contact indicators
         - clearance_<foot_name>: (num_frames,) foot height above ground
+        
+        Args:
+            npz_path: Path to the trajectory .npz file
+            robot_idx: Which robot to load trajectory for (1 or 2)
         """
         data = np.load(npz_path, allow_pickle=True)
-        self.trajectory_data = data
-
-        # Update frame slider range
-        num_frames = data['timesteps']
-        self.frame_slider.max = num_frames - 1
-
-        print(f"Loaded trajectory with {num_frames} frames.")
-        print(f"Available data: {list(data.keys())}")
-
-        # Display stats
-        if self.show_stats.value:
-            self._update_statistics()
         
-        # Initializat body part trajectory path
-        # NOTE: Change this for whatever body part you want to track
-        if 'pos_torso' in data.files:
-            self.trajectory_path = data['pos_torso']
+        if robot_idx == 1:
+            self.trajectory_data = data
+            # Initialize body part trajectory path
+            # NOTE: Change this for whatever body part you want to track
+            if 'pos_torso' in data.files:
+                self.trajectory_path = data['pos_torso']
+        else:  # robot_idx == 2
+            self.trajectory_data_2 = data
+            if 'pos_torso' in data.files:
+                self.body_part_trajectory_2 = data['pos_torso']
 
-        # Initialize to first frame
-        self.update_visualization(0)
+        # Update frame slider range based on robot1 (primary)
+        if robot_idx == 1:
+            num_frames = data['timesteps']
+            self.frame_slider.max = num_frames - 1
+            print(f"Loaded trajectory 1 with {num_frames} frames.")
+        else:
+            print(f"Loaded trajectory 2 with {data['timesteps']} frames.")
+        
+        print(f"Available data (robot {robot_idx}): {list(data.keys())}")
+
+        # Display stats (only update for robot1)
+        if robot_idx == 1 and self.show_stats.value:
+            self._update_statistics()
+
+        # Initialize to first frame if robot1
+        if robot_idx == 1:
+            self.update_visualization(0)
 
         return data
     
@@ -249,7 +312,7 @@ class MujocoTrajVisualizer:
         
         self.stats_text.value = "\n".join(stats_lines)
     
-    def _get_actuated_joint_positions(self, frame_idx: int) -> np.ndarray:
+    def _get_actuated_joint_positions(self, frame_idx: int, robot_idx: int = 1) -> np.ndarray:
         """
         Extract actuated joint positions from qpos data
 
@@ -264,10 +327,18 @@ class MujocoTrajVisualizer:
         The URDF actuated joints are: rooty, right_hip, right_knee, right_ankle, 
         left_hip, left_knee, left_ankle (7 total)
 
+        Args:
+            frame_idx: Frame index to extract positions from
+            robot_idx: Which robot to get positions for (1 or 2)
+
         Returns:
             np.ndarray of actuated joint angles in the expected order for yourdfpy
         """
-        qpos = self.trajectory_data['joint_angles'][frame_idx]
+        traj_data = self.trajectory_data if robot_idx == 1 else self.trajectory_data_2
+        if traj_data is None:
+            return np.zeros(7)
+        
+        qpos = traj_data['joint_angles'][frame_idx]
 
         # Include rooty (qpos[2]) and the 6 leg joints (qpos[3:9])
         # Total: 7 actuated joints matching URDF structure
@@ -275,7 +346,7 @@ class MujocoTrajVisualizer:
 
         return actuated_joint_angles
 
-    def _get_root_state(self, frame_idx: int) -> tuple[np.ndarray, np.ndarray]:
+    def _get_root_state(self, frame_idx: int, robot_idx: int = 1) -> tuple[np.ndarray, np.ndarray]:
         """
         Extract root position and orientation from qpos data
 
@@ -285,31 +356,47 @@ class MujocoTrajVisualizer:
 
         Note: rooty is handled by the URDF joint system, not as part of root state
 
+        Args:
+            frame_idx: Frame index to extract state from
+            robot_idx: Which robot to get state for (1 or 2)
+
         Returns:
             Tuple of (pos, quat) where:
-            - pos is (x, y, z) position (y=0 for 2D walker)
+            - pos is (x, y, z) position (y is offset for robot2)
             - quat is identity quaternion (rotation handled by URDF rooty joint)
         """
-        qpos = self.trajectory_data['joint_angles'][frame_idx]
+        # Select the appropriate trajectory data
+        traj_data = self.trajectory_data if robot_idx == 1 else self.trajectory_data_2
+        if traj_data is None:
+            return np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0, 0.0, 0.0])
+        
+        qpos = traj_data['joint_angles'][frame_idx]
 
-        # Extract root position (x, y, z) - note: y is always 0 for 2D walker
+        # Extract root position (x, y, z)
         # qpos[0] is z (height), qpos[1] is x (forward)
-        root_pos = np.array([qpos[1], 0.0, qpos[0]])
+        # Apply y-offset for robot2
+        y_offset = 0.0 if robot_idx == 1 else self.robot2_y_offset
+        root_pos = np.array([qpos[1], y_offset, qpos[0]])
 
         # Identity quaternion since rotation is handled by rooty joint in URDF
         root_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
         return root_pos, root_quat
     
-    def _set_ghost_visibility(self, visible: bool, num_visible: int = None):
+    def _set_ghost_visibility(self, visible: bool, num_visible: int = None, robot_idx: int = 1):
         """
         Set visibility of ghost frame instances.
         
         Args:
             visible: Whether ghosts should be visible
             num_visible: Number of ghosts to show (if None, show/hide all)
+            robot_idx: Which robot's ghosts to control (1 or 2)
         """
-        for i, (ghost_world, ghost_urdf) in enumerate(zip(self._ghost_frames, self._ghost_urdf_handles)):
+        # Select the appropriate ghost frames
+        ghost_frames = self._ghost_frames if robot_idx == 1 else self._ghost_frames_2
+        ghost_urdf_handles = self._ghost_urdf_handles if robot_idx == 1 else self._ghost_urdf_handles_2
+        
+        for i, (ghost_world, ghost_urdf) in enumerate(zip(ghost_frames, ghost_urdf_handles)):
             if num_visible is not None:
                 is_visible = visible and (i < num_visible)
             else:
@@ -320,7 +407,7 @@ class MujocoTrajVisualizer:
             if not is_visible:
                 ghost_world.position = (0, 0, -1000)  # Move far below ground
     
-    def _update_ghost_frame(self, ghost_idx: int, frame_idx: int, opacity_factor: float = 1.0):
+    def _update_ghost_frame(self, ghost_idx: int, frame_idx: int, opacity_factor: float = 1.0, robot_idx: int = 1):
         """
         Update a single ghost frame to show a specific trajectory frame.
         
@@ -328,53 +415,76 @@ class MujocoTrajVisualizer:
             ghost_idx: Index of the ghost instance to update
             frame_idx: Trajectory frame to display
             opacity_factor: Alpha value for transparency (0.0 = fully transparent, 1.0 = opaque)
+            robot_idx: Which robot to update (1 or 2)
         """
-        if ghost_idx >= len(self._ghost_frames):
+        # Select appropriate ghost components
+        ghost_frames = self._ghost_frames if robot_idx == 1 else self._ghost_frames_2
+        ghost_urdf_handles = self._ghost_urdf_handles if robot_idx == 1 else self._ghost_urdf_handles_2
+        ghost_alphas = self._ghost_alphas if robot_idx == 1 else self._ghost_alphas_2
+        
+        if ghost_idx >= len(ghost_frames):
             return
         
         # Check if we need to recreate the URDF with a different alpha
         # We recreate if alpha changed significantly to update transparency
-        alpha_changed = abs(self._ghost_alphas[ghost_idx] - opacity_factor) > 0.05
+        alpha_changed = abs(ghost_alphas[ghost_idx] - opacity_factor) > 0.05
         
         if alpha_changed:
             # Remove old URDF handle
             # ViserUrdf doesn't have a built-in remove method, but replacing it works
             # Create new URDF with updated alpha
-            self._ghost_urdf_handles[ghost_idx] = ViserUrdf(
-                target=self.server,
-                urdf_or_path=self.urdf_path,
-                root_node_name=f"/ghost_{ghost_idx}",
-                mesh_color_override=(1.0, 0.5, 0.0, opacity_factor),  # Orange with custom alpha
-            )
-            self._ghost_alphas[ghost_idx] = opacity_factor
+            base_color = (1.0, 0.5, 0.0) if robot_idx == 1 else (0.2, 0.5, 1.0)
+            ghost_name = f"/ghost_{ghost_idx}" if robot_idx == 1 else f"/ghost2_{ghost_idx}"
+            
+            if robot_idx == 1:
+                self._ghost_urdf_handles[ghost_idx] = ViserUrdf(
+                    target=self.server,
+                    urdf_or_path=self.urdf_path,
+                    root_node_name=ghost_name,
+                    mesh_color_override=(*base_color, opacity_factor),
+                )
+                self._ghost_alphas[ghost_idx] = opacity_factor
+            else:
+                self._ghost_urdf_handles_2[ghost_idx] = ViserUrdf(
+                    target=self.server,
+                    urdf_or_path=self.urdf_path,
+                    root_node_name=ghost_name,
+                    mesh_color_override=(*base_color, opacity_factor),
+                )
+                self._ghost_alphas_2[ghost_idx] = opacity_factor
         
         # Get root position and orientation for this frame
-        root_pos, root_quat = self._get_root_state(frame_idx)
+        root_pos, root_quat = self._get_root_state(frame_idx, robot_idx=robot_idx)
         
         # Update ghost world frame position
-        self._ghost_frames[ghost_idx].position = root_pos
-        self._ghost_frames[ghost_idx].wxyz = root_quat
+        ghost_frames[ghost_idx].position = root_pos
+        ghost_frames[ghost_idx].wxyz = root_quat
         
         # Get actuated joint positions
-        joint_positions = self._get_actuated_joint_positions(frame_idx)
+        joint_positions = self._get_actuated_joint_positions(frame_idx, robot_idx=robot_idx)
         
         # Update ghost URDF config
-        self._ghost_urdf_handles[ghost_idx].update_cfg(joint_positions)
+        ghost_urdf_handles[ghost_idx].update_cfg(joint_positions)
         
         # Update ghost foot contacts
-        self._update_ghost_contacts(ghost_idx, frame_idx)
+        self._update_ghost_contacts(ghost_idx, frame_idx, robot_idx=robot_idx)
     
-    def _update_ghost_contacts(self, ghost_idx: int, frame_idx: int):
+    def _update_ghost_contacts(self, ghost_idx: int, frame_idx: int, robot_idx: int = 1):
         """
         Update foot contact visualization for a specific ghost frame.
         
         Args:
             ghost_idx: Index of the ghost instance
             frame_idx: Trajectory frame to display contacts for
+            robot_idx: Which robot to update (1 or 2)
         """
-        if not self.show_contacts_checkbox.value:
+        # Select appropriate components
+        ghost_contact_indicators = self._ghost_contact_indicators if robot_idx == 1 else self._ghost_contact_indicators_2
+        traj_data = self.trajectory_data if robot_idx == 1 else self.trajectory_data_2
+        
+        if not self.show_contacts_checkbox.value or traj_data is None:
             # Hide this ghost's contact indicators
-            for handle in self._ghost_contact_indicators[ghost_idx].values():
+            for handle in ghost_contact_indicators[ghost_idx].values():
                 handle.visible = False
             return
         
@@ -384,58 +494,71 @@ class MujocoTrajVisualizer:
             contact_key = f'contact_{foot_name}'
             pos_key = f'pos_{foot_name}'
             
-            if contact_key not in self.trajectory_data.files:
+            if contact_key not in traj_data.files:
                 continue
             
-            is_in_contact = self.trajectory_data[contact_key][frame_idx]
-            foot_pos = self.trajectory_data[pos_key][frame_idx]
+            is_in_contact = traj_data[contact_key][frame_idx]
+            foot_pos = traj_data[pos_key][frame_idx].copy()
+            
+            # Apply y-offset for robot2
+            if robot_idx == 2:
+                foot_pos[1] += self.robot2_y_offset
             
             # Create or update contact indicator for this ghost
-            indicator_name = f'/ghost_{ghost_idx}_contact_{foot_name}'
+            ghost_prefix = "ghost" if robot_idx == 1 else "ghost2"
+            indicator_name = f'/{ghost_prefix}_{ghost_idx}_contact_{foot_name}'
             
-            if indicator_name not in self._ghost_contact_indicators[ghost_idx]:
+            if indicator_name not in ghost_contact_indicators[ghost_idx]:
                 # Create a sphere for contact indicator
                 # Use slightly transparent colors for ghost contacts
-                self._ghost_contact_indicators[ghost_idx][indicator_name] = self.server.scene.add_icosphere(
+                ghost_contact_indicators[ghost_idx][indicator_name] = self.server.scene.add_icosphere(
                     indicator_name,
                     radius=0.08,  # Slightly smaller than main contacts
                     color=(0, 200, 0) if foot_name == 'left_foot' else (200, 0, 0),
-                    position=foot_pos
+                    position=tuple(foot_pos)
                 )
             
             # Update position and visibility
-            self._ghost_contact_indicators[ghost_idx][indicator_name].position = foot_pos
-            self._ghost_contact_indicators[ghost_idx][indicator_name].visible = bool(is_in_contact)
+            ghost_contact_indicators[ghost_idx][indicator_name].position = tuple(foot_pos)
+            ghost_contact_indicators[ghost_idx][indicator_name].visible = bool(is_in_contact)
     
-    def _hide_ghost_contacts(self, ghost_idx: int):
+    def _hide_ghost_contacts(self, ghost_idx: int, robot_idx: int = 1):
         """
         Hide all contact indicators for a specific ghost.
         
         Args:
             ghost_idx: Index of the ghost instance
+            robot_idx: Which robot's ghost contacts to hide (1 or 2)
         """
-        if ghost_idx < len(self._ghost_contact_indicators):
-            for handle in self._ghost_contact_indicators[ghost_idx].values():
+        ghost_contact_indicators = self._ghost_contact_indicators if robot_idx == 1 else self._ghost_contact_indicators_2
+        
+        if ghost_idx < len(ghost_contact_indicators):
+            for handle in ghost_contact_indicators[ghost_idx].values():
                 handle.visible = False
     
-    def _update_ghost_visualization(self, current_frame: int):
+    def _update_ghost_visualization(self, current_frame: int, robot_idx: int = 1):
         """
         Update all ghost frame visualizations based on current frame and settings.
         
         Args:
             current_frame: The main/current frame being displayed
+            robot_idx: Which robot's ghosts to update (1 or 2)
         """
-        if not self.show_ghosts_checkbox.value or self.trajectory_data is None:
-            self._set_ghost_visibility(visible=False)
+        traj_data = self.trajectory_data if robot_idx == 1 else self.trajectory_data_2
+        ghost_frames = self._ghost_frames if robot_idx == 1 else self._ghost_frames_2
+        ghost_alphas = self._ghost_alphas if robot_idx == 1 else self._ghost_alphas_2
+        
+        if not self.show_ghosts_checkbox.value or traj_data is None:
+            self._set_ghost_visibility(visible=False, robot_idx=robot_idx)
             # Also hide all ghost contacts
             for ghost_idx in range(self.max_ghost_frames):
-                self._hide_ghost_contacts(ghost_idx)
+                self._hide_ghost_contacts(ghost_idx, robot_idx=robot_idx)
             return
         
         num_ghosts = int(self.num_ghosts_slider.value)
         interval = int(self.ghost_interval_slider.value)
         direction = self.ghost_direction.value
-        num_frames = int(self.trajectory_data['timesteps'])
+        num_frames = int(traj_data['timesteps'])
         
         # Calculate which frames to show as ghosts
         ghost_frame_indices = []
@@ -479,22 +602,29 @@ class MujocoTrajVisualizer:
                 # The current frame itself isn't shown as ghost, so ghosts are always somewhat transparent
                 opacity_factor = 0.9 - (distance / max_distance) * 0.6 if max_distance > 0 else 0.9
                 
-                self._update_ghost_frame(ghost_idx, frame_idx, opacity_factor)
+                self._update_ghost_frame(ghost_idx, frame_idx, opacity_factor, robot_idx=robot_idx)
         
         # Hide remaining ghosts and their contacts
         for ghost_idx in range(len(ghost_frame_indices), self.max_ghost_frames):
-            self._ghost_frames[ghost_idx].position = (0, 0, -1000)
-            self._hide_ghost_contacts(ghost_idx)
+            ghost_frames[ghost_idx].position = (0, 0, -1000)
+            self._hide_ghost_contacts(ghost_idx, robot_idx=robot_idx)
             # Reset alpha tracking for hidden ghosts
-            self._ghost_alphas[ghost_idx] = 1.0
+            ghost_alphas[ghost_idx] = 1.0
     
-    def _update_contact_visualization(self, frame_idx: int):
+    def _update_contact_visualization(self, frame_idx: int, robot_idx: int = 1):
         """
         Update visualization of foot contacts
+        
+        Args:
+            frame_idx: Frame index to display
+            robot_idx: Which robot to update (1 or 2)
         """
-        if not self.show_contacts_checkbox.value:
+        contact_indicators = self._contact_indicators if robot_idx == 1 else self._contact_indicators_2
+        traj_data = self.trajectory_data if robot_idx == 1 else self.trajectory_data_2
+        
+        if not self.show_contacts_checkbox.value or traj_data is None:
             # Hide contact indicators
-            for handle in self._contact_indicators.values():
+            for handle in contact_indicators.values():
                 handle.visible = False
             return
         
@@ -505,39 +635,64 @@ class MujocoTrajVisualizer:
             contact_key = f'contact_{foot_name}'
             pos_key = f'pos_{foot_name}'
 
-            if contact_key not in self.trajectory_data.files:
+            if contact_key not in traj_data.files:
                 continue
 
-            is_in_contact = self.trajectory_data[contact_key][frame_idx]
-            foot_pos = self.trajectory_data[pos_key][frame_idx]
+            is_in_contact = traj_data[contact_key][frame_idx]
+            foot_pos = traj_data[pos_key][frame_idx].copy()
+            
+            # Apply y-offset for robot2
+            if robot_idx == 2:
+                foot_pos[1] += self.robot2_y_offset
 
             # Create or update contact indicator
-            indicator_name = f'/contact_{foot_name}'
+            prefix = "" if robot_idx == 1 else "2_"
+            indicator_name = f'/contact_{prefix}{foot_name}'
 
-            if indicator_name not in self._contact_indicators:
+            if indicator_name not in contact_indicators:
                 # Create a sphere for contact indicator
-                self._contact_indicators[indicator_name] = self.server.scene.add_icosphere(
+                contact_indicators[indicator_name] = self.server.scene.add_icosphere(
                     indicator_name,
                     radius=0.1,
                     color=(0, 255, 0) if foot_name == 'left_foot' else (255, 0, 0),
-                    position=foot_pos
+                    position=tuple(foot_pos)
                 )
 
             # Update position and visibility
-            self._contact_indicators[indicator_name].position = foot_pos
-            self._contact_indicators[indicator_name].visible = bool(is_in_contact)
+            contact_indicators[indicator_name].position = tuple(foot_pos)
+            contact_indicators[indicator_name].visible = bool(is_in_contact)
         
-    def _update_trajectory_path(self, frame_idx: int):
+    def _update_trajectory_path(self, frame_idx: int, robot_idx: int = 1):
         """
         Update visualization of body part trajectory path
+        
+        Args:
+            frame_idx: Frame index to display
+            robot_idx: Which robot to update (1 or 2)
         """
-        if not self.show_body_part_trajectory_checkbox.value or self.trajectory_path is None:
-            if self._trajectory_line is not None:
-                self._trajectory_line.visible = False
+        # Select appropriate components
+        if robot_idx == 1:
+            trajectory_path = self.trajectory_path if hasattr(self, 'trajectory_path') else None
+            trajectory_line = self._trajectory_line
+            line_name = "/trajectory_line"
+            color_rgb = [0, 1, 1]  # Cyan for robot1
+        else:
+            trajectory_path = self.body_part_trajectory_2
+            trajectory_line = self._trajectory_line_2
+            line_name = "/trajectory_line_2"
+            color_rgb = [1, 0.5, 0]  # Orange for robot2
+        
+        if not self.show_body_part_trajectory_checkbox.value or trajectory_path is None or len(trajectory_path) == 0:
+            if trajectory_line is not None:
+                trajectory_line.visible = False
             return
         
         # Show trajectory up to current frame
-        path_positions = self.trajectory_path[:frame_idx+1]
+        path_positions = trajectory_path[:frame_idx+1].copy()
+        
+        # Apply y-offset for robot2
+        if robot_idx == 2:
+            path_positions[:, 1] += self.robot2_y_offset
 
         if len(path_positions) < 2:
             return
@@ -552,19 +707,25 @@ class MujocoTrajVisualizer:
         for i in range(num_segments):
             alpha = i / num_segments  # Fade from 0 to 1
             color_val = int(50 + alpha * 205)  # From dim to bright
-            colors[i] = [[0, color_val, color_val], [0, color_val, color_val]]  # Cyan
+            # Apply the color based on robot
+            colors[i] = [[int(c * color_val) for c in color_rgb], 
+                        [int(c * color_val) for c in color_rgb]]
 
-        if self._trajectory_line is None:
-            self._trajectory_line = self.server.scene.add_line_segments(
-                "/trajectory_line",
+        if trajectory_line is None:
+            new_line = self.server.scene.add_line_segments(
+                line_name,
                 points=points,
                 colors=colors,
                 line_width=2.0,
             )
+            if robot_idx == 1:
+                self._trajectory_line = new_line
+            else:
+                self._trajectory_line_2 = new_line
         else:
-            self._trajectory_line.points = points
-            self._trajectory_line.colors = colors
-            self._trajectory_line.visible = True
+            trajectory_line.points = points
+            trajectory_line.colors = colors
+            trajectory_line.visible = True
     
     def update_visualization(self, frame_idx: int):
         """
@@ -576,11 +737,41 @@ class MujocoTrajVisualizer:
         if self.trajectory_data is None:
             return
         
-        # Clamp frame index
+        # Clamp frame index for robot1
         frame_idx = int(np.clip(frame_idx, 0, self.trajectory_data['timesteps'] - 1))
 
+        # Update robot1
+        self._update_single_robot_visualization(frame_idx, robot_idx=1)
+        
+        # Update robot2 if in dual mode
+        if self.dual_mode and self.trajectory_data_2 is not None:
+            # Clamp frame index for robot2 (might have different length)
+            frame_idx_2 = int(np.clip(frame_idx, 0, self.trajectory_data_2['timesteps'] - 1))
+            self._update_single_robot_visualization(frame_idx_2, robot_idx=2)
+    
+    def _update_single_robot_visualization(self, frame_idx: int, robot_idx: int = 1):
+        """
+        Update visualization for a single robot.
+        
+        Args:
+            frame_idx: Frame index to display
+            robot_idx: Which robot to update (1 or 2)
+        """
+        # Select appropriate components based on robot_idx
+        if robot_idx == 1:
+            world_node = self.world_node
+            urdf_handle = self.urdf_handle
+            traj_data = self.trajectory_data
+        else:  # robot_idx == 2
+            world_node = self.world_node_2
+            urdf_handle = self.urdf_handle_2
+            traj_data = self.trajectory_data_2
+        
+        if traj_data is None:
+            return
+
         # Get root position and orientation from qpos
-        root_pos, root_quat = self._get_root_state(frame_idx)
+        root_pos, root_quat = self._get_root_state(frame_idx, robot_idx=robot_idx)
 
         # Update world node position (floating base approach)
         # Why move the world frame instead of keeping it static?
@@ -591,24 +782,24 @@ class MujocoTrajVisualizer:
         # - Only the relative joint angles (rooty, legs) are updated via update_cfg()
         # This is a common pattern for floating-base robots (humanoids, quadrupeds) where
         # the base can translate freely but isn't part of the actuated joint chain.
-        self.world_node.position = root_pos
-        self.world_node.wxyz = root_quat
+        world_node.position = root_pos
+        world_node.wxyz = root_quat
 
         # Get actuated joint positions
-        joint_positions = self._get_actuated_joint_positions(frame_idx)
+        joint_positions = self._get_actuated_joint_positions(frame_idx, robot_idx=robot_idx)
 
         # Update URDF config
         with self.server.atomic():
-            self.urdf_handle.update_cfg(joint_positions)
+            urdf_handle.update_cfg(joint_positions)
 
         # Update contact visualization
-        self._update_contact_visualization(frame_idx)
+        self._update_contact_visualization(frame_idx, robot_idx=robot_idx)
 
         # Update body part trajectory path
-        self._update_trajectory_path(frame_idx)
+        self._update_trajectory_path(frame_idx, robot_idx=robot_idx)
         
         # Update ghost frames (multiple overlaid frames)
-        self._update_ghost_visualization(frame_idx)
+        self._update_ghost_visualization(frame_idx, robot_idx=robot_idx)
     
     def play(self):
         """
@@ -674,13 +865,28 @@ def main():
     default_urdf_path = workspace_root / "mpc_rl" / "tasks" / "walker" / "walker_modified.urdf"
     
     parser = argparse.ArgumentParser(
-        description="Visualize MuJoCo walker trajectories using Viser"
+        description="Visualize MuJoCo walker trajectories using Viser",
+        epilog="""Examples:
+        Single trajectory: python viser_walker_viz_trajs.py --trajectory path/to/traj.npz
+        Dual trajectories: python viser_walker_viz_trajs.py --trajectory1 path/to/traj1.npz --trajectory2 path/to/traj2.npz
+        """
     )
+    
+    # Support both --trajectory (backward compatible) and --trajectory1/--trajectory2
     parser.add_argument(
         "--trajectory",
         type=str,
-        required=True,
-        help="Path to trajectory .npz file"
+        help="Path to trajectory .npz file (single robot mode, backward compatible)"
+    )
+    parser.add_argument(
+        "--trajectory1",
+        type=str,
+        help="Path to first trajectory .npz file (dual robot mode)"
+    )
+    parser.add_argument(
+        "--trajectory2",
+        type=str,
+        help="Path to second trajectory .npz file (dual robot mode)"
     )
     parser.add_argument(
         "--urdf",
@@ -716,8 +922,34 @@ def main():
         default=10,
         help="Maximum number of ghost frames to pre-allocate (default: 10)"
     )
+    parser.add_argument(
+        "--robot2-y-offset",
+        type=float,
+        default=-3.0,
+        help="Y-axis offset for second robot in dual mode (default: -3.0)"
+    )
     
     args = parser.parse_args()
+    
+    # Determine mode: single or dual trajectory
+    dual_mode = False
+    traj1_path = None
+    traj2_path = None
+    
+    if args.trajectory1 and args.trajectory2:
+        # Dual mode with explicit trajectory1/trajectory2
+        dual_mode = True
+        traj1_path = args.trajectory1
+        traj2_path = args.trajectory2
+    elif args.trajectory1 or args.trajectory2:
+        # Only one trajectory specified with --trajectory1 or --trajectory2
+        parser.error("When using --trajectory1 or --trajectory2, both must be specified")
+    elif args.trajectory:
+        # Single mode with backward compatible --trajectory
+        dual_mode = False
+        traj1_path = args.trajectory
+    else:
+        parser.error("Must specify either --trajectory (single mode) or both --trajectory1 and --trajectory2 (dual mode)")
     
     # Create visualizer
     viz = MujocoTrajVisualizer(
@@ -727,10 +959,14 @@ def main():
         show_contacts=not args.no_contacts,
         show_body_part_trajectory=not args.no_trajectory,
         num_ghost_frames=args.ghost_frames,
+        dual_mode=dual_mode,
+        robot2_y_offset=args.robot2_y_offset,
     )
     
     # Load trajectory data
-    viz.load_trajectory(args.trajectory)
+    viz.load_trajectory(traj1_path, robot_idx=1)
+    if dual_mode and traj2_path:
+        viz.load_trajectory(traj2_path, robot_idx=2)
     
     # Start playback loop
     viz.play()
@@ -739,17 +975,26 @@ if __name__ == "__main__":
     """
     Usage:
 
-    # Basic usage
-    python mujoco_trajectory_visualizer.py --trajectory model_traj_data/your_run/trajectories_step_500000.npz
+    # Basic usage (single trajectory)
+    python viser/viser_walker_viz_trajs.py --trajectory body_trajs/model_traj_data/your_run/trajectories_step_500000.npz
+
+    # Dual trajectory mode - compare two trajectories side by side
+    python viser/viser_walker_viz_trajs.py --trajectory1 body_trajs/model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct/trajectories_step_500000.npz --trajectory2 body_trajs/model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct/trajectories_step_500000.npz
 
     # Specify custom URDF location
-    python mujoco_trajectory_visualizer.py --trajectory path/to/trajectory.npz --urdf path/to/walker.urdf
+    python viser/viser_walker_viz_trajs.py --trajectory path/to/trajectory.npz --urdf path/to/walker.urdf
 
     # Use different port
-    python mujoco_trajectory_visualizer.py --trajectory trajectory.npz --port 8090
+    python viser/viser_walker_viz_trajs.py --trajectory trajectory.npz --port 8090
 
     # Disable visualizations
-    python mujoco_trajectory_visualizer.py --trajectory trajectory.npz --no-contacts --no-trajectory
+    python viser/viser_walker_viz_trajs.py --trajectory trajectory.npz --no-contacts --no-trajectory
+    
+    # Adjust robot2 y-offset in dual mode (default is -3.0)
+    python viser/viser_walker_viz_trajs.py \
+        --trajectory1 path/to/traj1.npz \
+        --trajectory2 path/to/traj2.npz \
+        --robot2-y-offset -5.0
     
     """
     main()
