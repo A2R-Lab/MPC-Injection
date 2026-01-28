@@ -29,6 +29,7 @@ class MujocoTrajVisualizer:
             dt: float = 0.0025,
             show_contacts: bool = True,
             show_body_part_trajectory: bool = True,
+            num_ghost_frames: int = 5,
         ):
         """
         Initializes the visualizer with a urdf model.
@@ -39,20 +40,23 @@ class MujocoTrajVisualizer:
             dt: Time step, NOTE: This should match the time step used in the xml and urdf.
             show_contacts: Whether to show foot contact indicators.
             show_body_part_trajectory: Whether to show the trajectory path of body parts.
+            num_ghost_frames: Maximum number of ghost frames to show (creates this many URDF instances).
         """
         self.server = viser.ViserServer(port=port)
         self.dt = dt
         self.show_contacts = show_contacts
         self.show_body_part_trajectory = show_body_part_trajectory
         self.port = port  # Store port for later use
+        self.max_ghost_frames = num_ghost_frames
 
         # Convert to Path for ViserUrdf
         urdf_path = Path(urdf_path)
+        self.urdf_path = urdf_path
 
         # Load URDF to get joint info
         self.urdf = yourdfpy.URDF.load(str(urdf_path), load_collision_meshes=False)
 
-        # Create world frame
+        # Create world frame for main robot
         self.world_node = self.server.scene.add_frame(name="/world", show_axes=False)
 
         # Load URDF visualization - ViserUrdf expects a Path object
@@ -61,6 +65,28 @@ class MujocoTrajVisualizer:
             urdf_or_path=urdf_path,
             root_node_name="/world",
         )
+
+        # Create ghost frame instances (for showing multiple frames at once)
+        # Each ghost has its own world frame and URDF handle
+        self._ghost_frames = []
+        self._ghost_urdf_handles = []
+        self._ghost_contact_indicators = []  # Contact indicators for each ghost
+        for i in range(self.max_ghost_frames):
+            ghost_world = self.server.scene.add_frame(
+                name=f"/ghost_{i}", 
+                show_axes=False
+            )
+            ghost_urdf = ViserUrdf(
+                target=self.server,
+                urdf_or_path=urdf_path,
+                root_node_name=f"/ghost_{i}",
+            )
+            self._ghost_frames.append(ghost_world)
+            self._ghost_urdf_handles.append(ghost_urdf)
+            self._ghost_contact_indicators.append({})  # Dict for each ghost's contacts
+        
+        # Initially hide all ghosts
+        self._set_ghost_visibility(visible=False)
 
         # Add ground plane
         self.server.scene.add_grid(
@@ -126,6 +152,28 @@ class MujocoTrajVisualizer:
             self.show_stats = self.server.gui.add_checkbox(
                 "Show Stats", initial_value=True,
                 hint="Show simulation statistics"
+            )
+        
+        # Ghost frames options (for overlaying multiple frames)
+        with self.server.gui.add_folder("Ghost Frames"):
+            self.show_ghosts_checkbox = self.server.gui.add_checkbox(
+                "Show Ghost Frames", initial_value=False,
+                hint="Show multiple frames overlaid (onion-skin effect)"
+            )
+            self.num_ghosts_slider = self.server.gui.add_slider(
+                "Number of Ghosts", min=1, max=self.max_ghost_frames, step=1, 
+                initial_value=3,
+                hint="How many ghost frames to display"
+            )
+            self.ghost_interval_slider = self.server.gui.add_slider(
+                "Frame Interval", min=1, max=100, step=1, initial_value=20,
+                hint="Number of frames between each ghost"
+            )
+            self.ghost_direction = self.server.gui.add_dropdown(
+                "Ghost Direction",
+                options=["Past", "Future", "Both"],
+                initial_value="Past",
+                hint="Show ghosts from past frames, future frames, or both"
             )
         
         # Statistics display (NOTE: will be populated after loading the trajectory)
@@ -250,6 +298,173 @@ class MujocoTrajVisualizer:
 
         return root_pos, root_quat
     
+    def _set_ghost_visibility(self, visible: bool, num_visible: int = None):
+        """
+        Set visibility of ghost frame instances.
+        
+        Args:
+            visible: Whether ghosts should be visible
+            num_visible: Number of ghosts to show (if None, show/hide all)
+        """
+        for i, (ghost_world, ghost_urdf) in enumerate(zip(self._ghost_frames, self._ghost_urdf_handles)):
+            if num_visible is not None:
+                is_visible = visible and (i < num_visible)
+            else:
+                is_visible = visible
+            
+            # Set visibility by moving far away if hidden, or updating position if visible
+            # ViserUrdf doesn't have direct visibility control, so we use position
+            if not is_visible:
+                ghost_world.position = (0, 0, -1000)  # Move far below ground
+    
+    def _update_ghost_frame(self, ghost_idx: int, frame_idx: int, opacity_factor: float = 1.0):
+        """
+        Update a single ghost frame to show a specific trajectory frame.
+        
+        Args:
+            ghost_idx: Index of the ghost instance to update
+            frame_idx: Trajectory frame to display
+            opacity_factor: Not used currently (viser doesn't support per-instance opacity)
+        """
+        if ghost_idx >= len(self._ghost_frames):
+            return
+        
+        # Get root position and orientation for this frame
+        root_pos, root_quat = self._get_root_state(frame_idx)
+        
+        # Update ghost world frame position
+        self._ghost_frames[ghost_idx].position = root_pos
+        self._ghost_frames[ghost_idx].wxyz = root_quat
+        
+        # Get actuated joint positions
+        joint_positions = self._get_actuated_joint_positions(frame_idx)
+        
+        # Update ghost URDF config
+        self._ghost_urdf_handles[ghost_idx].update_cfg(joint_positions)
+        
+        # Update ghost foot contacts
+        self._update_ghost_contacts(ghost_idx, frame_idx)
+    
+    def _update_ghost_contacts(self, ghost_idx: int, frame_idx: int):
+        """
+        Update foot contact visualization for a specific ghost frame.
+        
+        Args:
+            ghost_idx: Index of the ghost instance
+            frame_idx: Trajectory frame to display contacts for
+        """
+        if not self.show_contacts_checkbox.value:
+            # Hide this ghost's contact indicators
+            for handle in self._ghost_contact_indicators[ghost_idx].values():
+                handle.visible = False
+            return
+        
+        foot_names = ['right_foot', 'left_foot']
+        
+        for foot_name in foot_names:
+            contact_key = f'contact_{foot_name}'
+            pos_key = f'pos_{foot_name}'
+            
+            if contact_key not in self.trajectory_data.files:
+                continue
+            
+            is_in_contact = self.trajectory_data[contact_key][frame_idx]
+            foot_pos = self.trajectory_data[pos_key][frame_idx]
+            
+            # Create or update contact indicator for this ghost
+            indicator_name = f'/ghost_{ghost_idx}_contact_{foot_name}'
+            
+            if indicator_name not in self._ghost_contact_indicators[ghost_idx]:
+                # Create a sphere for contact indicator
+                # Use slightly transparent colors for ghost contacts
+                self._ghost_contact_indicators[ghost_idx][indicator_name] = self.server.scene.add_icosphere(
+                    indicator_name,
+                    radius=0.08,  # Slightly smaller than main contacts
+                    color=(0, 200, 0) if foot_name == 'left_foot' else (200, 0, 0),
+                    position=foot_pos
+                )
+            
+            # Update position and visibility
+            self._ghost_contact_indicators[ghost_idx][indicator_name].position = foot_pos
+            self._ghost_contact_indicators[ghost_idx][indicator_name].visible = bool(is_in_contact)
+    
+    def _hide_ghost_contacts(self, ghost_idx: int):
+        """
+        Hide all contact indicators for a specific ghost.
+        
+        Args:
+            ghost_idx: Index of the ghost instance
+        """
+        if ghost_idx < len(self._ghost_contact_indicators):
+            for handle in self._ghost_contact_indicators[ghost_idx].values():
+                handle.visible = False
+    
+    def _update_ghost_visualization(self, current_frame: int):
+        """
+        Update all ghost frame visualizations based on current frame and settings.
+        
+        Args:
+            current_frame: The main/current frame being displayed
+        """
+        if not self.show_ghosts_checkbox.value or self.trajectory_data is None:
+            self._set_ghost_visibility(visible=False)
+            # Also hide all ghost contacts
+            for ghost_idx in range(self.max_ghost_frames):
+                self._hide_ghost_contacts(ghost_idx)
+            return
+        
+        num_ghosts = int(self.num_ghosts_slider.value)
+        interval = int(self.ghost_interval_slider.value)
+        direction = self.ghost_direction.value
+        num_frames = int(self.trajectory_data['timesteps'])
+        
+        # Calculate which frames to show as ghosts
+        ghost_frame_indices = []
+        
+        if direction == "Past":
+            # Show frames before current
+            for i in range(1, num_ghosts + 1):
+                frame_idx = current_frame - i * interval
+                if frame_idx >= 0:
+                    ghost_frame_indices.append(frame_idx)
+                    
+        elif direction == "Future":
+            # Show frames after current
+            for i in range(1, num_ghosts + 1):
+                frame_idx = current_frame + i * interval
+                if frame_idx < num_frames:
+                    ghost_frame_indices.append(frame_idx)
+                    
+        else:  # "Both"
+            # Show frames before and after, alternating
+            half_ghosts = num_ghosts // 2
+            # Past frames
+            for i in range(1, half_ghosts + 1):
+                frame_idx = current_frame - i * interval
+                if frame_idx >= 0:
+                    ghost_frame_indices.append(frame_idx)
+            # Future frames
+            for i in range(1, num_ghosts - half_ghosts + 1):
+                frame_idx = current_frame + i * interval
+                if frame_idx < num_frames:
+                    ghost_frame_indices.append(frame_idx)
+        
+        # Update visible ghosts
+        for ghost_idx, frame_idx in enumerate(ghost_frame_indices):
+            if ghost_idx < self.max_ghost_frames:
+                # Calculate opacity factor based on distance from current frame
+                # (not currently used, but could be for future opacity support)
+                distance = abs(frame_idx - current_frame)
+                max_distance = num_ghosts * interval
+                opacity_factor = 1.0 - (distance / max_distance) * 0.7  # 0.3 to 1.0
+                
+                self._update_ghost_frame(ghost_idx, frame_idx, opacity_factor)
+        
+        # Hide remaining ghosts and their contacts
+        for ghost_idx in range(len(ghost_frame_indices), self.max_ghost_frames):
+            self._ghost_frames[ghost_idx].position = (0, 0, -1000)
+            self._hide_ghost_contacts(ghost_idx)
+    
     def _update_contact_visualization(self, frame_idx: int):
         """
         Update visualization of foot contacts
@@ -360,6 +575,9 @@ class MujocoTrajVisualizer:
 
         # Update body part trajectory path
         self._update_trajectory_path(frame_idx)
+        
+        # Update ghost frames (multiple overlaid frames)
+        self._update_ghost_visualization(frame_idx)
     
     def play(self):
         """
@@ -461,6 +679,12 @@ def main():
         action="store_true",
         help="Don't show trajectory path"
     )
+    parser.add_argument(
+        "--ghost-frames",
+        type=int,
+        default=10,
+        help="Maximum number of ghost frames to pre-allocate (default: 10)"
+    )
     
     args = parser.parse_args()
     
@@ -470,7 +694,8 @@ def main():
         port=args.port,
         dt=args.dt,
         show_contacts=not args.no_contacts,
-        show_body_part_trajectory=not args.no_trajectory
+        show_body_part_trajectory=not args.no_trajectory,
+        num_ghost_frames=args.ghost_frames,
     )
     
     # Load trajectory data
