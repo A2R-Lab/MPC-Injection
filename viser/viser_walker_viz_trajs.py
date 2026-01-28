@@ -71,11 +71,13 @@ class MujocoTrajVisualizer:
         self._ghost_frames = []
         self._ghost_urdf_handles = []
         self._ghost_contact_indicators = []  # Contact indicators for each ghost
+        self._ghost_alphas = []  # Track current alpha for each ghost
         for i in range(self.max_ghost_frames):
             ghost_world = self.server.scene.add_frame(
                 name=f"/ghost_{i}", 
                 show_axes=False
             )
+            # Initially create with default alpha, will be recreated with proper alpha later
             ghost_urdf = ViserUrdf(
                 target=self.server,
                 urdf_or_path=urdf_path,
@@ -84,6 +86,7 @@ class MujocoTrajVisualizer:
             self._ghost_frames.append(ghost_world)
             self._ghost_urdf_handles.append(ghost_urdf)
             self._ghost_contact_indicators.append({})  # Dict for each ghost's contacts
+            self._ghost_alphas.append(1.0)  # Track alpha for recreation
         
         # Initially hide all ghosts
         self._set_ghost_visibility(visible=False)
@@ -324,10 +327,26 @@ class MujocoTrajVisualizer:
         Args:
             ghost_idx: Index of the ghost instance to update
             frame_idx: Trajectory frame to display
-            opacity_factor: Not used currently (viser doesn't support per-instance opacity)
+            opacity_factor: Alpha value for transparency (0.0 = fully transparent, 1.0 = opaque)
         """
         if ghost_idx >= len(self._ghost_frames):
             return
+        
+        # Check if we need to recreate the URDF with a different alpha
+        # We recreate if alpha changed significantly to update transparency
+        alpha_changed = abs(self._ghost_alphas[ghost_idx] - opacity_factor) > 0.05
+        
+        if alpha_changed:
+            # Remove old URDF handle
+            # ViserUrdf doesn't have a built-in remove method, but replacing it works
+            # Create new URDF with updated alpha
+            self._ghost_urdf_handles[ghost_idx] = ViserUrdf(
+                target=self.server,
+                urdf_or_path=self.urdf_path,
+                root_node_name=f"/ghost_{ghost_idx}",
+                mesh_color_override=(1.0, 0.5, 0.0, opacity_factor),  # Orange with custom alpha
+            )
+            self._ghost_alphas[ghost_idx] = opacity_factor
         
         # Get root position and orientation for this frame
         root_pos, root_quat = self._get_root_state(frame_idx)
@@ -449,14 +468,16 @@ class MujocoTrajVisualizer:
                 if frame_idx < num_frames:
                     ghost_frame_indices.append(frame_idx)
         
-        # Update visible ghosts
+        # Update visible ghosts with progressive transparency
         for ghost_idx, frame_idx in enumerate(ghost_frame_indices):
             if ghost_idx < self.max_ghost_frames:
                 # Calculate opacity factor based on distance from current frame
-                # (not currently used, but could be for future opacity support)
+                # Farther frames are more transparent
                 distance = abs(frame_idx - current_frame)
                 max_distance = num_ghosts * interval
-                opacity_factor = 1.0 - (distance / max_distance) * 0.7  # 0.3 to 1.0
+                # Range from 0.3 (most transparent) to 0.9 (nearly opaque)
+                # The current frame itself isn't shown as ghost, so ghosts are always somewhat transparent
+                opacity_factor = 0.9 - (distance / max_distance) * 0.6 if max_distance > 0 else 0.9
                 
                 self._update_ghost_frame(ghost_idx, frame_idx, opacity_factor)
         
@@ -464,6 +485,8 @@ class MujocoTrajVisualizer:
         for ghost_idx in range(len(ghost_frame_indices), self.max_ghost_frames):
             self._ghost_frames[ghost_idx].position = (0, 0, -1000)
             self._hide_ghost_contacts(ghost_idx)
+            # Reset alpha tracking for hidden ghosts
+            self._ghost_alphas[ghost_idx] = 1.0
     
     def _update_contact_visualization(self, frame_idx: int):
         """
@@ -559,7 +582,15 @@ class MujocoTrajVisualizer:
         # Get root position and orientation from qpos
         root_pos, root_quat = self._get_root_state(frame_idx)
 
-        # Update world node (moves entire robot)
+        # Update world node position (floating base approach)
+        # Why move the world frame instead of keeping it static?
+        # - The URDF conversion marks rootx/rootz as type="fixed" (not movable joints)
+        # - We can't update their positions via joint angles since they don't exist as actuated joints
+        # - Instead, we use the world frame as a "floating base carrier" for the entire robot
+        # - The world frame translates to follow the robot's global position
+        # - Only the relative joint angles (rooty, legs) are updated via update_cfg()
+        # This is a common pattern for floating-base robots (humanoids, quadrupeds) where
+        # the base can translate freely but isn't part of the actuated joint chain.
         self.world_node.position = root_pos
         self.world_node.wxyz = root_quat
 
