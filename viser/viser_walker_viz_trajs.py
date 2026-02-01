@@ -1,8 +1,6 @@
 """
 Script to visualize the trajectories of the walker environment using viser.
 
-Inspired by Se Hwan Jeon's script used in his Residual MPC paper: https://arxiv.org/abs/2510.12717
-
 For us the plan is as follows:
 1) Convert the walker MuJoCo model to URDF using cnvrt_mjcf_to_urdf.py
 2) Use this URDF in viser to visualize the recorded trajectories (which now includes joint angles)
@@ -172,7 +170,7 @@ class MujocoTrajVisualizer:
                 "Play", initial_value=False, hint="Toggle trajectory playback"
             )
             self.speed_slider = self.server.gui.add_slider(
-                "Speed", min=0.1, max=1.0, step=0.05, initial_value=0.1,
+                "Speed", min=0.01, max=1.0, step=0.01, initial_value=0.1,
                 hint="Playback speed multiplier"
             )
             self.frame_slider = self.server.gui.add_slider(
