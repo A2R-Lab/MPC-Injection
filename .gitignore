@@ -211,6 +211,7 @@ logs/
 
 # Ignore plots (for now while it's being developed)
 plots/
+viser/viser_figs/
 
 # Ignore body trajectory data
 body_trajs/model_traj_data/walker*

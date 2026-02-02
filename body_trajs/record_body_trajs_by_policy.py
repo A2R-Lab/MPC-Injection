@@ -90,7 +90,11 @@ def load_model_and_vecnormalize(run_dir: Path, config: dict, checkpoint_step: in
     return model, vec_env
 
 
-def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_steps: int = 1000, seed: int = 42):
+def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_steps: int = 1000, seed: int = 42,
+                                        enable_perturbation: bool = False, 
+                                        perturbation_force_x: float = -5.0,
+                                        perturbation_timestep: int = 500,
+                                        perturbation_duration: int = 1):
     """
     Run one episode and collect trajectories of each body part.
 
@@ -100,6 +104,10 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         body_names: List of body part names to track
         max_steps: Maximum number of steps per episode
         seed: Random seed for reproducibility
+        enable_perturbation: Whether to apply an external force perturbation
+        perturbation_force_x: Magnitude and direction of force along x-axis (N)
+        perturbation_timestep: Timestep at which to start applying the perturbation
+        perturbation_duration: Number of timesteps to apply the perturbation (default 1 for impulse)
     
     Returns:
         Dictionary containing:
@@ -108,6 +116,7 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
             - 'timesteps': Number of timesteps in episode
             - 'rewards': Array of rewards at each timestep
             - 'done': Whether episode terminated early
+            - 'perturbation_applied': Whether perturbation was applied during episode
     """
     # Set seed for reproducibility
     # Must call vec_env.seed() before reset() to properly seed the environment
@@ -137,8 +146,29 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
     
     done = False
     step_count = 0
+    perturbation_applied = False  # Track if perturbation was applied
+    perturbation_cleared = False  # Track if perturbation was cleared (to avoid repeated clearing)
+    perturbation_end_step = perturbation_timestep + perturbation_duration
+    
+    # Get torso body ID once (for efficiency)
+    torso_body_id = physics.model.name2id('torso', 'body')
     
     while not done and step_count < max_steps:
+        # Apply or clear perturbation force based on current timestep
+        if enable_perturbation:
+            if perturbation_timestep <= step_count < perturbation_end_step:
+                # Apply external force to torso in x-direction (negative = opposite to walking)
+                # xfrc_applied format: [force_x, force_y, force_z, torque_x, torque_y, torque_z]
+                physics.data.xfrc_applied[torso_body_id] = [perturbation_force_x, 0, 0, 0, 0, 0]
+                
+                if not perturbation_applied:  # Print only on first application
+                    print(f"    -> Applying perturbation: {perturbation_force_x}N in x-direction for {perturbation_duration} timesteps (starting at step {step_count})")
+                    perturbation_applied = True
+            elif perturbation_applied and step_count >= perturbation_end_step and not perturbation_cleared:
+                # Clear the force after perturbation duration (only once)
+                physics.data.xfrc_applied[torso_body_id] = [0, 0, 0, 0, 0, 0]
+                print(f"    -> Cleared perturbation at step {step_count}")
+                perturbation_cleared = True
         # Record the observation (what the policy sees)
         observations.append(obs[0].copy())
         
@@ -210,7 +240,14 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
         'joint_names': joint_names,
         'foot_clearances': {name: np.array(clearances) for name, clearances in foot_clearances.items()},
         'foot_contacts': {name: np.array(contacts, dtype=bool) for name, contacts in foot_contacts.items()},
-        'torso_height': np.array(torso_height)
+        'torso_height': np.array(torso_height),
+        'perturbation_applied': perturbation_applied,
+        'perturbation_config': {
+            'enabled': enable_perturbation,
+            'force_x': perturbation_force_x,
+            'timestep': perturbation_timestep,
+            'duration': perturbation_duration
+        }
     }
     
     return trajectory_data
@@ -266,6 +303,13 @@ def save_trajectory_data(trajectory_data: dict, output_dir: Path, checkpoint_ste
     save_dict['torso_height_mean'] = trajectory_data['torso_height'].mean()
     save_dict['torso_height_std'] = trajectory_data['torso_height'].std()
     
+    # Add perturbation information
+    save_dict['perturbation_applied'] = trajectory_data['perturbation_applied']
+    save_dict['perturbation_enabled'] = trajectory_data['perturbation_config']['enabled']
+    save_dict['perturbation_force_x'] = trajectory_data['perturbation_config']['force_x']
+    save_dict['perturbation_timestep'] = trajectory_data['perturbation_config']['timestep']
+    save_dict['perturbation_duration'] = trajectory_data['perturbation_config']['duration']
+    
     np.savez_compressed(output_file, **save_dict)
     print(f"  Saved trajectory data to: {output_file}")
 
@@ -282,8 +326,8 @@ def main():
     
     # Path to the run directory containing checkpoints
     #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112659-percentage-25pct")
-    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
+    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112659-percentage-25pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
     #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-114318-percentage-75pct")
     #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-115404-percentage-100pct")
     
@@ -294,7 +338,13 @@ def main():
     
     # Episode parameters
     MAX_STEPS_PER_EPISODE = 1000
-    RANDOM_SEED = 500
+    RANDOM_SEED = 42 # OG 42
+    
+    # Perturbation parameters
+    ENABLE_PERTURBATION = True  # Set to True to apply force perturbation
+    PERTURBATION_FORCE_X = -350.0  # Force magnitude in Newtons (negative = opposing walking direction)
+    PERTURBATION_TIMESTEP = 300  # Timestep at which to start applying the perturbation
+    PERTURBATION_DURATION = 10  # Number of timesteps to apply force (1 = impulse, 10+ = sustained push)
     
     # Body parts to track (for walker environment)
     BODY_NAMES = ['torso', 'right_thigh', 'right_leg', 'right_foot', 
@@ -326,6 +376,12 @@ def main():
     print(f"Max steps per episode: {MAX_STEPS_PER_EPISODE}")
     print(f"Random seed: {RANDOM_SEED}")
     print(f"Body parts tracked: {', '.join(BODY_NAMES)}")
+    print(f"\nPerturbation settings:")
+    print(f"  Enabled: {ENABLE_PERTURBATION}")
+    if ENABLE_PERTURBATION:
+        print(f"  Force (x-axis): {PERTURBATION_FORCE_X} N")
+        print(f"  Apply at timestep: {PERTURBATION_TIMESTEP}")
+        print(f"  Duration: {PERTURBATION_DURATION} timesteps")
     
     # Create output subdirectory with run name
     run_name = RUN_DIR.name
@@ -347,7 +403,13 @@ def main():
             # Run episode and collect trajectories
             print(f"  Running episode (seed={RANDOM_SEED})...")
             trajectory_data = run_episode_and_record_trajectories(
-                model, vec_env, BODY_NAMES, max_steps=MAX_STEPS_PER_EPISODE, seed=RANDOM_SEED
+                model, vec_env, BODY_NAMES, 
+                max_steps=MAX_STEPS_PER_EPISODE, 
+                seed=RANDOM_SEED,
+                enable_perturbation=ENABLE_PERTURBATION,
+                perturbation_force_x=PERTURBATION_FORCE_X,
+                perturbation_timestep=PERTURBATION_TIMESTEP,
+                perturbation_duration=PERTURBATION_DURATION
             )
             
             # Print episode summary
