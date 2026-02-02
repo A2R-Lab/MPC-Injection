@@ -25,13 +25,13 @@ RANDOM_SELECT="True"
 DATA_DIR="data/walker_0_0025dt/"
 
 #LOG_DIR="logs/TD3-MPC-walker-velocity_only_reward/2nd_run"
-LOG_DIR="logs/SAC-MPC-walker-velocity_only_reward/3rd_run"
+LOG_DIR="logs/SAC-MPC-walker-velocity_only_reward/5th_run/"
 #LOG_DIR="logs/TD3-MPC-walker-runs/5th_run/"
 #LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/1st_run"
 
 CHECKPOINT_FREQ=25000
 
-SEED=1 # 1 is default for train_sbx.py
+SEED=150 # 1 is default for train_sbx.py
 
 echo "Starting ${ALGORITHM} percentage sweep experiments"
 echo "=============================================="
