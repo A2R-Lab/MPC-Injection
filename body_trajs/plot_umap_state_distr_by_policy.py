@@ -195,11 +195,11 @@ def main():
     
     # Directories containing trajectory data
     DIR1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    DIR2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+    DIR2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112659-percentage-25pct"
     
     # Labels for the two datasets (used in plot legend)
     LABEL1 = "0% MPC-Injection"
-    LABEL2 = "50% MPC-Injection"
+    LABEL2 = "25% MPC-Injection"
     
     # Data type to plot: 'observations' or 'body_physics'
     # - 'observations': Use the policy observations (normalized state vector)
@@ -210,7 +210,7 @@ def main():
     OUTPUT_DIR = Path(__file__).parent.parent / "plots/umap_plots3d"
     
     # Output filename pattern
-    OUTPUT_PATTERN = "umap_graph_0pct_50pct_at_checkpoint_{checkpoint}.png"
+    OUTPUT_PATTERN = "umap_graph_0pct_25pct_at_checkpoint_{checkpoint}.png"
     
     # ============================================================================
     # END USER CONFIGURATION

@@ -63,14 +63,16 @@ def extract_checkpoint_number(filename: str):
     return None
 
 
-def plot_torso_height(checkpoints=[25000, 100000, 150000, 200000]):
+def plot_torso_height(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
     """
     Test function to plot 3D torso trajectories across all checkpoints.
     Y-axis represents checkpoint number, showing evolution over training.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
     """
-    # Directories
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
     
     # Find all trajectory files
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
@@ -96,34 +98,34 @@ def plot_torso_height(checkpoints=[25000, 100000, 150000, 200000]):
         data2 = np.load(files2[checkpoint])
         
         # Extract torso Z height
-        torso_z_0pct = data1['pos_torso'][:, 2]  # Z height
-        torso_z_50pct = data2['pos_torso'][:, 2]  # Z height
+        torso_z_pct_1 = data1['pos_torso'][:, 2]  # Z height
+        torso_z_pct_2 = data2['pos_torso'][:, 2]  # Z height
         
         # Create time arrays (timesteps)
-        time_0pct = np.arange(len(torso_z_0pct))
-        time_50pct = np.arange(len(torso_z_50pct))
+        time_pct_1 = np.arange(len(torso_z_pct_1))
+        time_pct_2 = np.arange(len(torso_z_pct_2))
         
         # Create Y values as checkpoint number for each timestep
-        y_0pct = np.full_like(torso_z_0pct, checkpoint)
-        y_50pct = np.full_like(torso_z_50pct, checkpoint)
+        y_pct_1 = np.full_like(torso_z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(torso_z_pct_2, checkpoint)
         
         # Plot trajectories at this checkpoint level
-        ax.plot(time_0pct, y_0pct, torso_z_0pct,
+        ax.plot(time_pct_1, y_pct_1, torso_z_pct_1,
                 c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(time_50pct, y_50pct, torso_z_50pct,
+        ax.plot(time_pct_2, y_pct_2, torso_z_pct_2,
                 c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
         # Plot starting points
-        ax.scatter(time_0pct[0], checkpoint, torso_z_0pct[0],
+        ax.scatter(time_pct_1[0], checkpoint, torso_z_pct_1[0],
                   c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(time_50pct[0], checkpoint, torso_z_50pct[0],
+        ax.scatter(time_pct_2[0], checkpoint, torso_z_pct_2[0],
                   c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     # Add legend with manual entries
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -154,10 +156,15 @@ def plot_torso_height(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_torso_position(checkpoints=[25000, 100000, 150000, 200000]):
-    # Directories
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_torso_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D torso position trajectory evolution.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     # Find all trajectory files
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
@@ -183,36 +190,36 @@ def plot_torso_position(checkpoints=[25000, 100000, 150000, 200000]):
         data2 = np.load(files2[checkpoint])
         
         # Extract torso position
-        torso_pos_0pct = data1['pos_torso']  # XYZ position
-        torso_pos_50pct = data2['pos_torso']  # XYZ position
+        torso_pos_pct_1 = data1['pos_torso']  # XYZ position
+        torso_pos_pct_2 = data2['pos_torso']  # XYZ position
         
         # Extract X (forward) and Z (height) positions
-        torso_x_0pct = torso_pos_0pct[:, 0]  # Forward position
-        torso_z_0pct = torso_pos_0pct[:, 2]  # Height
-        torso_x_50pct = torso_pos_50pct[:, 0]  # Forward position
-        torso_z_50pct = torso_pos_50pct[:, 2]  # Height
+        torso_x_pct_1 = torso_pos_pct_1[:, 0]  # Forward position
+        torso_z_pct_1 = torso_pos_pct_1[:, 2]  # Height
+        torso_x_pct_2 = torso_pos_pct_2[:, 0]  # Forward position
+        torso_z_pct_2 = torso_pos_pct_2[:, 2]  # Height
         
         # Create Y values as checkpoint number for each timestep
-        y_0pct = np.full_like(torso_z_0pct, checkpoint)
-        y_50pct = np.full_like(torso_z_50pct, checkpoint)
+        y_pct_1 = np.full_like(torso_z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(torso_z_pct_2, checkpoint)
         
         # Plot 2D trajectories (X-Z) at this checkpoint level
-        ax.plot(torso_x_0pct, y_0pct, torso_z_0pct,
+        ax.plot(torso_x_pct_1, y_pct_1, torso_z_pct_1,
                 c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(torso_x_50pct, y_50pct, torso_z_50pct,
+        ax.plot(torso_x_pct_2, y_pct_2, torso_z_pct_2,
                 c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
         # Plot starting points
-        ax.scatter(torso_x_0pct[0], checkpoint, torso_z_0pct[0],
+        ax.scatter(torso_x_pct_1[0], checkpoint, torso_z_pct_1[0],
                   c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(torso_x_50pct[0], checkpoint, torso_z_50pct[0],
+        ax.scatter(torso_x_pct_2[0], checkpoint, torso_z_pct_2[0],
                   c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     # Add legend with manual entries
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -243,10 +250,15 @@ def plot_torso_position(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_left_thigh_position(checkpoints=[25000, 100000, 150000, 200000]):
-    """Plot 3D trajectory of left thigh across checkpoints."""
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_left_thigh_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D trajectory of left thigh across checkpoints.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
     files2 = {extract_checkpoint_number(f.name): f for f in dir2.glob('trajectories_step_*.npz')}
@@ -263,27 +275,27 @@ def plot_left_thigh_position(checkpoints=[25000, 100000, 150000, 200000]):
         data1 = np.load(files1[checkpoint])
         data2 = np.load(files2[checkpoint])
         
-        pos_0pct = data1['pos_left_thigh']
-        pos_50pct = data2['pos_left_thigh']
+        pos_pct_1 = data1['pos_left_thigh']
+        pos_pct_2 = data2['pos_left_thigh']
         
-        x_0pct = pos_0pct[:, 0]
-        z_0pct = pos_0pct[:, 2]
-        x_50pct = pos_50pct[:, 0]
-        z_50pct = pos_50pct[:, 2]
+        x_pct_1 = pos_pct_1[:, 0]
+        z_pct_1 = pos_pct_1[:, 2]
+        x_pct_2 = pos_pct_2[:, 0]
+        z_pct_2 = pos_pct_2[:, 2]
         
-        y_0pct = np.full_like(z_0pct, checkpoint)
-        y_50pct = np.full_like(z_50pct, checkpoint)
+        y_pct_1 = np.full_like(z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(z_pct_2, checkpoint)
         
-        ax.plot(x_0pct, y_0pct, z_0pct, c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(x_50pct, y_50pct, z_50pct, c='#ff7f0e', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_1, y_pct_1, z_pct_1, c='#1f77b4', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_2, y_pct_2, z_pct_2, c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
-        ax.scatter(x_0pct[0], checkpoint, z_0pct[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(x_50pct[0], checkpoint, z_50pct[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_1[0], checkpoint, z_pct_1[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_2[0], checkpoint, z_pct_2[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -307,10 +319,15 @@ def plot_left_thigh_position(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_left_leg_position(checkpoints=[25000, 100000, 150000, 200000]):
-    """Plot 3D trajectory of left leg across checkpoints."""
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_left_leg_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D trajectory of left leg across checkpoints.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
     files2 = {extract_checkpoint_number(f.name): f for f in dir2.glob('trajectories_step_*.npz')}
@@ -327,27 +344,27 @@ def plot_left_leg_position(checkpoints=[25000, 100000, 150000, 200000]):
         data1 = np.load(files1[checkpoint])
         data2 = np.load(files2[checkpoint])
         
-        pos_0pct = data1['pos_left_leg']
-        pos_50pct = data2['pos_left_leg']
+        pos_pct_1 = data1['pos_left_leg']
+        pos_pct_2 = data2['pos_left_leg']
         
-        x_0pct = pos_0pct[:, 0]
-        z_0pct = pos_0pct[:, 2]
-        x_50pct = pos_50pct[:, 0]
-        z_50pct = pos_50pct[:, 2]
+        x_pct_1 = pos_pct_1[:, 0]
+        z_pct_1 = pos_pct_1[:, 2]
+        x_pct_2 = pos_pct_2[:, 0]
+        z_pct_2 = pos_pct_2[:, 2]
         
-        y_0pct = np.full_like(z_0pct, checkpoint)
-        y_50pct = np.full_like(z_50pct, checkpoint)
+        y_pct_1 = np.full_like(z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(z_pct_2, checkpoint)
         
-        ax.plot(x_0pct, y_0pct, z_0pct, c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(x_50pct, y_50pct, z_50pct, c='#ff7f0e', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_1, y_pct_1, z_pct_1, c='#1f77b4', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_2, y_pct_2, z_pct_2, c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
-        ax.scatter(x_0pct[0], checkpoint, z_0pct[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(x_50pct[0], checkpoint, z_50pct[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_1[0], checkpoint, z_pct_1[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_2[0], checkpoint, z_pct_2[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -371,10 +388,15 @@ def plot_left_leg_position(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_left_foot_position(checkpoints=[25000, 100000, 150000, 200000]):
-    """Plot 3D trajectory of left foot across checkpoints."""
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_left_foot_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D trajectory of left foot across checkpoints.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
     files2 = {extract_checkpoint_number(f.name): f for f in dir2.glob('trajectories_step_*.npz')}
@@ -391,27 +413,27 @@ def plot_left_foot_position(checkpoints=[25000, 100000, 150000, 200000]):
         data1 = np.load(files1[checkpoint])
         data2 = np.load(files2[checkpoint])
         
-        pos_0pct = data1['pos_left_foot']
-        pos_50pct = data2['pos_left_foot']
+        pos_pct_1 = data1['pos_left_foot']
+        pos_pct_2 = data2['pos_left_foot']
         
-        x_0pct = pos_0pct[:, 0]
-        z_0pct = pos_0pct[:, 2]
-        x_50pct = pos_50pct[:, 0]
-        z_50pct = pos_50pct[:, 2]
+        x_pct_1 = pos_pct_1[:, 0]
+        z_pct_1 = pos_pct_1[:, 2]
+        x_pct_2 = pos_pct_2[:, 0]
+        z_pct_2 = pos_pct_2[:, 2]
         
-        y_0pct = np.full_like(z_0pct, checkpoint)
-        y_50pct = np.full_like(z_50pct, checkpoint)
+        y_pct_1 = np.full_like(z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(z_pct_2, checkpoint)
         
-        ax.plot(x_0pct, y_0pct, z_0pct, c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(x_50pct, y_50pct, z_50pct, c='#ff7f0e', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_1, y_pct_1, z_pct_1, c='#1f77b4', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_2, y_pct_2, z_pct_2, c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
-        ax.scatter(x_0pct[0], checkpoint, z_0pct[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(x_50pct[0], checkpoint, z_50pct[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_1[0], checkpoint, z_pct_1[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_2[0], checkpoint, z_pct_2[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -435,10 +457,15 @@ def plot_left_foot_position(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_right_thigh_position(checkpoints=[25000, 100000, 150000, 200000]):
-    """Plot 3D trajectory of right thigh across checkpoints."""
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_right_thigh_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D trajectory of right thigh across checkpoints.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
     files2 = {extract_checkpoint_number(f.name): f for f in dir2.glob('trajectories_step_*.npz')}
@@ -455,27 +482,27 @@ def plot_right_thigh_position(checkpoints=[25000, 100000, 150000, 200000]):
         data1 = np.load(files1[checkpoint])
         data2 = np.load(files2[checkpoint])
         
-        pos_0pct = data1['pos_right_thigh']
-        pos_50pct = data2['pos_right_thigh']
+        pos_pct_1 = data1['pos_right_thigh']
+        pos_pct_2 = data2['pos_right_thigh']
         
-        x_0pct = pos_0pct[:, 0]
-        z_0pct = pos_0pct[:, 2]
-        x_50pct = pos_50pct[:, 0]
-        z_50pct = pos_50pct[:, 2]
+        x_pct_1 = pos_pct_1[:, 0]
+        z_pct_1 = pos_pct_1[:, 2]
+        x_pct_2 = pos_pct_2[:, 0]
+        z_pct_2 = pos_pct_2[:, 2]
         
-        y_0pct = np.full_like(z_0pct, checkpoint)
-        y_50pct = np.full_like(z_50pct, checkpoint)
+        y_pct_1 = np.full_like(z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(z_pct_2, checkpoint)
         
-        ax.plot(x_0pct, y_0pct, z_0pct, c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(x_50pct, y_50pct, z_50pct, c='#ff7f0e', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_1, y_pct_1, z_pct_1, c='#1f77b4', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_2, y_pct_2, z_pct_2, c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
-        ax.scatter(x_0pct[0], checkpoint, z_0pct[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(x_50pct[0], checkpoint, z_50pct[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_1[0], checkpoint, z_pct_1[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_2[0], checkpoint, z_pct_2[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -499,10 +526,15 @@ def plot_right_thigh_position(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_right_leg_position(checkpoints=[25000, 100000, 150000, 200000]):
-    """Plot 3D trajectory of right leg across checkpoints."""
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_right_leg_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D trajectory of right leg across checkpoints.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
     files2 = {extract_checkpoint_number(f.name): f for f in dir2.glob('trajectories_step_*.npz')}
@@ -519,27 +551,27 @@ def plot_right_leg_position(checkpoints=[25000, 100000, 150000, 200000]):
         data1 = np.load(files1[checkpoint])
         data2 = np.load(files2[checkpoint])
         
-        pos_0pct = data1['pos_right_leg']
-        pos_50pct = data2['pos_right_leg']
+        pos_pct_1 = data1['pos_right_leg']
+        pos_pct_2 = data2['pos_right_leg']
         
-        x_0pct = pos_0pct[:, 0]
-        z_0pct = pos_0pct[:, 2]
-        x_50pct = pos_50pct[:, 0]
-        z_50pct = pos_50pct[:, 2]
+        x_pct_1 = pos_pct_1[:, 0]
+        z_pct_1 = pos_pct_1[:, 2]
+        x_pct_2 = pos_pct_2[:, 0]
+        z_pct_2 = pos_pct_2[:, 2]
         
-        y_0pct = np.full_like(z_0pct, checkpoint)
-        y_50pct = np.full_like(z_50pct, checkpoint)
+        y_pct_1 = np.full_like(z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(z_pct_2, checkpoint)
         
-        ax.plot(x_0pct, y_0pct, z_0pct, c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(x_50pct, y_50pct, z_50pct, c='#ff7f0e', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_1, y_pct_1, z_pct_1, c='#1f77b4', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_2, y_pct_2, z_pct_2, c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
-        ax.scatter(x_0pct[0], checkpoint, z_0pct[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(x_50pct[0], checkpoint, z_50pct[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_1[0], checkpoint, z_pct_1[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_2[0], checkpoint, z_pct_2[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -563,10 +595,15 @@ def plot_right_leg_position(checkpoints=[25000, 100000, 150000, 200000]):
     plt.show()
 
 
-def plot_right_foot_position(checkpoints=[25000, 100000, 150000, 200000]):
-    """Plot 3D trajectory of right foot across checkpoints."""
-    dir1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    dir2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct"
+def plot_right_foot_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000, 200000]):
+    """
+    Plot 3D trajectory of right foot across checkpoints.
+    
+    Args:
+        dir1: Path to first trajectory data directory
+        dir2: Path to second trajectory data directory
+        checkpoints: List of checkpoint steps to plot
+    """
     
     files1 = {extract_checkpoint_number(f.name): f for f in dir1.glob('trajectories_step_*.npz')}
     files2 = {extract_checkpoint_number(f.name): f for f in dir2.glob('trajectories_step_*.npz')}
@@ -583,27 +620,27 @@ def plot_right_foot_position(checkpoints=[25000, 100000, 150000, 200000]):
         data1 = np.load(files1[checkpoint])
         data2 = np.load(files2[checkpoint])
         
-        pos_0pct = data1['pos_right_foot']
-        pos_50pct = data2['pos_right_foot']
+        pos_pct_1 = data1['pos_right_foot']
+        pos_pct_2 = data2['pos_right_foot']
         
-        x_0pct = pos_0pct[:, 0]
-        z_0pct = pos_0pct[:, 2]
-        x_50pct = pos_50pct[:, 0]
-        z_50pct = pos_50pct[:, 2]
+        x_pct_1 = pos_pct_1[:, 0]
+        z_pct_1 = pos_pct_1[:, 2]
+        x_pct_2 = pos_pct_2[:, 0]
+        z_pct_2 = pos_pct_2[:, 2]
         
-        y_0pct = np.full_like(z_0pct, checkpoint)
-        y_50pct = np.full_like(z_50pct, checkpoint)
+        y_pct_1 = np.full_like(z_pct_1, checkpoint)
+        y_pct_2 = np.full_like(z_pct_2, checkpoint)
         
-        ax.plot(x_0pct, y_0pct, z_0pct, c='#1f77b4', linewidth=2.0, alpha=0.6)
-        ax.plot(x_50pct, y_50pct, z_50pct, c='#ff7f0e', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_1, y_pct_1, z_pct_1, c='#1f77b4', linewidth=2.0, alpha=0.6)
+        ax.plot(x_pct_2, y_pct_2, z_pct_2, c='#ff7f0e', linewidth=2.0, alpha=0.6)
         
-        ax.scatter(x_0pct[0], checkpoint, z_0pct[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
-        ax.scatter(x_50pct[0], checkpoint, z_50pct[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_1[0], checkpoint, z_pct_1[0], c='#1f77b4', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
+        ax.scatter(x_pct_2[0], checkpoint, z_pct_2[0], c='#ff7f0e', s=50, marker='o', edgecolors='black', linewidths=1, alpha=0.9)
     
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], color='#1f77b4', linewidth=2, label='0% MPC-Injection'),
-        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='50% MPC-Injection'),
+        Line2D([0], [0], color='#ff7f0e', linewidth=2, label='25% MPC-Injection'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
@@ -628,11 +665,19 @@ def plot_right_foot_position(checkpoints=[25000, 100000, 150000, 200000]):
 
 
 if __name__ == "__main__":
-    checkpoints=[25000, 100000, 150000, 200000]
-    plot_torso_position(checkpoints=checkpoints)
-    plot_left_thigh_position(checkpoints=checkpoints)
-    plot_left_leg_position(checkpoints=checkpoints)
-    plot_left_foot_position(checkpoints=checkpoints)
-    plot_right_thigh_position(checkpoints=checkpoints)
-    plot_right_leg_position(checkpoints=checkpoints)
-    plot_right_foot_position(checkpoints=checkpoints)
+    # Define directories for trajectory data
+    base_dir = Path(__file__).parent / "model_traj_data"
+    dir1 = base_dir / "walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
+    dir2 = base_dir / "walker-walk-SAC-MPC-20260107-112659-percentage-25pct"
+    
+    # Define checkpoints to plot
+    checkpoints = [25000, 100000, 150000, 200000]
+    
+    # Generate all plots
+    plot_torso_position(dir1, dir2, checkpoints=checkpoints)
+    plot_left_thigh_position(dir1, dir2, checkpoints=checkpoints)
+    plot_left_leg_position(dir1, dir2, checkpoints=checkpoints)
+    plot_left_foot_position(dir1, dir2, checkpoints=checkpoints)
+    plot_right_thigh_position(dir1, dir2, checkpoints=checkpoints)
+    plot_right_leg_position(dir1, dir2, checkpoints=checkpoints)
+    plot_right_foot_position(dir1, dir2, checkpoints=checkpoints)

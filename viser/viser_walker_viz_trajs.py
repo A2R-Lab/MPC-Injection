@@ -159,6 +159,12 @@ class MujocoTrajVisualizer:
         # Visualization handles
         self._contact_indicators = {}
         self._trajectory_line = None
+        
+        # Camera follow state
+        # These define the camera position relative to the robot when following is enabled
+        # The camera will be positioned at: robot_pos + camera_offset
+        # and will look at: robot_pos + look_at_offset
+        self._camera_follow_enabled = False
 
     def _setup_gui(self):
         """
@@ -232,6 +238,115 @@ class MujocoTrajVisualizer:
             self.stats_text = self.server.gui.add_text(
                 "Info", initial_value="No trajectory loaded", disabled=True
             )
+        
+        # Camera follow controls
+        # This section allows the camera to automatically follow the robot during playback
+        with self.server.gui.add_folder("Camera Follow", expand_by_default=True):
+            self.follow_camera_checkbox = self.server.gui.add_checkbox(
+                "Follow Robot", initial_value=False,
+                hint="Camera automatically follows the robot during playback"
+            )
+            
+            # Camera offset controls - these define where the camera is positioned relative to the robot
+            # ---------------------------------------------------------------------------------
+            # CAMERA ANGLE ADJUSTMENT GUIDE:
+            # - camera_distance: How far behind/in-front of the robot (X-axis offset)
+            #   Positive = behind robot, Negative = in front of robot
+            # - camera_height: How high above/below the robot (Z-axis offset)  
+            #   Positive = above robot, Negative = below robot
+            # - camera_side_offset: How far to the side of the robot (Y-axis offset)
+            #   Positive = to the left, Negative = to the right
+            # 
+            # Common camera angle presets:
+            # - Side view: distance=0, height=1.0, side_offset=-5.0
+            # - Behind view: distance=-5.0, height=2.0, side_offset=0
+            # - Top-down view: distance=0, height=8.0, side_offset=0
+            # - 3/4 view: distance=-4.0, height=3.0, side_offset=-3.0
+            # ---------------------------------------------------------------------------------
+            self.camera_distance_slider = self.server.gui.add_slider(
+                "Distance Behind", min=-10.0, max=10.0, step=0.1, initial_value=-5.0,
+                hint="Camera distance behind the robot (negative = behind, positive = in front)"
+            )
+            self.camera_height_slider = self.server.gui.add_slider(
+                "Height Above", min=-2.0, max=10.0, step=0.1, initial_value=2.0,
+                hint="Camera height above the robot"
+            )
+            self.camera_side_offset_slider = self.server.gui.add_slider(
+                "Side Offset", min=-10.0, max=10.0, step=0.1, initial_value=0.0,
+                hint="Camera offset to the side (positive=left, negative=right)"
+            )
+            
+            # Look-at offset - where the camera points relative to the robot
+            # Adjust this to look slightly ahead of the robot or at its feet
+            self.look_at_height_slider = self.server.gui.add_slider(
+                "Look-at Height", min=-2.0, max=5.0, step=0.1, initial_value=0.8,
+                hint="Height of the point the camera looks at (relative to ground)"
+            )
+            self.look_at_forward_slider = self.server.gui.add_slider(
+                "Look-at Forward", min=-5.0, max=10.0, step=0.1, initial_value=2.0,
+                hint="How far ahead of the robot the camera looks"
+            )
+            
+            # Preset buttons for common camera angles
+            self.camera_preset_dropdown = self.server.gui.add_dropdown(
+                "Camera Preset",
+                options=["Custom", "Side View (Left to Right)", "Side View (Right to Left)", "Behind View", "Top-Down", "3/4 View", "Front View"],
+                initial_value="Custom",
+                hint="Select a preset camera angle"
+            )
+            
+            @self.camera_preset_dropdown.on_update
+            def _(_):
+                """Apply camera preset when dropdown selection changes."""
+                preset = self.camera_preset_dropdown.value
+                if preset == "Side View (Right to Left)":
+                    # View from the side (perpendicular to robot's forward direction)
+                    self.camera_distance_slider.value = 0.0
+                    self.camera_height_slider.value = 1.0
+                    self.camera_side_offset_slider.value = 5.0
+                    self.look_at_height_slider.value = 1.0
+                    self.look_at_forward_slider.value = 0.0
+                elif preset == "Side View (Left to Right)":
+                    # View from the side (perpendicular to robot's forward direction)
+                    self.camera_distance_slider.value = 0.0
+                    self.camera_height_slider.value = 1.0
+                    self.camera_side_offset_slider.value = -5.0
+                    self.look_at_height_slider.value = 1.0
+                    self.look_at_forward_slider.value = 0.0
+                elif preset == "Behind View":
+                    # Classic third-person view from behind
+                    self.camera_distance_slider.value = -5.0
+                    self.camera_height_slider.value = 2.0
+                    self.camera_side_offset_slider.value = 0.0
+                    self.look_at_height_slider.value = 0.8
+                    self.look_at_forward_slider.value = 2.0
+                elif preset == "Top-Down":
+                    # Bird's eye view looking straight down
+                    self.camera_distance_slider.value = 0.0
+                    self.camera_height_slider.value = 8.0
+                    self.camera_side_offset_slider.value = 0.0
+                    self.look_at_height_slider.value = 0.0
+                    self.look_at_forward_slider.value = 0.0
+                elif preset == "3/4 View":
+                    # Isometric-style view from behind and to the side
+                    self.camera_distance_slider.value = -4.0
+                    self.camera_height_slider.value = 3.0
+                    self.camera_side_offset_slider.value = -3.0
+                    self.look_at_height_slider.value = 0.8
+                    self.look_at_forward_slider.value = 1.0
+                elif preset == "Front View":
+                    # View from in front of the robot (facing it)
+                    self.camera_distance_slider.value = 5.0
+                    self.camera_height_slider.value = 1.5
+                    self.camera_side_offset_slider.value = 0.0
+                    self.look_at_height_slider.value = 1.0
+                    self.look_at_forward_slider.value = 0.0
+                # "Custom" preset does nothing - allows manual adjustment
+            
+            @self.follow_camera_checkbox.on_update
+            def _(_):
+                """Update camera follow state when checkbox is toggled."""
+                self._camera_follow_enabled = self.follow_camera_checkbox.value
 
     def load_trajectory(self, npz_path: str, robot_idx: int = 1):
         """
@@ -725,6 +840,84 @@ class MujocoTrajVisualizer:
             trajectory_line.colors = colors
             trajectory_line.visible = True
     
+    def _update_follow_camera(self, frame_idx: int):
+        """
+        Update camera position to follow the robot (robot1).
+        
+        This method positions the camera relative to the robot's current position
+        based on the GUI slider values. The camera follows the robot smoothly
+        during playback.
+        
+        Camera Coordinate System (viser uses +Z up):
+        - X-axis: Forward/backward (robot walks in +X direction)
+        - Y-axis: Left/right (positive = left)
+        - Z-axis: Up/down (positive = up)
+        
+        To customize the camera angle programmatically, modify the offset values:
+        - camera_offset: [x, y, z] position offset from robot
+        - look_at_offset: [x, y, z] position offset for where camera looks
+        
+        Args:
+            frame_idx: Current frame index being displayed
+        """
+        if not self._camera_follow_enabled or self.trajectory_data is None:
+            return
+        
+        # Get robot's current position (for robot1)
+        root_pos, _ = self._get_root_state(frame_idx, robot_idx=1)
+        
+        # Calculate camera position based on GUI sliders
+        # ---------------------------------------------------------------------------------
+        # HOW TO ADJUST CAMERA ANGLE:
+        # 
+        # The camera position is calculated as: robot_position + camera_offset
+        # where camera_offset = [distance_behind, side_offset, height_above]
+        #
+        # distance_behind (X-axis):
+        #   - Negative values place camera behind the robot (following view)
+        #   - Positive values place camera in front of the robot (facing view)
+        #
+        # side_offset (Y-axis):
+        #   - Positive values place camera to the left of the robot
+        #   - Negative values place camera to the right of the robot
+        #
+        # height_above (Z-axis):
+        #   - Controls vertical position of camera
+        #   - Higher values give more of a bird's eye view
+        #
+        # For example, to get a classic side-scrolling game view:
+        #   distance_behind = 0.0 (beside the robot)
+        #   side_offset = -5.0 (to the right side)
+        #   height_above = 1.0 (at robot's height)
+        # ---------------------------------------------------------------------------------
+        camera_offset = np.array([
+            self.camera_distance_slider.value,   # X: distance behind robot
+            self.camera_side_offset_slider.value, # Y: side offset
+            self.camera_height_slider.value       # Z: height above robot
+        ])
+        
+        camera_position = root_pos + camera_offset
+        
+        # Calculate look-at position (where the camera points)
+        # This is typically slightly ahead of and at the robot's center height
+        look_at_offset = np.array([
+            self.look_at_forward_slider.value,  # X: look ahead of robot
+            0.0,                                  # Y: centered on robot
+            self.look_at_height_slider.value     # Z: look at robot's torso height
+        ])
+        
+        look_at_position = root_pos + look_at_offset
+        
+        # Update camera for all connected clients
+        # This ensures all viewers see the same following camera
+        clients = self.server.get_clients()
+        for client_id, client in clients.items():
+            # Use atomic update to prevent visual jitter during camera movement
+            # This ensures position and look_at are applied together
+            with client.atomic():
+                client.camera.position = camera_position
+                client.camera.look_at = look_at_position
+    
     def update_visualization(self, frame_idx: int):
         """
         Update the visualization to show a specific frame
@@ -746,6 +939,9 @@ class MujocoTrajVisualizer:
             # Clamp frame index for robot2 (might have different length)
             frame_idx_2 = int(np.clip(frame_idx, 0, self.trajectory_data_2['timesteps'] - 1))
             self._update_single_robot_visualization(frame_idx_2, robot_idx=2)
+        
+        # Update follow camera if enabled (always follows robot1)
+        self._update_follow_camera(frame_idx)
     
     def _update_single_robot_visualization(self, frame_idx: int, robot_idx: int = 1):
         """
@@ -810,6 +1006,10 @@ class MujocoTrajVisualizer:
         print("  - Speed: Adjust playback speed")
         print("  - Frame slider: Scrub through frames")
         print("  - Loop: Enable/disable looping")
+        print("\nCamera Follow:")
+        print("  - Enable 'Follow Robot' checkbox to have camera track the robot")
+        print("  - Adjust Distance/Height/Side sliders to change camera angle")
+        print("  - Use Camera Preset dropdown for quick angle changes")
         print("\nPress Ctrl+C to exit\n")
         
         last_time = time.time()
@@ -993,6 +1193,17 @@ if __name__ == "__main__":
         --trajectory1 path/to/traj1.npz \
         --trajectory2 path/to/traj2.npz \
         --robot2-y-offset -5.0
+    
+    # Using camera follow feature:
+    # 1. Run the visualizer with any trajectory
+    # 2. In the web UI, expand the "Camera Follow" panel
+    # 3. Check "Follow Robot" to enable camera tracking
+    # 4. Adjust sliders or use presets to change the camera angle:
+    #    - Side View: Classic side-scrolling perspective
+    #    - Behind View: Third-person following camera
+    #    - Top-Down: Bird's eye view
+    #    - 3/4 View: Isometric-style angle
+    #    - Front View: Looking at the robot face-on
     
     """
     main()

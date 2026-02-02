@@ -109,7 +109,9 @@ def run_episode_and_record_trajectories(model, vec_env, body_names: list, max_st
             - 'rewards': Array of rewards at each timestep
             - 'done': Whether episode terminated early
     """
-    # Reset with seed for reproducibility
+    # Set seed for reproducibility
+    # Must call vec_env.seed() before reset() to properly seed the environment
+    vec_env.seed(seed)
     obs = vec_env.reset()
     
     # Access the underlying dm_control physics
@@ -280,7 +282,10 @@ def main():
     
     # Path to the run directory containing checkpoints
     #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112659-percentage-25pct")
     RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-114318-percentage-75pct")
+    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-115404-percentage-100pct")
     
     # Range of checkpoints to process (inclusive, step by 25000)
     START_CHECKPOINT = 25_000
@@ -289,7 +294,7 @@ def main():
     
     # Episode parameters
     MAX_STEPS_PER_EPISODE = 1000
-    RANDOM_SEED = 42
+    RANDOM_SEED = 500
     
     # Body parts to track (for walker environment)
     BODY_NAMES = ['torso', 'right_thigh', 'right_leg', 'right_foot', 
