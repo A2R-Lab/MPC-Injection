@@ -50,3 +50,7 @@ dependencies:
       - mediapy
       - matplotlib
       - jupyter
+      - umap-learn
+      - viser
+      - robot_descriptions
+      - tyro
