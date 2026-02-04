@@ -1,3 +1,6 @@
 [submodule "mujoco_mpc"]
-	path = mujoco_mpc
+	path = deps/mujoco_mpc
 	url = git@github.com:A2R-Lab/mujoco_mpc.git
+[submodule "deps/gym-quadruped"]
+	path = deps/gym-quadruped
+	url = git@github.com:RX-00/gym-quadruped.git

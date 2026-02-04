@@ -28,7 +28,7 @@ Note that this project is using Ubuntu 24.04.3 LTS and clang version 18.1.3. It 
 #### Build and Run MJPC GUI application using VSCode
 We recommend using [VSCode](https://code.visualstudio.com/) and 2 of its extensions ([CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools) and [C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools)) to simplify the build process.
 
-1. Open the submodule directory `mujoco_mpc` with VSCode.
+1. Open the submodule directory `deps/mujoco_mpc` with VSCode.
 2. Configure the project with CMake (a pop-up should appear in VSCode)
 3. Set compiler to `clang-18`.
 4. Build `[all]` and then you can test by running `./mjpc` in `mujoco_mpc/build/bin` or try the next step.
@@ -47,13 +47,13 @@ python setup.py install
 
 Test that installation was successful by going back to the root project directory and trying:
 ```bash
-python mujoco_mpc/python/mujoco_mpc/agent_test.py
+python deps/mujoco_mpc/python/mujoco_mpc/agent_test.py
 ```
 This should result in 18 tests run with 1 failed and 3 skipped. This is okay for now.
 
 Example scripts are found in `mujoco_mpc/python/mujoco_mpc/demos`. For example from `python/`:
 ```bash
-python mujoco_mpc/python/mujoco_mpc/demos/agent/cartpole_gui.py
+python deps/mujoco_mpc/python/mujoco_mpc/demos/agent/cartpole_gui.py
 ```
 will run the MJPC GUI application using MuJoCo's passive viewer via Python.
 
