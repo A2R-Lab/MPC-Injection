@@ -29,6 +29,8 @@ def main():
                        help='Use log scale for rewards')
     parser.add_argument('--show', action='store_true',
                        help='Display plot instead of saving')
+    parser.add_argument('--no-save-data', action='store_true',
+                       help='Do not save plot data as .npz file')
     
     args = parser.parse_args()
     
@@ -47,6 +49,7 @@ def main():
         plot_type=args.type,
         logscale=args.logscale,
         show=args.show,
+        save_data=not args.no_save_data,
     )
     
     if not args.show:

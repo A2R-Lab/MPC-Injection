@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
+FONT_SIZE = 18
 
 def extract_percentage(dirname):
     """Extract the percentage value from directory name."""
@@ -341,11 +342,11 @@ def plot_training_time(base_dir, output_file='training_time_comparison.png', per
             print(f"  Single run - no uncertainty band")
             print(f"  Final time: {mean_values[-1]:.2f} hours")
     
-    plt.xlabel('Training Steps', fontsize=12)
-    plt.ylabel('Training Time (hours)', fontsize=12)
+    plt.xlabel('Training Steps', fontsize=FONT_SIZE)
+    plt.ylabel('Training Time (hours)', fontsize=FONT_SIZE)
     
     # Add std_scale info to title if not default
-    title_text = f'Training Time vs Training Steps - {title_suffix}'
+    title_text = f'Training - {title_suffix}'
     if time_source == 'fps':
         title_text += ' (Estimated from FPS'
         if std_scale != 1.0:
@@ -358,8 +359,8 @@ def plot_training_time(base_dir, output_file='training_time_comparison.png', per
         else:
             title_text += ' (±1σ)'
     
-    plt.title(title_text, fontsize=14, fontweight='bold')
-    plt.legend(loc='best', fontsize=10, ncol=2)
+    plt.title(title_text, fontsize=FONT_SIZE+2, fontweight='bold')
+    plt.legend(loc='best', fontsize=FONT_SIZE-2, ncol=2)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     
@@ -534,18 +535,18 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
             print(f"  Single run - no uncertainty band")
             print(f"  Reward range: [{mean_values.min():.2f}, {mean_values.max():.2f}]")
     
-    plt.xlabel('Training Steps', fontsize=12)
-    plt.ylabel('Episode Reward Mean', fontsize=12)
+    plt.xlabel('Training Steps', fontsize=FONT_SIZE)
+    plt.ylabel('Episode Reward Mean', fontsize=FONT_SIZE)
     
     # Add std_scale info to title if not default
-    title_text = f'Episode Reward Mean vs Training Steps - {title_suffix}'
+    title_text = f'Training Performance - {title_suffix}'
     if std_scale != 1.0:
         title_text += f' (±{std_scale}σ)'
     else:
         title_text += ' (±1σ)'
     
-    plt.title(title_text, fontsize=14, fontweight='bold')
-    plt.legend(loc='best', fontsize=10, ncol=2)
+    plt.title(title_text, fontsize=FONT_SIZE+2, fontweight='bold')
+    plt.legend(loc='best', fontsize=FONT_SIZE-2, ncol=2)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     
@@ -569,6 +570,7 @@ def main():
     #base_dir = '../logs/SAC-MPC-walker-runs/'
     #base_dir = '../logs/TD3-MPC-walker-runs/'
     base_dir = '../logs/SAC-MPC-walker-velocity_only_reward/'
+    #base_dir = '../logs/TD3-MPC-walker-velocity_only_reward/'
     
     # Select environment to plot
     # Option 1: Cartpole

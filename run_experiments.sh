@@ -14,8 +14,8 @@
 #ENV_NAME=cartpole-swingup_sparse
 ENV_NAME="walker-walk"
 
-ALGORITHM="SAC-MPC"
-#ALGORITHM="TD3-MPC"
+#ALGORITHM="SAC-MPC"
+ALGORITHM="TD3-MPC"
 
 TOTAL_TIMESTEPS=500000
 INJECT_TYPE="percentage"  # Use percentage-based injection (not fixed)
@@ -25,9 +25,9 @@ RANDOM_SELECT="True"
 DATA_DIR="data/walker_0_0025dt/"
 
 #LOG_DIR="logs/TD3-MPC-walker-velocity_only_reward/2nd_run"
-LOG_DIR="logs/SAC-MPC-walker-velocity_only_reward/5th_run/"
+#LOG_DIR="logs/SAC-MPC-walker-velocity_only_reward/5th_run/"
 #LOG_DIR="logs/TD3-MPC-walker-runs/5th_run/"
-#LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/1st_run"
+LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/5th_run/"
 
 CHECKPOINT_FREQ=25000
 

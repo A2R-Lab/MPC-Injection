@@ -8,6 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import argparse
 
+FONT_SIZE = 18
+
 class FootStepAndRewardPlotter:
     """
     Visualize the footsteps of the walker and plot the rewards over time for a single
@@ -94,7 +96,7 @@ class FootStepAndRewardPlotter:
         for t in time_steps:
             if self.left_footsteps[t]:
                 ax_lf.axvline(x=t, color='black', linewidth=0.8)
-        ax_lf.set_ylabel('LF', fontsize=12, rotation=0, labelpad=20)
+        ax_lf.set_ylabel('LF', fontsize=FONT_SIZE, rotation=0, labelpad=20)
         ax_lf.set_ylim(0, 1)
         ax_lf.set_yticks([])
         ax_lf.spines['left'].set_visible(False)
@@ -106,7 +108,7 @@ class FootStepAndRewardPlotter:
         for t in time_steps:
             if self.right_footsteps[t]:
                 ax_rf.axvline(x=t, color='black', linewidth=0.8)
-        ax_rf.set_ylabel('RF', fontsize=12, rotation=0, labelpad=20)
+        ax_rf.set_ylabel('RF', fontsize=FONT_SIZE, rotation=0, labelpad=20)
         ax_rf.set_ylim(0, 1)
         ax_rf.set_yticks([])
         ax_rf.spines['left'].set_visible(False)
@@ -121,8 +123,8 @@ class FootStepAndRewardPlotter:
         # Remove default x-axis padding so the plot runs exactly from the first to last timestep specified
         ax_r.set_xlim(time_steps[0], time_steps[-1])
 
-        ax_r.set_ylabel('Reward', fontsize=12)
-        ax_r.set_xlabel('Timestep', fontsize=12)
+        ax_r.set_ylabel('Reward', fontsize=FONT_SIZE)
+        ax_r.set_xlabel('Timestep', fontsize=FONT_SIZE)
         ax_r.grid(True, alpha=0.3, linestyle='--')
         print(f"Reward range: [{reward_min:.4f}, {reward_max:.4f}]")
         
@@ -185,9 +187,9 @@ class FootStepAndRewardPlotter:
             suffix = f"__range__{saved_range}"
         
         out_name = f"raster_n_reward_plots_sac_mpc_{pct_part}_{step_number}{suffix}.{ext.lstrip('.')}"
-        out_path = script_dir / out_name
+        out_path = script_dir / "viser_figs" / out_name
 
-        save_kwargs = dict(bbox_inches='tight', pad_inches=0.02)
+        save_kwargs = dict(bbox_inches='tight', pad_inches=0.1)
         if ext.lower().lstrip(".") in ("png", "jpg", "jpeg", "tif", "tiff"):
             save_kwargs["dpi"] = dpi
 

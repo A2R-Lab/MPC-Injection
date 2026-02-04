@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import re
 
+FONT_SIZE = 18
 
 def load_trajectory_data(npz_file: Path, data_type: str = 'observations'):
     """
@@ -223,18 +224,23 @@ def plot_torso_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 1500
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
     # Labels and title
-    ax.set_xlabel('Torso X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Torso Height (m)', fontsize=12)
-    ax.set_title('Torso 2D Trajectory Evolution (X-Z plane): Checkpoints 25k, 100k, 150k, 200k', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Torso X Position (m)', fontsize=FONT_SIZE, labelpad=10)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE, labelpad=20)
+    ax.set_zlabel('Torso Height (m)', fontsize=FONT_SIZE, labelpad=10)
+    ax.set_title('Torso Trajectory: Checkpoints 25k, 100k, 150k, 200k', fontsize=FONT_SIZE+2, fontweight='bold')
     ax.grid(True, alpha=0.3)
+    
+    # Adjust margins to reduce empty space
+    ax.margins(x=0.01, y=0.01, z=0.01)
     
     # Set view angle for better perspective
     # elev: vertical angle (higher = more from above), azim: horizontal rotation
-    ax.view_init(elev=35, azim=45)
+    # dist: zoom level (lower = zoom in, higher = zoom out), default is 10
+    ax.view_init(elev=45, azim=75)
+    ax.dist = 8
     
     #plt.tight_layout()
     
@@ -675,9 +681,9 @@ if __name__ == "__main__":
     
     # Generate all plots
     plot_torso_position(dir1, dir2, checkpoints=checkpoints)
-    plot_left_thigh_position(dir1, dir2, checkpoints=checkpoints)
-    plot_left_leg_position(dir1, dir2, checkpoints=checkpoints)
-    plot_left_foot_position(dir1, dir2, checkpoints=checkpoints)
-    plot_right_thigh_position(dir1, dir2, checkpoints=checkpoints)
-    plot_right_leg_position(dir1, dir2, checkpoints=checkpoints)
-    plot_right_foot_position(dir1, dir2, checkpoints=checkpoints)
+    #plot_left_thigh_position(dir1, dir2, checkpoints=checkpoints)
+    #plot_left_leg_position(dir1, dir2, checkpoints=checkpoints)
+    #plot_left_foot_position(dir1, dir2, checkpoints=checkpoints)
+    #plot_right_thigh_position(dir1, dir2, checkpoints=checkpoints)
+    #plot_right_leg_position(dir1, dir2, checkpoints=checkpoints)
+    #plot_right_foot_position(dir1, dir2, checkpoints=checkpoints)

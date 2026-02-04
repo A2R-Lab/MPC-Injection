@@ -220,14 +220,14 @@ MPC-RL/
 │   └── train_sbx.py
 ├── mujoco_mpc/
 ├── plot_over_training_reward_surfaces.sh # Plots reward surfaces for various policy checkpoints
-├── plots/ # Plots made by reward_surfaces/ body_trajs/ scripts
+├── plots/ # Plots made by reward_surfaces/ body_trajs/ scripts (also contains data from reward_surfaces)
 ├── plot_single_reward_surface.sh # Plots single reward surface for a policy
 ├── README.md
 ├── reward_surfaces/
 ├── run_experiments.sh # Trains 0, 25, 50, 75, 100 MPC-Injection policies
 ├── tests/
 ├── utils/ # Script for plotting multiple training reward vs training step plots
-└── viser/
+└── viser/ # Scripts for viser visualization and raster footstep plots with reward functions
 ```
 
 

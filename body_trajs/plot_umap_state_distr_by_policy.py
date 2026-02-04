@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from umap import UMAP
 import re
 
+FONT_SIZE = 18
 
 def load_trajectory_data(npz_file: Path, data_type: str = 'observations'):
     """
@@ -165,15 +166,15 @@ def create_umap_comparison_plot(obs1, obs2, label1, label2, checkpoint_num, outp
     ax.scatter(embedding2[:, 0], embedding2[:, 1], embedding2[:, 2], # embedding1[:, 2] for 3D
               c='#ff7f0e', alpha=0.6, s=10, label=label2, rasterized=True)
     
-    ax.set_xlabel('UMAP Dimension 1', fontsize=12)
-    ax.set_ylabel('UMAP Dimension 2', fontsize=12)
-    ax.set_zlabel('UMAP Dimension 3', fontsize=12)  # For 3D plot
+    ax.set_xlabel('UMAP Dimension 1', fontsize=FONT_SIZE)
+    ax.set_ylabel('UMAP Dimension 2', fontsize=FONT_SIZE)
+    ax.set_zlabel('UMAP Dimension 3', fontsize=FONT_SIZE)  # For 3D plot
     
     # Create title based on data type
     data_type_label = 'Observations' if data_type == 'observations' else 'State'
     ax.set_title(f'{data_type_label} Distribution Comparison at Checkpoint {checkpoint_num:,}', 
-                fontsize=14, fontweight='bold')
-    ax.legend(fontsize=11, loc='best')
+                fontsize=FONT_SIZE+2, fontweight='bold')
+    ax.legend(fontsize=FONT_SIZE, loc='best')
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()

@@ -20,6 +20,7 @@ def plot_surface(
     plot_type: str = "mesh",
     logscale: str = "auto",
     show: bool = False,
+    save_data: bool = False,
 ) -> str:
     """
     Plot reward surface from CSV results.
@@ -32,6 +33,7 @@ def plot_surface(
         plot_type: One of 'mesh', 'heat', 'contour', 'contourf', 'all'
         logscale: 'auto', 'on', or 'off'
         show: Whether to display the plot
+        save_data: Whether to save the processed grid data as .npz file
     
     Returns:
         Path to saved plot file
@@ -58,6 +60,23 @@ def plot_surface(
     
     # Get magnitude from metadata
     magnitude = df['magnitude'].iloc[0] if 'magnitude' in df.columns else 1.0
+    
+    # Save processed grid data for easy reloading
+    if save_data:
+        data_path = f"{output_name}_plot_data.npz"
+        np.savez(
+            data_path,
+            X=X,
+            Y=Y,
+            Z=Z,
+            dim0_values=np.array(dim0_values),
+            dim1_values=np.array(dim1_values),
+            magnitude=magnitude,
+            grid_size=grid_size,
+            env_name=env_name,
+            key_name=key_name,
+        )
+        print(f"Saved plot data: {data_path}")
     
     # Determine logscale
     use_logscale = False
