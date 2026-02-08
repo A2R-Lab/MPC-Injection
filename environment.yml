@@ -43,7 +43,7 @@ dependencies:
       - mujoco-mjx>=3.3.6.dev
 
       # Warp dev wheels
-      - warp-lang>=1.9.0.dev
+      - warp-lang==1.10.0.dev20251006
 
       # utils
       - lxml
