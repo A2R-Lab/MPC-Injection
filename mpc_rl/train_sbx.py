@@ -45,6 +45,10 @@ from dm_control import suite
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from sbx import SAC, PPO, TD3
+# SB3 PyTorch SAC/TD3 for quadruped environments (supports custom asymmetric policies)
+# SBX (JAX) is used for other environments for speed; SB3 is used for quadruped because
+# asymmetric actor-critic requires custom PyTorch feature extractors.
+from stable_baselines3 import SAC as SB3_SAC, TD3 as SB3_TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
@@ -79,6 +83,12 @@ from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 # From custom gymnasium environment for the shadow hand
 import shadow_hand_gym
 
+# Register custom quadruped velocity tracking environment
+import mpc_rl.envs
+
+# Asymmetric actor-critic policies for quadruped sim2real training
+from mpc_rl.policies import AsymmetricSACPolicy, AsymmetricTD3Policy
+
 # Environment flags
 _ENV_NAME = flags.DEFINE_string(
     "env_name",
@@ -94,6 +104,15 @@ _TASK = flags.DEFINE_string(
     "task",
     None,
     "Task name (e.g., swingup). If None, will be parsed from env_name",
+)
+
+# Quadruped environment flags
+_ROBOT = flags.DEFINE_string(
+    "robot", "go2",
+    "Quadruped robot model name (go2, go1, mini_cheetah, aliengo). Only used when env_name starts with 'quadruped-'",
+)
+_MAX_EPISODE_STEPS = flags.DEFINE_integer(
+    "max_episode_steps", 1000, "Maximum number of steps per episode"
 )
 
 # Training flags
@@ -262,6 +281,41 @@ def make_shadow_hand_env(env_name: str, render_mode=None):
     return gym_env
 
 
+def is_quadruped_env(env_name: str) -> bool:
+    """Check if the environment is a quadruped velocity tracking environment.
+    
+    Convention: env_name starts with 'quadruped-' (e.g., 'quadruped-velocity_tracking').
+    """
+    return env_name.lower().startswith("quadruped-")
+
+
+def make_quadruped_env(robot: str = "go2", render_mode=None):
+    """
+    Create a quadruped velocity tracking gymnasium environment.
+    
+    Returns a Dict observation space for asymmetric actor-critic training:
+        "policy" (45-dim): Real-hardware-available sensor observations (actor)
+        "privileged" (3-dim): Simulation-only ground truth base_lin_vel (critic)
+    
+    No FlattenObservation wrapper is applied since Dict obs is required
+    for the asymmetric policy architecture.
+    
+    Args:
+        robot: Robot model name (go2, go1, mini_cheetah, aliengo, etc.)
+        render_mode: Render mode for the environment
+    
+    Returns:
+        QuadrupedVelocityTracking gymnasium environment with Dict obs space
+    """
+    gym_env = gym.make(
+        "QuadrupedVelocityTracking-v0",
+        robot=robot,
+        render_mode=render_mode,
+        max_episode_steps=_MAX_EPISODE_STEPS.value
+    )
+    return gym_env
+
+
 def create_experiment_name(env_name: str, algorithm: str, suffix: str = None,
                           inject_type: str = None, percentage: int = None) -> str:
     """Create unique experiment name with timestamp and algorithm."""
@@ -289,21 +343,72 @@ def save_config(logdir: Path, config: dict):
     print(f"Configuration saved to: {config_path}")
 
 
-def load_model(algorithm: str, model_path: Path, env):
-    """Load a trained model."""
-    algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[algorithm]
+def load_model(algorithm: str, model_path: Path, env, is_quadruped: bool = False):
+    """Load a trained model.
+    
+    For quadruped environments, uses SB3 (PyTorch) SAC/TD3 with asymmetric policies.
+    For other environments, uses SBX (JAX) implementations.
+    """
+    if is_quadruped:
+        # Quadruped uses SB3 PyTorch with asymmetric policy
+        algo_class = {"SAC": SB3_SAC, "TD3": SB3_TD3}[algorithm]
+    else:
+        algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[algorithm]
     print(f"Loading model from: {model_path}")
     return algo_class.load(model_path, env=env)
 
 
-def create_model(env, cfg):
+def create_model(env, cfg, is_quadruped: bool = False):
     """
     Create a new model instance.
     
     Uses a factory pattern: algo_class is a class object (not an instance), selected by
     algorithm string. Calling algo_class(...) invokes the class constructor (__init__) to
     create a new agent instance with the specified hyperparameters.
+    
+    For quadruped environments, uses SB3 (PyTorch) SAC/TD3 with asymmetric actor-critic
+    policies where the actor only sees hardware-available observations and the critic
+    also receives privileged simulation data (base linear velocity).
     """
+    if is_quadruped:
+        # Quadruped: use SB3 PyTorch with asymmetric actor-critic policies
+        # Actor sees only "policy" obs (45-dim), critic sees "policy"+"privileged" (48-dim)
+        if cfg.algorithm == "SAC":
+            model = SB3_SAC(
+                AsymmetricSACPolicy,
+                env,
+                learning_rate=cfg.learning_rate,
+                buffer_size=cfg.buffer_size,
+                learning_starts=cfg.learning_starts,
+                batch_size=cfg.batch_size,
+                tau=cfg.tau,
+                gamma=cfg.gamma,
+                verbose=1,
+                seed=cfg.seed,
+                tensorboard_log=cfg.tensorboard_log,
+            )
+        elif cfg.algorithm == "TD3":
+            model = SB3_TD3(
+                AsymmetricTD3Policy,
+                env,
+                learning_rate=cfg.learning_rate,
+                buffer_size=cfg.buffer_size,
+                learning_starts=cfg.learning_starts,
+                batch_size=cfg.batch_size,
+                tau=cfg.tau,
+                gamma=cfg.gamma,
+                verbose=1,
+                seed=cfg.seed,
+                tensorboard_log=cfg.tensorboard_log,
+            )
+        else:
+            raise ValueError(
+                f"Algorithm '{cfg.algorithm}' is not supported for quadruped environments. "
+                "Use SAC or TD3 (SAC-MPC and TD3-MPC will be integrated later)."
+            )
+        return model
+    
+    # Non-quadruped: use SBX (JAX) for faster training
     algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[cfg.algorithm]
     
     if cfg.algorithm == "SAC":
@@ -380,7 +485,8 @@ def create_model(env, cfg):
 
 def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path, 
                      domain: str, task: str, seed: int,
-                     checkpoint_freq: int, eval_freq: int, num_envs: int):
+                     checkpoint_freq: int, eval_freq: int, num_envs: int,
+                     is_quadruped: bool = False, robot: str = "go2"):
     """
     Factory function to create all callbacks based on configuration.
     
@@ -394,6 +500,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         checkpoint_freq: Frequency to save checkpoints (in environment steps)
         eval_freq: Frequency to run evaluation (in environment steps)
         num_envs: Number of parallel environments
+        is_quadruped: Whether the environment is a quadruped velocity tracking env
+        robot: Quadruped robot model name (only used when is_quadruped=True)
     
     Returns:
         Tuple of (callbacks list, eval_env or None, inject_callback or None)
@@ -422,7 +530,13 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         # Must be wrapped the same way as training env (with VecNormalize)
         # Determine environment type from domain
         is_shadow_hand = (domain == "shadow_hand")
-        if is_shadow_hand:
+        if is_quadruped:
+            eval_env = make_vec_env(
+                lambda: make_quadruped_env(robot=robot),
+                n_envs=1,
+                seed=seed+1000,
+            )
+        elif is_shadow_hand:
             eval_env = make_vec_env(
                 lambda: make_shadow_hand_env(task),  # task contains the full env name
                 n_envs=1,
@@ -492,7 +606,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
 
 
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
-                        num_videos: int, video_dir: Path, normalize_env=None, seed: int = None):
+                        num_videos: int, video_dir: Path, normalize_env=None, seed: int = None,
+                        is_quadruped: bool = False, robot: str = "go2"):
     """
     Evaluate model and record videos.
     
@@ -505,18 +620,22 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         video_dir: Directory to save videos
         normalize_env: VecNormalize wrapper for observation normalization
         seed: Random seed for reproducible evaluation (uses seed+2000+episode for each episode)
+        is_quadruped: Whether the environment is a quadruped velocity tracking env
+        robot: Quadruped robot model name (only used when is_quadruped=True)
     """
     video_dir.mkdir(parents=True, exist_ok=True)
     
     episode_rewards = []
     episode_lengths = []
     
-    # Determine if this is a shadow hand environment
+    # Determine environment type
     is_shadow_hand = (domain == "shadow_hand")
     
     for episode in range(num_episodes):
-        # Create evaluation environment
-        if is_shadow_hand:
+        # Create evaluation environment with rgb_array render mode for video recording
+        if is_quadruped:
+            eval_env_base = make_quadruped_env(robot=robot, render_mode="rgb_array")
+        elif is_shadow_hand:
             eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
         else:
             eval_env_base = make_dm_env(domain, task, render_mode="rgb_array")
@@ -556,8 +675,11 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
             
             # Capture frames for video
             if record_video:
-                # Use tracking camera for walker environments
-                if domain == "walker":
+                if is_quadruped:
+                    # Quadruped env supports render_mode="rgb_array" natively
+                    frame = eval_env_base.render()
+                elif domain == "walker":
+                    # Use tracking camera for walker environments
                     frame = eval_env.unwrapped.envs[0].unwrapped._env.physics.render(camera_id='side', height=480, width=640)
                 else:
                     frame = eval_env_base.render()
@@ -576,8 +698,8 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         # Save video
         if record_video and frames:
             video_path = video_dir / f"rollout{episode}.mp4"
-            # Assuming 30 FPS for dm_control environments
-            fps = 30
+            # Use 50 FPS for quadruped (matches control frequency), 30 FPS for others
+            fps = 50 if is_quadruped else 30
             media.write_video(str(video_path), frames, fps=fps)
             print(f"Video saved to: {video_path}")
         
@@ -614,11 +736,17 @@ def main(argv):
     print(f"=" * 60)
     # ============================================================================
     
-    # Check if this is a shadow hand environment
+    # Detect environment type
     is_shadow_hand = is_shadow_hand_env(_ENV_NAME.value)
+    is_quadruped = is_quadruped_env(_ENV_NAME.value)
     
     # Parse environment name
-    if is_shadow_hand:
+    if is_quadruped:
+        # Quadruped velocity tracking environment
+        domain, task = parse_env_name(_ENV_NAME.value)
+        env_name = _ENV_NAME.value
+        print(f"Environment: Quadruped ({_ROBOT.value}) / {task}")
+    elif is_shadow_hand:
         # Shadow hand environments use the full registered name
         env_name = _ENV_NAME.value
         domain = "shadow_hand"
@@ -705,7 +833,14 @@ def main(argv):
     
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
-    if is_shadow_hand:
+    if is_quadruped:
+        robot_name = _ROBOT.value
+        vec_env = make_vec_env(
+            lambda: make_quadruped_env(robot=robot_name),
+            n_envs=_NUM_ENVS.value,
+            seed=_SEED.value,
+        )
+    elif is_shadow_hand:
         vec_env = make_vec_env(
             lambda: make_shadow_hand_env(env_name),
             n_envs=_NUM_ENVS.value,
@@ -736,7 +871,7 @@ def main(argv):
     # NOTE: SB3/SBX saves models with .zip extension but load() doesn't require it
     if _LOAD_RUN_NAME.value and (model_path.with_suffix('.zip').exists() or model_path.exists()):
         # Load existing model
-        model = load_model(_ALGORITHM.value, model_path, vec_env)
+        model = load_model(_ALGORITHM.value, model_path, vec_env, is_quadruped=is_quadruped)
         print("Model loaded successfully")
         
         # Load normalization stats
@@ -754,6 +889,7 @@ def main(argv):
         model = create_model(
             env=vec_env,
             cfg=config,
+            is_quadruped=is_quadruped,
         )
     
     # Training phase
@@ -771,6 +907,8 @@ def main(argv):
             checkpoint_freq=_CHECKPOINT_FREQ.value,
             eval_freq=_EVAL_FREQ.value,
             num_envs=_NUM_ENVS.value,
+            is_quadruped=is_quadruped,
+            robot=_ROBOT.value,
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
@@ -821,6 +959,8 @@ def main(argv):
             video_dir=video_dir,
             normalize_env=vec_normalize_path if vec_normalize_path.exists() else None,
             seed=_SEED.value,  # Pass seed for reproducible evaluation
+            is_quadruped=is_quadruped,
+            robot=_ROBOT.value,
         )
     
     vec_env.close()
