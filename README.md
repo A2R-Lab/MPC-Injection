@@ -22,6 +22,22 @@ Activate the environment:
 conda activate mpc-rl
 ```
 
+### Installing the mpc_rl Package
+
+Install the `mpc_rl` package in editable mode so that Python can import it from anywhere. This is required for running tests and scripts that import `mpc_rl` modules.
+
+From the project root directory, run:
+
+```bash
+pip install -e .
+```
+
+This installs the package in editable mode, meaning any changes you make to the source code will be immediately available without reinstalling. You can verify the installation worked by running:
+
+```bash
+python -c "import mpc_rl; import mpc_rl.envs; print('mpc_rl successfully installed!')"
+```
+
 ### Installing MuJoCo-MPC
 Note that this project is using Ubuntu 24.04.3 LTS and clang version 18.1.3. It should be possible to install mjpc through the terminal command seen in the mjpc submodule's README. However, it is so much easier to let VSCode compile the project for you. The process is copied over from mjpc's README and shown here for convenience.
 
@@ -317,3 +333,12 @@ See this [issue discussion](https://github.com/jax-ml/jax/issues/28980) for more
 
 ### Model Not Loading
 Ensure you're using the exact run name (with timestamp) when loading checkpoints. Check the `logs/` directory for available runs.
+
+### ModuleNotFoundError: No module named 'mpc_rl'
+If you encounter this error when running tests or scripts, it means the `mpc_rl` package is not installed. Make sure you've run:
+
+```bash
+pip install -e .
+```
+
+from the project root directory. This installs the package in editable mode and makes it importable from anywhere in your conda environment.

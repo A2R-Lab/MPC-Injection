@@ -9,7 +9,7 @@ the deployed actor policy is identical to the trained one, with zero
 observation gap.
 """
 
-from mpc_rl.policies.asymmetric_policy import (
+from mpc_rl.asym_policies.asymmetric_policy import (
     AsymmetricSACPolicy,
     AsymmetricTD3Policy,
     CriticFeaturesExtractor,

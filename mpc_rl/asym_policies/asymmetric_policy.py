@@ -17,7 +17,7 @@ This asymmetric design:
 
 Usage with SB3:
     from stable_baselines3 import SAC, TD3
-    from mpc_rl.policies.asymmetric_policy import AsymmetricSACPolicy, AsymmetricTD3Policy
+    from mpc_rl.asym_policies.asymmetric_policy import AsymmetricSACPolicy, AsymmetricTD3Policy
 
     model = SAC(AsymmetricSACPolicy, env, verbose=1)
     model = TD3(AsymmetricTD3Policy, env, verbose=1)

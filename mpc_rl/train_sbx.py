@@ -87,7 +87,7 @@ import shadow_hand_gym
 import mpc_rl.envs
 
 # Asymmetric actor-critic policies for quadruped sim2real training
-from mpc_rl.policies import AsymmetricSACPolicy, AsymmetricTD3Policy
+from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
 
 # Environment flags
 _ENV_NAME = flags.DEFINE_string(
