@@ -24,10 +24,10 @@ cd /home/roy/MPC-RL
 
 ### 1. Train Your Agent
 
-First, train your agent as usual with `train_sbx.py`:
+First, train your agent as usual with `train.py`:
 
 ```bash
-python mpc_rl/train_sbx.py \
+python mpc_rl/train.py \
   --env_name=walker-walk \
   --algorithm=SAC-MPC \
   --total_timesteps=500000 \

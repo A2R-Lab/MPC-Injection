@@ -194,7 +194,7 @@ class SAC_MPC(OffPolicyAlgorithmJax):
         
         We exclude the MPC injection callback and target percentage because:
         1. Callbacks contain unpicklable objects (file handles, environments)
-        2. These are runtime-only attributes set by train_sbx.py
+        2. These are runtime-only attributes set by train.py
         3. They need to be reconnected when loading the model
         """
         excluded = super()._excluded_save_params()

@@ -631,6 +631,10 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     # Determine environment type
     is_shadow_hand = (domain == "shadow_hand")
     
+    # For quadruped evaluation, use fixed x-velocity commands for the recorded videos
+    # to systematically test the policy at different speeds
+    quadruped_eval_velocities = [0.0, 0.5, 1.0]  # vx for each video
+    
     for episode in range(num_episodes):
         # Create evaluation environment with rgb_array render mode for video recording
         if is_quadruped:
@@ -659,6 +663,22 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
             eval_env.norm_reward = False
         
         obs = eval_env.reset()
+        
+        # For quadruped video episodes, set fixed velocity commands
+        # so each video tests a specific speed (0, 0.5, 1.0 m/s)
+        if is_quadruped and episode < len(quadruped_eval_velocities):
+            vx = quadruped_eval_velocities[episode]
+            # Unwrap through TimeLimit to reach QuadrupedVelocityTrackingEnv
+            eval_env_base.unwrapped.set_commands(vx=vx, vy=0.0, wz=0.0)
+            # Re-fetch obs so the command is reflected in the observation
+            obs = eval_env.env_method("_get_obs")
+            # _get_obs returns a dict per env; repack for VecEnv format
+            obs = {k: np.array([obs[0][k]]) for k in obs[0]}
+            # If VecNormalize is active, normalize the new observation
+            if normalize_env is not None:
+                obs = eval_env.normalize_obs(obs)
+            print(f"  Quadruped eval episode {episode}: fixed vx={vx:.1f} m/s")
+        
         done = False
         episode_reward = 0
         episode_length = 0
@@ -697,7 +717,12 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         # Save video
         if record_video and frames:
-            video_path = video_dir / f"rollout{episode}.mp4"
+            # Include velocity in filename for quadruped
+            if is_quadruped and episode < len(quadruped_eval_velocities):
+                vx = quadruped_eval_velocities[episode]
+                video_path = video_dir / f"rollout{episode}_vx{vx:.1f}.mp4"
+            else:
+                video_path = video_dir / f"rollout{episode}.mp4"
             # Use 50 FPS for quadruped (matches control frequency), 30 FPS for others
             fps = 50 if is_quadruped else 30
             media.write_video(str(video_path), frames, fps=fps)

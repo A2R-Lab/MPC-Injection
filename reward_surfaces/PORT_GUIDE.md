@@ -28,7 +28,7 @@
 ### What Was NOT Ported (and why)
 
 ❌ **Old SB3 trainer infrastructure** (~2000 lines)
-   - `experiment_manager.py` - You use train_sbx.py instead
+   - `experiment_manager.py` - You use train.py instead
    - `make_agent.py` - You have your own agent creation
    - Rainbow/Atari support - Not relevant
 
@@ -44,7 +44,7 @@
 ```
 MPC-RL/
 ├── mpc_rl/
-│   └── train_sbx.py              # Your training script (unchanged)
+│   └── train.py              # Your training script (unchanged)
 ├── logs/                          # Your training outputs (unchanged)
 └── reward_surfaces/               # NEW - Minimal reward surface package
     ├── README.md

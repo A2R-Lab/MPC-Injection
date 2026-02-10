@@ -65,11 +65,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         scene: str = "flat",
         render_mode: str | None = None,
         # Simulation parameters
+        # Physics at 200 Hz (sim_dt=0.005), control at 50 Hz (decimation=4)
+        # to match the real Go2 robot's 50 Hz control loop.
+        # Reference: Genesis Go2 env uses dt=0.02 control with substeps=2 (100 Hz physics).
         sim_dt: float = 0.005,
         decimation: int = 4,
         # PD controller gains
         kp: float = 40.0,
-        kd: float = 1.0,
+        kd: float = 0.5,
         action_scale: float = 0.25,
         # Command ranges
         lin_vel_x_range: tuple[float, float] = (-1.0, 1.0),
@@ -90,9 +93,11 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             robot: Robot model name (go2, go1, mini_cheetah, aliengo, etc.).
             scene: Terrain type (flat, perlin, random_boxes, etc.).
             render_mode: Gymnasium render mode ("human", "rgb_array", or None).
-            sim_dt: MuJoCo simulation timestep in seconds.
-            decimation: Number of simulation steps per control step.
-                control_dt = sim_dt * decimation.
+            sim_dt: MuJoCo physics timestep in seconds. Default 0.005 (200 Hz)
+                for stable contact dynamics.
+            decimation: Number of physics steps per control step.
+                control_dt = sim_dt * decimation = 0.005 * 4 = 0.02s (50 Hz),
+                matching the real Go2 robot's control frequency.
             kp: Proportional gain for PD controller.
             kd: Derivative gain for PD controller.
             action_scale: Scaling factor for action residuals (radians).
@@ -204,6 +209,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
         self._step_count = 0
         self._steps_since_command_resample = 0
+        self._fixed_commands = False  # When True, step() will NOT auto-resample commands
 
         # ── Rendering ───────────────────────────────────────────────────
         self.viewer = None
@@ -257,8 +263,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._step_count += 1
         self._steps_since_command_resample += 1
 
-        # Resample commands periodically
-        if self._steps_since_command_resample >= self.command_resample_interval:
+        # Resample commands periodically (only during training, not when commands are set externally)
+        if not self._fixed_commands and self._steps_since_command_resample >= self.command_resample_interval:
             self._sample_commands()
 
         # Compute observation, reward, termination
@@ -336,8 +342,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._step_count = 0
         self._steps_since_command_resample = 0
 
-        # Sample new velocity commands
-        self._sample_commands()
+        # Sample new velocity commands (only if not using externally fixed commands)
+        if not self._fixed_commands:
+            self._sample_commands()
 
         obs = self._get_obs()
         info = self._get_info()
@@ -386,6 +393,30 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+
+    # ═════════════════════════════════════════════════════════════════════
+    # Public API for external command control
+    # ═════════════════════════════════════════════════════════════════════
+
+    def set_commands(self, vx: float, vy: float = 0.0, wz: float = 0.0):
+        """Set velocity commands externally (disables automatic resampling).
+
+        Use this during evaluation or teleoperation to override the
+        automatic command resampling that occurs during training.
+
+        Args:
+            vx: Commanded linear velocity in x (m/s).
+            vy: Commanded linear velocity in y (m/s).
+            wz: Commanded angular velocity around z (rad/s).
+        """
+        self._commands[0] = np.float64(vx)
+        self._commands[1] = np.float64(vy)
+        self._commands[2] = np.float64(wz)
+        self._fixed_commands = True
+
+    def release_commands(self):
+        """Re-enable automatic command resampling (for training)."""
+        self._fixed_commands = False
 
     # ═════════════════════════════════════════════════════════════════════
     # Internal methods

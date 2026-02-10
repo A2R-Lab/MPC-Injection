@@ -31,7 +31,7 @@ LOG_DIR="logs/TD3-MPC-walker-stand_only_reward/5th_run/"
 
 CHECKPOINT_FREQ=25000
 
-SEED=150 # 1 is default for train_sbx.py
+SEED=150 # 1 is default for train.py
 
 echo "Starting ${ALGORITHM} percentage sweep experiments"
 echo "=============================================="
@@ -54,7 +54,7 @@ for percentage in {0..100..25}; do
     
     # Note: inject_n_timesteps is not used for percentage-based injection
     # Injection is triggered automatically by SAC_MPC.train() when MPC% drops below target
-    python mpc_rl/train_sbx.py \
+    python mpc_rl/train.py \
         --env_name="${ENV_NAME}" \
         --algorithm="${ALGORITHM}" \
         --total_timesteps="${TOTAL_TIMESTEPS}" \

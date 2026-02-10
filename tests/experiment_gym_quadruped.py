@@ -36,7 +36,7 @@ def test_gym_quadruped_velocity_tracking():
     obs = env.reset()
     env.render()
     for _ in range(10000):
-        action = env.action_space.sample() * 10 # sample random action
+        action = env.action_space.sample() * 0 # sample random action
         state, reward, is_terminated, is_truncated, info = env.step(action=action)
 
         if is_terminated:

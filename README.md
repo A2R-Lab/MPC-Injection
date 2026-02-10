@@ -1,7 +1,7 @@
 # MPC-RL Experimental Workspace
 This repo is a test space for research ideas in combining MPC and RL methods to leverage both their strengths for robot control.
 
-The initial setup uses dm_control environments with SBX (Stable Baselines Jax) for training RL policies. The main training script (`train_sbx.py`) provides a flexible command-line interface for training, evaluation, and checkpoint management.
+The initial setup uses dm_control environments with SBX (Stable Baselines Jax) for training RL policies. The main training script (`train.py`) provides a flexible command-line interface for training, evaluation, and checkpoint management.
 
 ## Prerequisites
 - Conda (recommended) or Python virtual environment
@@ -105,7 +105,7 @@ python ...
 Train an SAC agent on a dm_control environment:
 
 ```bash
-python mpc_rl/train_sbx.py --env_name=cartpole-swingup
+python mpc_rl/train.py --env_name=cartpole-swingup
 ```
 
 Note that we keep the `--env_name` flag to be split up into `domain-task` or `domain_task`. You can quickly list the available environments with this command:
@@ -116,7 +116,7 @@ python -c "from dm_control import suite; print('\n'.join([f'{domain}/{task}' for
 **Common Training Options:**
 ```bash
 # Train with custom hyperparameters
-python mpc_rl/train_sbx.py \
+python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --algorithm=SAC \
     --total_timesteps=200000 \
@@ -125,10 +125,10 @@ python mpc_rl/train_sbx.py \
     --batch_size=512
 
 # Train with a different algorithm (PPO or TD3)
-python mpc_rl/train_sbx.py --env_name=acrobot-swingup --algorithm=TD3
+python mpc_rl/train.py --env_name=acrobot-swingup --algorithm=TD3
 
 # Train with SAC-MPC
-python mpc_rl/train_sbx.py \
+python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --algorithm=SAC-MPC \
     --total_timesteps=500000 \
@@ -138,7 +138,7 @@ python mpc_rl/train_sbx.py \
     --data_dir=data/cartpole_0_001dt/
 
 # Add a custom suffix to the experiment name
-python mpc_rl/train_sbx.py --env_name=cartpole-swingup --suffix=experiment1
+python mpc_rl/train.py --env_name=cartpole-swingup --suffix=experiment1
 ```
 
 ### Evaluating a Trained Agent
@@ -146,7 +146,7 @@ python mpc_rl/train_sbx.py --env_name=cartpole-swingup --suffix=experiment1
 Evaluate a trained model and generate videos:
 
 ```bash
-python mpc_rl/train_sbx.py \
+python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --play_only \
     --load_run_name=cartpole-swingup-20251006-143022
@@ -161,7 +161,7 @@ This will:
 **Evaluation Options:**
 ```bash
 # Evaluate with more episodes and videos
-python mpc_rl/train_sbx.py \
+python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --play_only \
     --load_run_name=cartpole-swingup-20251006-143022 \
@@ -174,7 +174,7 @@ python mpc_rl/train_sbx.py \
 Resume training from a previously saved checkpoint:
 
 ```bash
-python mpc_rl/train_sbx.py \
+python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --load_run_name=cartpole-swingup-20251006-143022 \
     --total_timesteps=200000
@@ -246,7 +246,7 @@ MPC-RL/
 │   └── mujoco_mpc/                 # MuJoCo MPC library
 ├── environment.yml
 ├── LICENSE
-├── logs/                            # Saved policies made by mpc_rl/train_sbx.py
+├── logs/                            # Saved policies made by mpc_rl/train.py
 │   ├── archive/
 │   ├── cartpole-swingup-SAC-*/
 │   ├── SAC-MPC-cartpole-runs/
@@ -261,7 +261,7 @@ MPC-RL/
 │   ├── sac_mpc/
 │   ├── tasks/
 │   ├── td3_mpc/
-│   └── train_sbx.py
+│   └── train.py
 ├── plot_over_training_reward_surfaces.sh  # Plots reward surfaces for various policy checkpoints
 ├── plots/                           # Plots made by reward_surfaces/ body_trajs/ scripts
 ├── plot_single_reward_surface.sh   # Plots single reward surface for a policy
