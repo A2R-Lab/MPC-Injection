@@ -157,6 +157,13 @@ _LEARNING_STARTS = flags.DEFINE_integer(
 _BATCH_SIZE = flags.DEFINE_integer("batch_size", 256, "Minibatch size")
 _TAU = flags.DEFINE_float("tau", 0.005, "Soft update coefficient")
 _GAMMA = flags.DEFINE_float("gamma", 0.99, "Discount factor")
+_GRADIENT_STEPS = flags.DEFINE_integer(
+    "gradient_steps", -1,
+    "Number of gradient steps per environment step. "
+    "-1 means as many gradient steps as env steps collected per rollout "
+    "(=num_envs). Higher values improve sample efficiency for off-policy "
+    "algorithms (SAC/TD3). Default 1 is too conservative for multi-env training."
+)
 
 # MPC injection flags
 _INJECT_N_TIMESTEPS = flags.DEFINE_integer(
@@ -196,6 +203,7 @@ class AllConfig:
     batch_size: int
     tau: float
     gamma: float
+    gradient_steps: int
     seed: int
     tensorboard_log: str
     inject_n_timesteps: int
@@ -383,6 +391,7 @@ def create_model(env, cfg, is_quadruped: bool = False):
                 batch_size=cfg.batch_size,
                 tau=cfg.tau,
                 gamma=cfg.gamma,
+                gradient_steps=cfg.gradient_steps,
                 verbose=1,
                 seed=cfg.seed,
                 tensorboard_log=cfg.tensorboard_log,
@@ -397,6 +406,7 @@ def create_model(env, cfg, is_quadruped: bool = False):
                 batch_size=cfg.batch_size,
                 tau=cfg.tau,
                 gamma=cfg.gamma,
+                gradient_steps=cfg.gradient_steps,
                 verbose=1,
                 seed=cfg.seed,
                 tensorboard_log=cfg.tensorboard_log,
@@ -665,7 +675,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         obs = eval_env.reset()
         
         # For quadruped video episodes, set fixed velocity commands
-        # so each video tests a specific speed (0, 0.5, 1.0 m/s)
+        # so each video tests a specific speed
         if is_quadruped and episode < len(quadruped_eval_velocities):
             vx = quadruped_eval_velocities[episode]
             # Unwrap through TimeLimit to reach QuadrupedVelocityTrackingEnv
@@ -832,6 +842,7 @@ def main(argv):
         batch_size=_BATCH_SIZE.value,
         tau=_TAU.value,
         gamma=_GAMMA.value,
+        gradient_steps=_GRADIENT_STEPS.value,
         seed=_SEED.value,
         tensorboard_log=tensorboard_log_path,
         inject_n_timesteps=_INJECT_N_TIMESTEPS.value,
