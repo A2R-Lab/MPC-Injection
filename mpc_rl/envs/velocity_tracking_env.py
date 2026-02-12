@@ -85,7 +85,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         max_roll: float = 0.6,
         min_base_height: float = 0.1,
         # Episode settings
-        command_resample_interval: int = 500,
+        command_resample_interval: int = 250, # og 500
     ):
         """Initialize the velocity tracking environment.
 
@@ -863,8 +863,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # Alive bonus (constant per-step reward for not falling)
             "w_alive": 0.5,
             # Locomotion shaping
-            "w_feet_air_time": 0.25,
-            "feet_air_time_threshold": 0.4,  # seconds; target step duration
+            "w_feet_air_time": 0.25, # 0.25
+            "feet_air_time_threshold": 0.6,  # seconds; target step duration # 0.4
             # Penalties (negative weights)
             "w_lin_vel_z": -2.0,
             "w_ang_vel_xy": -0.05,
@@ -874,5 +874,5 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "w_joint_acc": -2.5e-7,
             # Reward clipping: False for SAC (negative rewards = useful signal),
             # True for PPO (prevents termination spirals).
-            "only_positive_rewards": True,
+            "only_positive_rewards": False,
         }

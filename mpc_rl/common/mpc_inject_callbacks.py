@@ -716,6 +716,9 @@ class PercentMPCInjectCallback(BaseCallback):
                 
                 # Step environment to get real reward
                 # Gymnasium API returns 5 values: (obs, reward, terminated, truncated, info)
+                # NOTE: You could use the state vectors from the MPC trajetory, but with this
+                # gymnasium setup you already get the obs from the environment anyway because
+                # you have to get the reward.
                 next_obs, reward, terminated, truncated, info = temp_env.step(action)
                 done = terminated or truncated
                 
