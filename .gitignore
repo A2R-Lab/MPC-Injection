@@ -223,5 +223,5 @@ MUJOCO_LOG.TXT
 *.npz
 *.zip
 
-# Ignore bash script for running multiple experiments
-# run_experiments.sh
+# Ignore jax cache
+jax_cache/

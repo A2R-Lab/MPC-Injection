@@ -7,6 +7,7 @@ to track user-commanded velocities using only real-hardware-available sensors.
 import gymnasium as gym
 
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 
 gym.register(
     id="QuadrupedVelocityTracking-v0",

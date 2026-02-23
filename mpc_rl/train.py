@@ -85,6 +85,7 @@ import shadow_hand_gym
 
 # Register custom quadruped velocity tracking environment
 import mpc_rl.envs
+from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -193,6 +194,18 @@ _EVAL_FREQ = flags.DEFINE_integer(
     "eval_freq", 10_000, "Evaluate policy every N steps"
 )
 
+# Domain randomization flags
+_DOMAIN_RAND = flags.DEFINE_boolean(
+    "domain_rand", True,
+    "Enable domain randomization for quadruped environments. "
+    "Randomizes friction, mass, PD gains, observation noise, and applies "
+    "periodic push perturbations for improved sim-to-real transfer."
+)
+_DOMAIN_RAND_OBS_NOISE = flags.DEFINE_float(
+    "domain_rand_obs_noise", 1.0,
+    "Observation noise level for domain randomization (0.0 = no noise, 1.0 = full)."
+)
+
 
 @dataclass
 class AllConfig:
@@ -297,7 +310,7 @@ def is_quadruped_env(env_name: str) -> bool:
     return env_name.lower().startswith("quadruped-")
 
 
-def make_quadruped_env(robot: str = "go2", render_mode=None):
+def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None):
     """
     Create a quadruped velocity tracking gymnasium environment.
     
@@ -311,15 +324,21 @@ def make_quadruped_env(robot: str = "go2", render_mode=None):
     Args:
         robot: Robot model name (go2, go1, mini_cheetah, aliengo, etc.)
         render_mode: Render mode for the environment
+        domain_rand_cfg: Domain randomization config. None uses defaults.
     
     Returns:
         QuadrupedVelocityTracking gymnasium environment with Dict obs space
     """
-    gym_env = gym.make(
-        "QuadrupedVelocityTracking-v0",
+    kwargs = dict(
         robot=robot,
         render_mode=render_mode,
-        max_episode_steps=_MAX_EPISODE_STEPS.value
+        max_episode_steps=_MAX_EPISODE_STEPS.value,
+    )
+    if domain_rand_cfg is not None:
+        kwargs["domain_rand_cfg"] = domain_rand_cfg
+    gym_env = gym.make(
+        "QuadrupedVelocityTracking-v0",
+        **kwargs,
     )
     return gym_env
 
@@ -541,8 +560,9 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         # Determine environment type from domain
         is_shadow_hand = (domain == "shadow_hand")
         if is_quadruped:
+            _dr_eval = DomainRandomizationConfig.disabled()
             eval_env = make_vec_env(
-                lambda: make_quadruped_env(robot=robot),
+                lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval),
                 n_envs=1,
                 seed=seed+1000,
             )
@@ -648,7 +668,10 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     for episode in range(num_episodes):
         # Create evaluation environment with rgb_array render mode for video recording
         if is_quadruped:
-            eval_env_base = make_quadruped_env(robot=robot, render_mode="rgb_array")
+            eval_env_base = make_quadruped_env(
+                robot=robot, render_mode="rgb_array",
+                domain_rand_cfg=DomainRandomizationConfig.disabled(),
+            )
         elif is_shadow_hand:
             eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
         else:
@@ -865,14 +888,36 @@ def main(argv):
             "total_timesteps": _TOTAL_TIMESTEPS.value,
             "num_envs": _NUM_ENVS.value,
         })
+        # Include domain randomization config for quadruped envs
+        if is_quadruped:
+            config_dict["domain_randomization"] = {
+                "enabled": _DOMAIN_RAND.value,
+                "obs_noise_level": _DOMAIN_RAND_OBS_NOISE.value,
+            }
         save_config(logdir, config_dict)
     
+    # ── Domain randomization setup (quadruped only) ──────────────────────
+    dr_cfg = None
+    if is_quadruped:
+        if _DOMAIN_RAND.value:
+            dr_cfg = DomainRandomizationConfig(
+                enable=True,
+                obs_noise_level=_DOMAIN_RAND_OBS_NOISE.value,
+            )
+            print(f"Domain randomization: ENABLED (obs_noise_level={_DOMAIN_RAND_OBS_NOISE.value})")
+        else:
+            dr_cfg = DomainRandomizationConfig.disabled()
+            print("Domain randomization: DISABLED")
+    # Eval environments never use DR (deterministic evaluation)
+    dr_cfg_eval = DomainRandomizationConfig.disabled() if is_quadruped else None
+
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
     if is_quadruped:
         robot_name = _ROBOT.value
+        _dr = dr_cfg  # capture for lambda closure
         vec_env = make_vec_env(
-            lambda: make_quadruped_env(robot=robot_name),
+            lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )

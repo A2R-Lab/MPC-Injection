@@ -46,6 +46,8 @@ from scipy.spatial.transform import Rotation
 from gym_quadruped.robot_cfgs import RobotConfig, get_robot_config
 from gym_quadruped.utils.mujoco.terrain import generate_terrain
 
+from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+
 log = logging.getLogger(__name__)
 
 
@@ -86,6 +88,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         min_base_height: float = 0.1,
         # Episode settings
         command_resample_interval: int = 250, # og 500
+        # Domain randomization
+        domain_rand_cfg: DomainRandomizationConfig | None = None,
     ):
         """Initialize the velocity tracking environment.
 
@@ -136,6 +140,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self.max_roll = max_roll
         self.min_base_height = min_base_height
 
+        # Domain randomization configuration
+        self.domain_rand_cfg = domain_rand_cfg or DomainRandomizationConfig()
+
         # Reward configuration
         self.reward_cfg = self._default_reward_cfg()
         if reward_cfg is not None:
@@ -183,7 +190,35 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._foot_geom_id_set = set(self._foot_geom_ids.values())
         self._num_feet = len(self._foot_geom_ids)
 
-        # ── Define observation space (Dict: asymmetric actor-critic) ─────
+        # --- Store nominal model values for domain randomization --------
+        # These are the "ground truth" XML values that randomization scales/offsets.
+        # Stored once at init so reset() can always start from the nominal model.
+        self._nominal_friction = self.mjModel.geom_friction.copy()
+        self._nominal_body_mass = self.mjModel.body_mass.copy()
+        self._nominal_body_ipos = self.mjModel.body_ipos.copy()
+        self._nominal_dof_damping = self.mjModel.dof_damping.copy()
+        self._nominal_dof_armature = self.mjModel.dof_armature.copy()
+        self._nominal_dof_frictionloss = self.mjModel.dof_frictionloss.copy()
+        # Store base body ID for mass/CoM randomization
+        # Go2 XML uses "base" as the root body; fall back to body ID 1 (first
+        # non-world body) if lookup fails.
+        _base_id = mujoco.mj_name2id(
+            self.mjModel, mujoco.mjtObj.mjOBJ_BODY, "base"
+        )
+        self._base_body_id = _base_id if _base_id >= 0 else 1
+        # Nominal PD gains (will be randomized per-episode)
+        self._nominal_kp = float(self.kp)
+        self._nominal_kd = float(self.kd)
+        # Nominal torque limits (for motor strength randomization)
+        self._nominal_torque_limits = self.torque_limits.copy()
+        # Current motor strength scale (updated at reset)
+        self._motor_strength_scale = 1.0
+
+        # Perturbation tracking
+        self._push_interval_steps = 0  # set in reset
+        self._steps_since_last_push = 0
+
+        # --- Define observation space (Dict: asymmetric actor-critic) -----
         # "policy" (actor): real-hardware-available sensors
         #   base_ang_vel (body frame):    3
         #   projected_gravity:            3
@@ -294,6 +329,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._step_count += 1
         self._steps_since_command_resample += 1
 
+        # Apply random perturbation (push) periodically
+        self._maybe_push_robot()
+
         # Update feet air time tracking and compute air time reward
         self._update_feet_air_time()
 
@@ -385,6 +423,16 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._joint_acc = np.zeros(self.num_joints, dtype=np.float64)
         self._step_count = 0
         self._steps_since_command_resample = 0
+
+        # Apply domain randomization to physics parameters
+        self._apply_domain_randomization()
+
+        # Reset perturbation tracking
+        if self.domain_rand_cfg.enable and self.domain_rand_cfg.push_robots:
+            self._push_interval_steps = max(
+                1, int(self.domain_rand_cfg.push_interval_s / self.control_dt)
+            )
+        self._steps_since_last_push = 0
 
         # Sample new velocity commands (only if not using externally fixed commands)
         if not self._fixed_commands:
@@ -540,6 +588,35 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Previous actions
         prev_actions = self._last_action.copy()
 
+        # ── Apply observation noise for sim-to-real robustness ──────────
+        # Additive uniform noise on sensor readings, following MuJoCo Playground
+        # and Legged Gym conventions. Noise is only applied to the policy
+        # observations (what the real robot would see), NOT privileged observations.
+        dr = self.domain_rand_cfg
+        if dr.enable and dr.obs_noise_level > 0.0:
+            noise_level = dr.obs_noise_level
+            scales = dr.obs_noise_scales
+
+            # IMU gyroscope noise
+            base_ang_vel += self.np_random.uniform(
+                -1, 1, size=base_ang_vel.shape
+            ) * noise_level * scales.get("ang_vel", 0.0)
+
+            # IMU orientation (gravity projection) noise
+            projected_gravity += self.np_random.uniform(
+                -1, 1, size=projected_gravity.shape
+            ) * noise_level * scales.get("gravity", 0.0)
+
+            # Joint encoder position noise
+            joint_pos_rel += self.np_random.uniform(
+                -1, 1, size=joint_pos_rel.shape
+            ) * noise_level * scales.get("joint_pos", 0.0)
+
+            # Joint encoder velocity noise
+            joint_vel += self.np_random.uniform(
+                -1, 1, size=joint_vel.shape
+            ) * noise_level * scales.get("joint_vel", 0.0)
+
         # Policy observations (real-hardware available)
         policy_obs = np.concatenate([
             base_ang_vel,       # 3
@@ -551,6 +628,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         ]).astype(np.float64)
 
         # Privileged observations (simulation only - for critic during training)
+        # NOTE: No noise on privileged obs — the critic should see ground truth.
         base_lin_vel_body = self._base_lin_vel_body()
         privileged_obs = base_lin_vel_body.astype(np.float64)
 
@@ -816,6 +894,104 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             self._commands[:2] = 0.0
 
         self._steps_since_command_resample = 0
+
+    # ═════════════════════════════════════════════════════════════════════
+    # Domain Randomization
+    # ═════════════════════════════════════════════════════════════════════
+
+    def _apply_domain_randomization(self):
+        """Randomize physics parameters at the start of each episode.
+
+        Modifies mjModel fields in-place, starting from the stored nominal
+        (XML) values to prevent drift across episodes. This is the standard
+        approach used by Legged Gym, Isaac Lab, and mjlab.
+
+        Randomized parameters:
+            - Friction coefficients (tangential/torsional/rolling)
+            - Base body mass (added mass simulating payload)
+            - Base center-of-mass position (simulating payload offset)
+            - Joint damping, armature, frictionloss
+            - PD controller gains (Kp, Kd)
+            - Motor torque limits (motor strength)
+        """
+        dr = self.domain_rand_cfg
+        if not dr.enable:
+            return
+
+        rng = self.np_random
+
+        # ── Friction randomization ──────────────────────────────────────
+        # Scale tangential friction (column 0 of geom_friction) for all geoms.
+        # Torsional (col 1) and rolling (col 2) friction are also scaled by
+        # the same factor to maintain consistent contact behavior.
+        friction_scale = rng.uniform(*dr.friction_range)
+        self.mjModel.geom_friction[:] = self._nominal_friction * friction_scale
+
+        # ── Base mass randomization (payload variation) ─────────────────
+        added_mass = rng.uniform(*dr.added_mass_range)
+        self.mjModel.body_mass[:] = self._nominal_body_mass.copy()
+        self.mjModel.body_mass[self._base_body_id] += added_mass
+
+        # ── Center-of-mass displacement ─────────────────────────────────
+        com_disp = rng.uniform(
+            dr.com_displacement_range[0],
+            dr.com_displacement_range[1],
+            size=3,
+        )
+        self.mjModel.body_ipos[:] = self._nominal_body_ipos.copy()
+        self.mjModel.body_ipos[self._base_body_id] += com_disp
+
+        # ── Joint damping randomization ─────────────────────────────────
+        damping_scale = rng.uniform(*dr.joint_damping_scale_range)
+        self.mjModel.dof_damping[:] = self._nominal_dof_damping * damping_scale
+
+        # ── Joint armature (rotor inertia) randomization ────────────────
+        armature_scale = rng.uniform(*dr.joint_armature_scale_range)
+        self.mjModel.dof_armature[:] = self._nominal_dof_armature * armature_scale
+
+        # ── Joint Coulomb friction randomization ────────────────────────
+        # Unlike damping (viscous), frictionloss is set to absolute values
+        # since the nominal value is often zero.
+        joint_friction = rng.uniform(
+            *dr.joint_friction_range,
+            size=self.mjModel.dof_frictionloss.shape,
+        )
+        self.mjModel.dof_frictionloss[:] = joint_friction
+
+        # ── PD gain randomization ───────────────────────────────────────
+        kp_scale = rng.uniform(*dr.kp_scale_range)
+        kd_scale = rng.uniform(*dr.kd_scale_range)
+        self.kp = np.float64(self._nominal_kp * kp_scale)
+        self.kd = np.float64(self._nominal_kd * kd_scale)
+
+        # ── Motor strength (torque limit) randomization ─────────────────
+        self._motor_strength_scale = rng.uniform(*dr.motor_strength_range)
+        self.torque_limits = self._nominal_torque_limits * self._motor_strength_scale
+
+    def _maybe_push_robot(self):
+        """Apply a random velocity perturbation to the base at intervals.
+
+        Simulates unexpected external pushes (bumps, wind, collisions) that
+        the policy must recover from. Following IsaacGymEnvs' push_robots()
+        and mjlab's push_by_setting_velocity(), this directly sets the base
+        velocity to a random value.
+        """
+        dr = self.domain_rand_cfg
+        if not dr.enable or not dr.push_robots:
+            return
+
+        self._steps_since_last_push += 1
+        if self._steps_since_last_push < self._push_interval_steps:
+            return
+
+        self._steps_since_last_push = 0
+
+        # Apply random linear velocity kick in xy plane
+        self.mjData.qvel[0] += self.np_random.uniform(*dr.push_vel_xy_range)
+        self.mjData.qvel[1] += self.np_random.uniform(*dr.push_vel_xy_range)
+
+        # Apply random angular velocity kick around z
+        self.mjData.qvel[5] += self.np_random.uniform(*dr.push_ang_vel_range)
 
     def _get_info(self) -> dict:
         """Return info dictionary with useful debugging information."""

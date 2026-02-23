@@ -184,6 +184,7 @@ class VelocityCommander:
 
 def make_quadruped_env(robot: str = "go2", render_mode: str | None = None):
     """Create a quadruped velocity tracking gymnasium environment."""
+    # NOTE: domain_rand_cfg defaults to None, which means no randomization (equivalent to DomainRandomizationConfig.disabled())
     return gym.make(
         "QuadrupedVelocityTracking-v0",
         robot=robot,
