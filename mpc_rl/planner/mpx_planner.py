@@ -28,7 +28,7 @@ class MPXPlanner():
     Default configuration for this planner is for the Unitree Go2 quadruped.
     """
 
-    def _init_(self,
+    def __init__(self,
                episode_length: int = 1000 # Default same as the gymnasium environment QuadrupedVelocityTrackingEnv
         ) -> None:
         """
@@ -96,9 +96,44 @@ class MPXPlanner():
             qvel = self.env.mjData.qvel.copy()
 
             if (self.counter % (self.sim_frequency / self.mpc_frequency) == 0 or self.counter == 0):
+                ref_base_lin_vel = self.env._ref_base_lin_vel_H
+                ref_base_ang_vel = np.array([0., 0., self.env._ref_base_ang_yaw_dot])
+
+                # TODO: Figure out how to have automatic random commands here like in QuadrupedVelocityTrackingEnv
+                input = np.array([ref_base_lin_vel[0], ref_base_lin_vel[1], ref_base_lin_vel[2],
+                                  ref_base_ang_vel[0], ref_base_ang_vel[1], ref_base_ang_vel[2],
+                                  config.robot_height])
+                
+                contact_temp, _ = self.env.feet_contact_state()
+                contact = np.array([contact_temp[self.robot_feet_geom_names[leg]] for leg in ['FL', 'FR', 'RL', 'RR']])
+
+                if self.counter != 0:
+                    for i in range(self.delay):
+                        # TODO: Do we really need to read the state again during the delay? Or can we just use the state from before the delay?
+                        qpos = self.env.mjData.qpos.copy()
+                        qvel = self.env.mjData.qvel.copy()
+
+                        # PD feedback torque term
+                        tau_fb = 10 * (self.q - qpos[7:7 + config.n_joints]) - 2 * (qvel[6:6 + config.n_joints])
+                        state, reward, is_terminated, is_truncated, info = self.env.step(action=self.tau + tau_fb)
+                        self.counter += 1
+
+                start = timer()
+                self.tau, self.q, self.dq = self.mpc.run(qpos, qvel, input, contact)
+                stop = timer()
+                # print("Time taken for MPC: ", stop - start)
+
+            tau_fb = 10 * (self.q - qpos[7:7 + config.n_joints]) - 2 * (qvel[6:6 + config.n_joints])
+            state, reward, is_terminated, is_truncated, info = self.env.step(action=self.tau + tau_fb)
+
+            self.counter += 1
+            self.env.render()
 
 
 
 if __name__ == "__main__":
     # Example usage of the MPXPlanner
     print("Running...")
+    planner = MPXPlanner(episode_length=1000)
+    planner.plan_and_sim()
+    print("Done!")
