@@ -75,9 +75,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # PD controller gains
         kp: float = 40.0,
         kd: float = 0.5,
-        action_scale: float = 0.25,
+        action_scale: float = 0.5, # NOTE: mjlab uses 0.5 scaling for larger joint excursions
         # Command ranges
-        lin_vel_x_range: tuple[float, float] = (-1.0, 1.0),
+        lin_vel_x_range: tuple[float, float] = (-0.5, 1.0), # NOTE mjlab biases forward
         lin_vel_y_range: tuple[float, float] = (-0.5, 0.5),
         ang_vel_z_range: tuple[float, float] = (-1.0, 1.0),
         # Reward weights
@@ -263,11 +263,11 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._steps_since_command_resample = 0
         self._fixed_commands = False  # When True, step() will NOT auto-resample commands
 
-        # -- Feet air time tracking (for locomotion reward) --
-        # Tracks how long each foot has been in the air. On first ground
-        # contact, the air time is used to compute a reward that encourages
-        # stepping of appropriate duration (Legged Gym approach).
+        # -- Feet air/contact time tracking (for locomotion rewards) --
+        # Continuous timers per foot: air_time increments while in air,
+        # contact_time increments while on ground; the other resets to 0.
         self._feet_air_time = np.zeros(self._num_feet, dtype=np.float64)
+        self._feet_contact_time = np.zeros(self._num_feet, dtype=np.float64)
         self._last_foot_contacts = np.zeros(self._num_feet, dtype=bool)
 
         # -- Swing peak tracking (for feet height reward) --
@@ -276,6 +276,12 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._swing_peak = np.zeros(self._num_feet, dtype=np.float64)
         self._first_contact = np.zeros(self._num_feet, dtype=bool)
         self._current_contacts = np.zeros(self._num_feet, dtype=bool)
+
+        # -- Joint acceleration tracking (for smooth motion penalty) --
+        # Penalizing acceleration (d²q/dt²) instead of velocity encourages
+        # smooth motion without discouraging joint movement itself.
+        self._last_joint_vel = np.zeros(self.num_joints, dtype=np.float64)
+        self._joint_acc = np.zeros(self.num_joints, dtype=np.float64)
 
         # -- Foot geom IDs as ordered list (for vectorized position/velocity) --
         self._foot_geom_id_list = list(self._foot_geom_ids.values())
@@ -288,6 +294,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         jnt_range = self.mjModel.jnt_range[1:]  # skip freejoint
         self._soft_joint_lower = jnt_range[:, 0] * soft_factor
         self._soft_joint_upper = jnt_range[:, 1] * soft_factor
+
+        # -- Per-joint posture standard deviations (for variable_posture reward) --
+        # Speed-dependent tolerance: tighter for standing, looser for walking/running.
+        # Ported from unitree_rl_mjlab Go2 config.
+        self._setup_posture_stds()
+
+        # -- Reward component tracking (for logging) --
+        self._reward_components: dict[str, float] = {}
 
         # ── Rendering ───────────────────────────────────────────────────
         self.viewer = None
@@ -346,6 +360,11 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Update feet air time tracking (also updates swing peak & first_contact)
         self._update_feet_air_time()
+
+        # Compute joint acceleration for smooth-motion penalty
+        joint_vel_current = self.mjData.qvel[6:].copy()
+        self._joint_acc = (joint_vel_current - self._last_joint_vel) / self.control_dt
+        self._last_joint_vel = joint_vel_current
 
         # Resample commands periodically (only during training, not when commands are set externally)
         if not self._fixed_commands and self._steps_since_command_resample >= self.command_resample_interval:
@@ -430,10 +449,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._prev_last_action = np.zeros(self.num_joints, dtype=np.float64)
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
         self._feet_air_time = np.zeros(self._num_feet, dtype=np.float64)
+        self._feet_contact_time = np.zeros(self._num_feet, dtype=np.float64)
         self._last_foot_contacts = np.zeros(self._num_feet, dtype=bool)
         self._swing_peak = np.zeros(self._num_feet, dtype=np.float64)
         self._first_contact = np.zeros(self._num_feet, dtype=bool)
         self._current_contacts = np.zeros(self._num_feet, dtype=bool)
+        self._reward_components = {}
+        self._last_joint_vel = np.zeros(self.num_joints, dtype=np.float64)
+        self._joint_acc = np.zeros(self.num_joints, dtype=np.float64)
         self._step_count = 0
         self._steps_since_command_resample = 0
 
@@ -526,6 +549,61 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     # ═════════════════════════════════════════════════════════════════════
     # Internal methods
     # ═════════════════════════════════════════════════════════════════════
+
+    def _setup_posture_stds(self):
+        """Set up per-joint standard deviations for the variable posture reward.
+
+        Maps each actuated joint to its type (hip/thigh/calf) and assigns
+        speed-dependent standard deviations that control how strictly each
+        joint must stay near the default pose.
+
+        Smaller std = tighter tolerance (less deviation allowed).
+        Larger std = looser tolerance (more deviation allowed).
+
+        Three speed regimes (based on total command speed):
+            - standing: Tight tolerance for holding default pose
+            - walking: Moderate tolerance for normal locomotion
+            - running: Loose tolerance for large joint excursions
+
+        Values from unitree_rl_mjlab Go2 configuration.
+        """
+        # Per-joint-type standard deviations (Go2 config from mjlab)
+        std_map = {
+            'hip_joint':   {'standing': 0.05, 'walking': 0.15, 'running': 0.15},
+            'thigh_joint': {'standing': 0.1,  'walking': 0.35, 'running': 0.35},
+            'calf_joint':  {'standing': 0.15, 'walking': 0.5,  'running': 0.5},
+        }
+
+        self._posture_std_standing = np.zeros(self.num_joints, dtype=np.float64)
+        self._posture_std_walking = np.zeros(self.num_joints, dtype=np.float64)
+        self._posture_std_running = np.zeros(self.num_joints, dtype=np.float64)
+
+        for i in range(self.num_joints):
+            # Get the joint name for this actuator
+            joint_id = self.mjModel.actuator_trnid[i, 0]
+            joint_name = mujoco.mj_id2name(
+                self.mjModel, mujoco.mjtObj.mjOBJ_JOINT, joint_id
+            )
+
+            # Match joint name to type and assign stds
+            matched = False
+            for pattern, stds in std_map.items():
+                if pattern in joint_name:
+                    self._posture_std_standing[i] = stds['standing']
+                    self._posture_std_walking[i] = stds['walking']
+                    self._posture_std_running[i] = stds['running']
+                    matched = True
+                    break
+
+            if not matched:
+                # Unknown joint type: use moderate default tolerance
+                log.warning(
+                    f"Joint '{joint_name}' (actuator {i}) does not match "
+                    f"any known type (hip/thigh/calf). Using default posture stds."
+                )
+                self._posture_std_standing[i] = 0.1
+                self._posture_std_walking[i] = 0.35
+                self._posture_std_running[i] = 0.5
 
     def _load_model(self, scene: str):
         """Load the MuJoCo model with the specified robot and scene."""
@@ -719,15 +797,17 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         return velocities
 
     def _update_feet_air_time(self):
-        """Update feet air time, swing peak, and contact tracking.
+        """Update per-foot air time and contact time tracking.
 
-        Follows the MuJoCo Playground / Legged Gym approach:
-        1. Detect current foot contacts with ground
-        2. Filter contacts (OR with previous to handle noisy contact)
-        3. Track first contact (foot was in air and just landed)
-        4. Update swing peak (max foot z height during swing)
-        5. Increment air time for all feet
-        6. Reset air time for grounded feet
+        Maintains continuous timers for each foot:
+        - air_time: increments while foot is in the air, resets on contact
+        - contact_time: increments while foot is on the ground, resets on liftoff
+
+        Also detects first_contact events (air→ground transitions) needed
+        for the soft_landing reward, and tracks swing peak height.
+
+        Contact filtering: contacts are OR-ed with previous step contacts
+        to smooth noisy MuJoCo contact reporting.
         """
         # Current foot contacts
         contacts = self._get_foot_contacts()
@@ -738,198 +818,318 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Detect first contact: foot was in the air and just landed
         first_contact = (self._feet_air_time > 0.0) & contact_filt
 
-        # Increment air time for ALL feet by one control step
-        self._feet_air_time += self.control_dt
+        # Update per-foot timers based on filtered contacts
+        for i in range(self._num_feet):
+            if contact_filt[i]:
+                self._feet_contact_time[i] += self.control_dt
+                self._feet_air_time[i] = 0.0
+            else:
+                self._feet_air_time[i] += self.control_dt
+                self._feet_contact_time[i] = 0.0
 
         # Update swing peak: track max foot z during swing phase
         foot_positions = self._get_foot_positions()
         foot_z = foot_positions[:, 2]  # z heights
-        self._swing_peak = np.maximum(self._swing_peak, foot_z)
+        not_in_contact = ~contact_filt
+        self._swing_peak = np.where(
+            not_in_contact, np.maximum(self._swing_peak, foot_z), self._swing_peak
+        )
 
         # Store for use in reward computation and swing_peak reset in step()
         self._first_contact = first_contact.copy()
         self._current_contacts = contacts.copy()
 
-        # Reset air time for feet that are on the ground
-        self._feet_air_time *= ~contact_filt
-
         # Store contacts for next step
         self._last_foot_contacts = contacts.copy()
+
+    def _get_foot_contact_forces(self) -> np.ndarray:
+        """Get contact force magnitudes per foot from MuJoCo contact data.
+
+        Sums forces from all contact pairs involving each foot geom and the
+        ground (world body). Returns the total force magnitude per foot.
+
+        Returns:
+            Force magnitude array of shape (num_feet,).
+        """
+        forces = np.zeros(self._num_feet, dtype=np.float64)
+        foot_id_to_idx = {
+            gid: i for i, gid in enumerate(self._foot_geom_ids.values())
+        }
+        result = np.zeros(6, dtype=np.float64)
+
+        for i in range(self.mjData.ncon):
+            contact = self.mjData.contact[i]
+            geom1, geom2 = contact.geom1, contact.geom2
+            body1 = self.mjModel.geom_bodyid[geom1]
+            body2 = self.mjModel.geom_bodyid[geom2]
+
+            # One geom must be the ground (world body = 0)
+            if body1 == 0 or body2 == 0:
+                other_geom = geom2 if body1 == 0 else geom1
+                if other_geom in self._foot_geom_id_set:
+                    mujoco.mj_contactForce(
+                        self.mjModel, self.mjData, i, result
+                    )
+                    force_magnitude = np.linalg.norm(result[:3])
+                    forces[foot_id_to_idx[other_geom]] += force_magnitude
+
+        return forces
 
     def _compute_reward(self, action: np.ndarray, terminated: bool) -> float:
         """Compute the reward for the current step.
 
-        Hybrid reward design: combines MuJoCo Playground's foot-shaping costs
-        with SAC-specific linear forward rewards and alive bonus.
+        Reward formulation ported from unitree_rl_mjlab velocity tracking task,
+        which is proven to produce stable quadruped locomotion gaits.
 
-        Tracking rewards (exponential kernel, peak at target):
-            - tracking_lin_vel, tracking_ang_vel: Precise matching
-
-        Linear forward rewards (constant gradient, critical for SAC):
-            - lin_vel_forward: Proportional reward for moving toward command
-            - ang_vel_forward: Proportional reward for turning toward command
-            These provide the gradient SAC needs to break out of standing still.
-            PPO with thousands of parallel envs can explore past this with the
-            exponential tracking alone; SAC with few envs cannot.
-
-        Behavioral rewards:
+        Positive rewards (encourage desired behavior):
+            - track_linear_velocity: Exponential tracking of commanded xy vel
+            - track_angular_velocity: Exponential tracking of commanded yaw rate
+            - lin_vel_forward: Linear forward velocity toward command (constant gradient)
+            - ang_vel_forward: Linear angular velocity toward command (constant gradient)
             - alive: Constant per-step survival bonus
-            - pose: Stay near default joint configuration
-            - feet_air_time: Encourage proper step duration
+            - variable_posture: Speed-dependent default pose tracking
+            - feet_air_time: Encourage trotting gait with proper timing
 
-        Costs (Playground-inspired gait shaping):
-            - lin_vel_z, ang_vel_xy, orientation: Base stability
-            - torques, action_rate, energy: Regularization
-            - feet_slip, feet_clearance, feet_height: Foot trajectory quality
-            - stand_still, termination, dof_pos_limits: Safety
+        Penalties (discourage undesired behavior):
+            - flat_orientation_l2: Penalize body tilt
+            - body_ang_vel: Penalize excessive body angular velocity (world xy)
+            - angular_momentum: Penalize whole-body angular momentum
+            - is_terminated: Large penalty for falling
+            - joint_acc_l2: Penalize jerky joint motion
+            - joint_pos_limits: Penalize joints near limits
+            - action_rate_l2: Penalize rapid action changes
+            - feet_clearance: Penalize incorrect foot height during swing
+            - feet_slip: Penalize foot sliding during contact
+            - soft_landing: Penalize high impact forces at landing
         """
         cfg = self.reward_cfg
-        sigma = cfg["tracking_sigma"]
 
-        # -- Ground truth velocities (simulation only) --
+        # ── Ground truth velocities (simulation only) ──
         base_lin_vel_body = self._base_lin_vel_body()
-        base_ang_vel_body = self.mjData.qvel[3:6]  # body frame
-        base_lin_vel_world = self.mjData.qvel[0:3]  # world frame
-        base_ang_vel_world = self.mjData.qvel[3:6]  # Note: MuJoCo qvel[3:6] is body-frame
-        qpos_joints = self.mjData.qpos[7:].copy()
-        qvel_joints = self.mjData.qvel[6:].copy()
-        torques = self._applied_torques
-        cmd_norm = np.linalg.norm(self._commands)
-        contacts = self._current_contacts
-        first_contact = self._first_contact
+        base_ang_vel_body = self.mjData.qvel[3:6].copy()  # body frame
 
-        foot_positions = self._get_foot_positions()
-        foot_velocities = self._get_foot_velocities()
+        # ── Command magnitude for scaling locomotion-specific rewards ──
+        cmd_lin_norm = np.linalg.norm(self._commands[:2])
+        cmd_ang_norm = abs(self._commands[2])
+        total_command = cmd_lin_norm + cmd_ang_norm
+        cmd_active = float(total_command > cfg["command_threshold"])
 
-        # ── Tracking rewards ────────────────────────────────────────────
-        # Linear velocity tracking in xy plane (exponential kernel)
-        lin_vel_error = np.sum((self._commands[:2] - base_lin_vel_body[:2]) ** 2)
-        r_tracking_lin_vel = np.exp(-lin_vel_error / sigma)
+        # ────────────────────────────────────────────────────────────
+        # 1. Track linear velocity (weight > 0)
+        #    exp(-(xy_error + 2*z_error) / sigma)
+        #    Penalizes z velocity 2x to discourage bouncing.
+        # ────────────────────────────────────────────────────────────
+        xy_error = np.sum((self._commands[:2] - base_lin_vel_body[:2]) ** 2)
+        z_error = base_lin_vel_body[2] ** 2
+        lin_vel_error = xy_error + 2.0 * z_error
+        track_lin_vel = np.exp(-lin_vel_error / cfg["tracking_sigma"])
 
-        # Angular velocity tracking around z axis (exponential kernel)
-        ang_vel_error = (self._commands[2] - base_ang_vel_body[2]) ** 2
-        r_tracking_ang_vel = np.exp(-ang_vel_error / sigma)
+        # ────────────────────────────────────────────────────────────
+        # 2. Track angular velocity (weight > 0)
+        #    exp(-(z_error + 0.05*xy_error) / sigma)
+        #    Mildly penalizes xy angular velocity to discourage rocking.
+        # ────────────────────────────────────────────────────────────
+        z_ang_error = (self._commands[2] - base_ang_vel_body[2]) ** 2
+        xy_ang_error = np.sum(base_ang_vel_body[:2] ** 2)
+        ang_vel_error = z_ang_error + 0.05 * xy_ang_error
+        track_ang_vel = np.exp(-ang_vel_error / cfg["tracking_sigma"])
 
-        # ── Linear forward rewards (critical for SAC exploration) ─────────
-        # The exponential tracking kernel has near-zero gradient at large errors
-        # (standing still with vx=1.0 gives exp(-4)=0.018). SAC with few parallel
-        # envs cannot detect this tiny signal through temporal-difference learning.
-        # These linear terms provide CONSTANT, proportional gradient: every
-        # increment of velocity toward the command is immediately rewarded.
-        # Clipped at command magnitude to avoid rewarding overshooting.
+        # ────────────────────────────────────────────────────────────
+        # 2b. Linear forward velocity reward (weight > 0)
+        #     Projects body velocity onto command direction. Provides
+        #     constant gradient toward the commanded velocity, critical
+        #     for SAC to escape the standing-still local optimum.
+        #     Clipped at command magnitude to prevent overshooting.
+        # ────────────────────────────────────────────────────────────
         cmd_xy = self._commands[:2]
         cmd_speed = np.linalg.norm(cmd_xy)
         if cmd_speed > 0.1:
             cmd_dir = cmd_xy / cmd_speed
             vel_proj = np.dot(base_lin_vel_body[:2], cmd_dir)
-            r_lin_vel_forward = np.clip(vel_proj, 0.0, cmd_speed)
+            lin_vel_forward_reward = np.clip(vel_proj, 0.0, cmd_speed)
         else:
-            r_lin_vel_forward = 0.0
+            lin_vel_forward_reward = 0.0
 
+        # ────────────────────────────────────────────────────────────
+        # 2c. Angular forward velocity reward (weight > 0)
+        #     Projects yaw rate onto command sign direction.
+        #     Clipped at command magnitude.
+        # ────────────────────────────────────────────────────────────
         cmd_wz = self._commands[2]
         if abs(cmd_wz) > 0.1:
             wz_proj = base_ang_vel_body[2] * np.sign(cmd_wz)
-            r_ang_vel_forward = np.clip(wz_proj, 0.0, abs(cmd_wz))
+            ang_vel_forward_reward = np.clip(wz_proj, 0.0, abs(cmd_wz))
         else:
-            r_ang_vel_forward = 0.0
+            ang_vel_forward_reward = 0.0
 
-        # ── Behavioral rewards ──────────────────────────────────────────
-        # Pose reward: stay close to default joint configuration.
-        # Hip and thigh joints weighted 1.0, calf joints weighted 0.1.
-        # Pattern: [hip, thigh, calf] x 4 legs = 12 joints
-        pose_weight = np.array([1.0, 1.0, 0.1] * 4)
-        r_pose = np.exp(-np.sum(pose_weight * (qpos_joints - self.default_joint_pos) ** 2))
-
-        # Feet air time reward: encourage appropriate step duration
-        threshold = cfg.get("feet_air_time_threshold", 0.1)
-        rew_air_time = np.sum((self._feet_air_time - threshold) * first_contact)
-        rew_air_time *= (cmd_norm > 0.01)  # No reward for zero commands
-        r_feet_air_time = float(rew_air_time)
-
-        # ── Costs (all return positive values, scaled by negative weights) ──
-        # Penalize vertical base velocity (discourages bouncing)
-        c_lin_vel_z = base_lin_vel_body[2] ** 2
-
-        # Penalize roll and pitch angular velocity (discourages rocking)
-        c_ang_vel_xy = np.sum(base_ang_vel_body[:2] ** 2)
-
-        # Penalize non-upright orientation
+        # ────────────────────────────────────────────────────────────
+        # 3. Flat orientation L2 penalty (weight < 0)
+        #    sum(projected_gravity[:2]^2): non-zero when tilted.
+        # ────────────────────────────────────────────────────────────
         gravity_body = self._projected_gravity()
-        c_orientation = np.sum(gravity_body[:2] ** 2)
+        flat_orientation = np.sum(gravity_body[:2] ** 2)
 
-        # Penalize torques: sqrt(sum(τ²)) + sum(|τ|) (MuJoCo Playground formulation)
-        c_torques = np.sqrt(np.sum(torques ** 2)) + np.sum(np.abs(torques))
+        # ────────────────────────────────────────────────────────────
+        # 4. Variable posture reward (weight > 0)
+        #    exp(-mean(error^2 / std^2)) with speed-dependent stds.
+        #    Tighter tolerance when standing, looser when walking/running.
+        # ────────────────────────────────────────────────────────────
+        if total_command < cfg["posture_walking_threshold"]:
+            std = self._posture_std_standing
+        elif total_command < cfg["posture_running_threshold"]:
+            std = self._posture_std_walking
+        else:
+            std = self._posture_std_running
 
-        # Penalize action rate (smoothness)
-        c_action_rate = np.sum((action - self._prev_last_action) ** 2)
+        joint_pos_error = self.mjData.qpos[7:] - self.default_joint_pos
+        pose_reward = np.exp(-np.mean(joint_pos_error ** 2 / (std ** 2)))
 
-        # Penalize energy consumption: sum(|dq| * |τ|)
-        c_energy = np.sum(np.abs(qvel_joints) * np.abs(torques))
+        # ────────────────────────────────────────────────────────────
+        # 5. Body angular velocity penalty (weight < 0)
+        #    sum(ang_vel_world_xy^2): penalizes rocking in world frame.
+        # ────────────────────────────────────────────────────────────
+        quat_wxyz = self.mjData.qpos[3:7]
+        quat_xyzw = np.roll(quat_wxyz, -1)
+        R = Rotation.from_quat(quat_xyzw).as_matrix()
+        ang_vel_world = R @ base_ang_vel_body
+        body_ang_vel_penalty = np.sum(ang_vel_world[:2] ** 2)
 
-        # Penalize foot slip: xy velocity² of feet in contact with ground
-        foot_vel_xy = foot_velocities[:, :2]
-        foot_vel_xy_sq = np.sum(foot_vel_xy ** 2, axis=1)
-        c_feet_slip = float(np.sum(foot_vel_xy_sq * contacts) * (cmd_norm > 0.01))
+        # ────────────────────────────────────────────────────────────
+        # 6. Angular momentum penalty (weight < 0)
+        #    sum(angmom^2): whole-body angular momentum magnitude.
+        # ────────────────────────────────────────────────────────────
+        angmom = self.mjData.subtree_angmom[self._base_body_id].copy()
+        angular_momentum_penalty = np.sum(angmom ** 2)
 
-        # Penalize foot clearance: deviation from target height during swing
-        max_foot_height = cfg.get("max_foot_height", 0.1)
-        foot_z = foot_positions[:, 2]
-        foot_vel_xy_norm = np.sqrt(np.linalg.norm(foot_vel_xy, axis=1))
-        clearance_delta = np.abs(foot_z - max_foot_height)
-        c_feet_clearance = float(np.sum(clearance_delta * foot_vel_xy_norm))
+        # ────────────────────────────────────────────────────────────
+        # 7. Termination penalty (weight < 0)
+        #    Binary: 1.0 if terminated, 0.0 otherwise.
+        # ────────────────────────────────────────────────────────────
+        termination_cost = 1.0 if terminated else 0.0
 
-        # Penalize swing peak not reaching target height
-        peak_error = self._swing_peak / max_foot_height - 1.0
-        c_feet_height = float(np.sum(peak_error ** 2 * first_contact) * (cmd_norm > 0.01))
+        # ────────────────────────────────────────────────────────────
+        # 8. Joint acceleration L2 penalty (weight < 0)
+        # ────────────────────────────────────────────────────────────
+        joint_acc_penalty = np.sum(self._joint_acc ** 2)
 
-        # Penalize joint deviation from default when commands are near zero
-        c_stand_still = float(np.sum(np.abs(qpos_joints - self.default_joint_pos)) * (cmd_norm < 0.01))
+        # ────────────────────────────────────────────────────────────
+        # 9. Joint position limits penalty (weight < 0)
+        #    One-sided soft limit: penalizes joints beyond 95% of range.
+        # ────────────────────────────────────────────────────────────
+        joint_pos = self.mjData.qpos[7:].copy()
+        below_lower = np.clip(
+            self._soft_joint_lower - joint_pos, a_min=0.0, a_max=None
+        )
+        above_upper = np.clip(
+            joint_pos - self._soft_joint_upper, a_min=0.0, a_max=None
+        )
+        joint_pos_limits_penalty = np.sum(below_lower + above_upper)
 
-        # Penalize early termination
-        c_termination = float(terminated)
-
-        # Penalize joints approaching limits (soft limits at 95% of range)
-        out_of_limits = -np.clip(qpos_joints - self._soft_joint_lower, None, 0.0)
-        out_of_limits += np.clip(qpos_joints - self._soft_joint_upper, 0.0, None)
-        c_dof_pos_limits = float(np.sum(out_of_limits))
-
-        # ── Combine: each term scaled by its weight ─────────────────────
-        reward = (
-            # Exponential tracking (precise matching once locomotion is found)
-            cfg["w_tracking_lin_vel"] * r_tracking_lin_vel
-            + cfg["w_tracking_ang_vel"] * r_tracking_ang_vel
-            # Linear forward rewards (provides gradient at all velocities for SAC)
-            + cfg["w_lin_vel_forward"] * r_lin_vel_forward
-            + cfg["w_ang_vel_forward"] * r_ang_vel_forward
-            # Alive bonus (constant per-step reward for not falling)
-            + cfg["w_alive"] * 1.0
-            # Behavioral shaping
-            + cfg["w_pose"] * r_pose
-            + cfg["w_feet_air_time"] * r_feet_air_time
-            # Base penalties
-            + cfg["w_lin_vel_z"] * c_lin_vel_z
-            + cfg["w_ang_vel_xy"] * c_ang_vel_xy
-            + cfg["w_orientation"] * c_orientation
-            # Regularization penalties
-            + cfg["w_torques"] * c_torques
-            + cfg["w_action_rate"] * c_action_rate
-            + cfg["w_energy"] * c_energy
-            # Foot shaping penalties
-            + cfg["w_feet_slip"] * c_feet_slip
-            + cfg["w_feet_clearance"] * c_feet_clearance
-            + cfg["w_feet_height"] * c_feet_height
-            # Other penalties
-            + cfg["w_stand_still"] * c_stand_still
-            + cfg["w_termination"] * c_termination
-            + cfg["w_dof_pos_limits"] * c_dof_pos_limits
+        # ────────────────────────────────────────────────────────────
+        # 10. Action rate L2 penalty (weight < 0)
+        #     Penalizes change in raw actions between steps.
+        # ────────────────────────────────────────────────────────────
+        action_rate_penalty = np.sum(
+            (action - self._prev_last_action) ** 2
         )
 
-        # NOTE: MuJoCo Playground scales by dt and clips to [0, inf) — that
-        # convention suits PPO with massive parallelism.  For SAC with few envs,
-        # negative rewards are an essential learning signal (tells the Q-function
-        # that falling / bad posture is worse than standing), and dt-scaling
-        # shrinks the reward 50× which makes the entropy coefficient dominate.
-        # We therefore skip both dt-scaling and non-negative clipping.
+        # ────────────────────────────────────────────────────────────
+        # 11. Feet air time reward (weight > 0)
+        #     Encourages a trotting gait: exactly 2 feet in contact
+        #     (single stance) with mode time close to threshold.
+        # ────────────────────────────────────────────────────────────
+        threshold = cfg["feet_air_time_threshold"]
+        in_contact = self._feet_contact_time > 0
+        in_mode_time = np.where(
+            in_contact, self._feet_contact_time, self._feet_air_time
+        )
+        # Trotting pattern: exactly 2 of 4 feet in contact
+        single_stance = np.mean(in_contact.astype(np.float64)) == 0.5
+        if single_stance:
+            mode_time = np.min(in_mode_time)
+        else:
+            mode_time = 0.0
+        error = abs(mode_time - threshold)
+        feet_air_time_reward = max(threshold - error, 0.0)
+        feet_air_time_reward *= cmd_active
+
+        # ────────────────────────────────────────────────────────────
+        # 12. Feet clearance penalty (weight < 0)
+        #     Penalizes foot height deviation from target, weighted
+        #     by foot xy velocity (only moving feet contribute).
+        # ────────────────────────────────────────────────────────────
+        foot_positions = self._get_foot_positions()
+        foot_velocities = self._get_foot_velocities()
+        foot_z = foot_positions[:, 2]
+        foot_vel_xy = foot_velocities[:, :2]
+        vel_norm = np.linalg.norm(foot_vel_xy, axis=1)
+        delta = np.abs(foot_z - cfg["foot_clearance_target"])
+        feet_clearance_penalty = np.sum(delta * vel_norm) * cmd_active
+
+        # ────────────────────────────────────────────────────────────
+        # 13. Feet slip penalty (weight < 0)
+        #     Penalizes foot xy velocity while in contact with ground.
+        # ────────────────────────────────────────────────────────────
+        in_contact_float = in_contact.astype(np.float64)
+        vel_xy_norm_sq = np.sum(foot_vel_xy ** 2, axis=1)
+        feet_slip_penalty = np.sum(vel_xy_norm_sq * in_contact_float)
+        feet_slip_penalty *= cmd_active
+
+        # ────────────────────────────────────────────────────────────
+        # 14. Soft landing penalty (weight < 0)
+        #     Penalizes contact force magnitude at first contact
+        #     (air→ground transition) to encourage soft footfalls.
+        # ────────────────────────────────────────────────────────────
+        foot_forces = self._get_foot_contact_forces()
+        landing_impact = np.sum(
+            foot_forces * self._first_contact.astype(np.float64)
+        )
+        soft_landing_penalty = landing_impact * cmd_active
+
+        # ── Combine all terms ──
+        reward = (
+            cfg["w_track_lin_vel"] * track_lin_vel
+            + cfg["w_track_ang_vel"] * track_ang_vel
+            + cfg["w_lin_vel_forward"] * lin_vel_forward_reward
+            + cfg["w_ang_vel_forward"] * ang_vel_forward_reward
+            + cfg["w_alive"] * 1.0
+            + cfg["w_flat_orientation"] * flat_orientation
+            + cfg["w_pose"] * pose_reward
+            + cfg["w_body_ang_vel"] * body_ang_vel_penalty
+            + cfg["w_angular_momentum"] * angular_momentum_penalty
+            + cfg["w_is_terminated"] * termination_cost
+            + cfg["w_joint_acc"] * joint_acc_penalty
+            + cfg["w_joint_pos_limits"] * joint_pos_limits_penalty
+            + cfg["w_action_rate"] * action_rate_penalty
+            + cfg["w_feet_air_time"] * feet_air_time_reward
+            + cfg["w_feet_clearance"] * feet_clearance_penalty
+            + cfg["w_feet_slip"] * feet_slip_penalty
+            + cfg["w_soft_landing"] * soft_landing_penalty
+        )
+
+        # Store individual reward terms for logging/debugging
+        self._reward_components = {
+            "track_lin_vel": cfg["w_track_lin_vel"] * track_lin_vel,
+            "track_ang_vel": cfg["w_track_ang_vel"] * track_ang_vel,
+            "lin_vel_forward": cfg["w_lin_vel_forward"] * lin_vel_forward_reward,
+            "ang_vel_forward": cfg["w_ang_vel_forward"] * ang_vel_forward_reward,
+            "alive": cfg["w_alive"] * 1.0,
+            "flat_orientation": cfg["w_flat_orientation"] * flat_orientation,
+            "pose": cfg["w_pose"] * pose_reward,
+            "body_ang_vel": cfg["w_body_ang_vel"] * body_ang_vel_penalty,
+            "angular_momentum": cfg["w_angular_momentum"] * angular_momentum_penalty,
+            "is_terminated": cfg["w_is_terminated"] * termination_cost,
+            "joint_acc": cfg["w_joint_acc"] * joint_acc_penalty,
+            "joint_pos_limits": cfg["w_joint_pos_limits"] * joint_pos_limits_penalty,
+            "action_rate": cfg["w_action_rate"] * action_rate_penalty,
+            "feet_air_time": cfg["w_feet_air_time"] * feet_air_time_reward,
+            "feet_clearance": cfg["w_feet_clearance"] * feet_clearance_penalty,
+            "feet_slip": cfg["w_feet_slip"] * feet_slip_penalty,
+            "soft_landing": cfg["w_soft_landing"] * soft_landing_penalty,
+        }
+
+        if cfg.get("only_positive_rewards", False):
+            reward = max(reward, 0.0)
 
         return float(reward)
 
@@ -1080,57 +1280,85 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "applied_torques": self._applied_torques.copy(),
             "foot_contacts": self._last_foot_contacts.copy(),
             "feet_air_time": self._feet_air_time.copy(),
+            "feet_contact_time": self._feet_contact_time.copy(),
             "swing_peak": self._swing_peak.copy(),
+            "reward_components": self._reward_components.copy(),
         }
 
     @staticmethod
     def _default_reward_cfg() -> dict[str, float]:
         """Default reward configuration weights.
 
-        Hybrid of the original SAC-tuned rewards and MuJoCo Playground
-        Go1 joystick gait-shaping costs.
+        Ported from the unitree_rl_mjlab velocity tracking task configuration
+        for the Unitree Go2 robot. This reward formulation is proven to
+        produce stable quadruped locomotion gaits with proper trotting.
 
-        Key design principles:
-            - Exponential tracking rewards for precise velocity matching
-            - Linear forward rewards provide constant gradient for SAC to
-              escape the standing-still local optimum (not needed for PPO)
-            - Alive bonus establishes a baseline reward
-            - Playground-inspired foot costs (slip, clearance, height) shape
-              proper gait quality instead of burst-walking
-            - Moderate orientation penalty (-0.5) keeps robot upright without
-              preventing natural body pitch during locomotion
+        Reward terms and weights:
+            Positive rewards (desired behavior):
+                - track_lin_vel (1.0):     Exponential xy velocity tracking
+                - track_ang_vel (1.0):     Exponential yaw rate tracking
+                - lin_vel_forward (1.5):   Linear forward velocity (SAC gradient)
+                - ang_vel_forward (0.5):   Linear angular velocity (SAC gradient)
+                - alive (0.3):             Constant survival bonus
+                - pose (0.5):              Speed-dependent default pose tracking
+                - feet_air_time (1.0):     Trotting gait encouragement
+
+            Penalties (undesired behavior):
+                - flat_orientation (-2.0):  Body tilt
+                - body_ang_vel (-0.05):     Excessive body angular velocity
+                - angular_momentum (-0.0125): Whole-body angular momentum
+                - is_terminated (-200.0):   Falling over
+                - joint_acc (-2.5e-7):      Jerky joint motion
+                - joint_pos_limits (-10.0): Joints near limits
+                - action_rate (-0.05):      Rapid action changes
+                - feet_clearance (-1.0):    Incorrect swing foot height
+                - feet_slip (-0.25):        Foot sliding during contact
+                - soft_landing (-1e-3):     High impact forces at landing
         """
         return {
-            # ── Tracking rewards (exponential kernel) ────────────────
-            "w_tracking_lin_vel": 1.5,   # exp(-error²/sigma)
-            "w_tracking_ang_vel": 0.75,  # exp(-error²/sigma)
-            "tracking_sigma": 0.25,       # Kernel width
-            # ── Linear forward rewards (SAC exploration) ────────────
-            # Provides constant gradient unlike exponential which is flat
-            # at large errors. Critical for SAC to discover locomotion.
-            "w_lin_vel_forward": 2.0,    # Linear, clipped at cmd magnitude
-            "w_ang_vel_forward": 0.5,    # Linear, clipped at cmd magnitude
-            # ── Alive bonus ─────────────────────────────────────────
-            "w_alive": 0.5,              # Constant per-step survival reward
-            # ── Behavioral rewards (Playground-inspired) ────────────
-            "w_pose": 0.5,               # Stay near default joint config
-            "w_feet_air_time": 0.25,     # Reward appropriate step duration
-            "feet_air_time_threshold": 0.25,  # seconds; longer = no rapid hopping
-            # ── Base costs (negative weights) ───────────────────────
-            "w_lin_vel_z": -4.0,         # Penalize vertical base velocity (anti-bounce)
-            "w_ang_vel_xy": -0.5,        # Penalize roll/pitch angular vel (anti-rock)
-            "w_orientation": -0.5,       # Moderate orientation penalty
-            # ── Regularization costs ────────────────────────────────
-            "w_torques": -0.0002,        # Penalize torques (Playground form)
-            "w_action_rate": -0.01,      # Penalize jerky actions
-            "w_energy": -0.001,          # Penalize energy consumption
-            # ── Feet costs (shape proper gait) ──────────────────────
-            "w_feet_clearance": -1.0,    # Foot height deviation from target
-            "w_feet_height": -0.2,       # Swing peak not reaching target
-            "w_feet_slip": -0.1,         # Foot sliding during contact
-            "max_foot_height": 0.1,      # Target foot clearance (meters)
-            # ── Other costs ─────────────────────────────────────────
-            "w_stand_still": -0.5,       # Joint deviation at zero command
-            "w_termination": -1.0,       # Early termination penalty
-            "w_dof_pos_limits": -1.0,    # Joints approaching limits
+            # ── Tracking rewards ──
+            # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
+            "tracking_sigma": 0.25,
+            "w_track_lin_vel": 1.0,
+            "w_track_ang_vel": 1.0,
+            # ── Forward velocity rewards (linear, constant gradient) ──
+            # Critical for SAC to escape the standing-still local optimum.
+            # Projects velocity onto command direction, clipped at cmd magnitude.
+            "w_lin_vel_forward": 1.5,
+            "w_ang_vel_forward": 0.5,
+            # ── Alive bonus (constant per-step survival reward) ──
+            "w_alive": 0.3,
+            # ── Orientation penalty ──
+            "w_flat_orientation": -2.0,
+            # ── Variable posture reward ──
+            # Speed-dependent default pose tracking with per-joint-type stds
+            "w_pose": 0.5,
+            "posture_walking_threshold": 0.1,   # speed below this → standing
+            "posture_running_threshold": 1.5,   # speed above this → running
+            # ── Body angular velocity penalty (world frame, xy only) ──
+            "w_body_ang_vel": -0.05,
+            # ── Angular momentum penalty (whole-body) ──
+            "w_angular_momentum": -0.0125,
+            # ── Termination penalty (large negative on fall) ──
+            "w_is_terminated": -200.0,
+            # ── Joint acceleration L2 penalty ──
+            "w_joint_acc": -2.5e-7,
+            # ── Joint position limits penalty (soft limits at 95% range) ──
+            "w_joint_pos_limits": -10.0,
+            # ── Action rate L2 penalty ──
+            "w_action_rate": -0.05,
+            # ── Feet air time reward (trotting gait) ──
+            "w_feet_air_time": 1.0,
+            "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
+            # ── Feet clearance penalty (target swing foot height) ──
+            "w_feet_clearance": -1.0,
+            "foot_clearance_target": 0.10,    # meters
+            # ── Feet slip penalty (no sliding during contact) ──
+            "w_feet_slip": -0.25,
+            # ── Soft landing penalty (minimize impact forces) ──
+            "w_soft_landing": -1e-3,
+            # ── Command threshold for scaling locomotion rewards/penalties ──
+            "command_threshold": 0.1,
+            # ── Reward clipping ──
+            "only_positive_rewards": False,
         }

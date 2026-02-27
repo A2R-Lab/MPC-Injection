@@ -193,6 +193,14 @@ _CHECKPOINT_FREQ = flags.DEFINE_integer(
 _EVAL_FREQ = flags.DEFINE_integer(
     "eval_freq", 10_000, "Evaluate policy every N steps"
 )
+_SAVE_REPLAY_BUFFER_CHECKPOINTS = flags.DEFINE_boolean(
+    "save_replay_buffer_checkpoints", False,
+    "Save replay buffer at each checkpoint. Disable to greatly reduce disk usage."
+)
+_SAVE_REPLAY_BUFFER_FINAL = flags.DEFINE_boolean(
+    "save_replay_buffer_final", False,
+    "Save replay buffer at end of training for resume support. Disable for model-only artifacts."
+)
 
 # Domain randomization flags
 _DOMAIN_RAND = flags.DEFINE_boolean(
@@ -515,7 +523,8 @@ def create_model(env, cfg, is_quadruped: bool = False):
 def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path, 
                      domain: str, task: str, seed: int,
                      checkpoint_freq: int, eval_freq: int, num_envs: int,
-                     is_quadruped: bool = False, robot: str = "go2"):
+                     is_quadruped: bool = False, robot: str = "go2",
+                     save_replay_buffer_checkpoints: bool = False):
     """
     Factory function to create all callbacks based on configuration.
     
@@ -531,6 +540,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         num_envs: Number of parallel environments
         is_quadruped: Whether the environment is a quadruped velocity tracking env
         robot: Quadruped robot model name (only used when is_quadruped=True)
+        save_replay_buffer_checkpoints: Whether to save replay buffer at every checkpoint
     
     Returns:
         Tuple of (callbacks list, eval_env or None, inject_callback or None)
@@ -548,7 +558,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             save_freq=checkpoint_freq // num_envs,
             save_path=str(logdir / "checkpoints"),
             name_prefix="model",
-            save_replay_buffer=True,
+            save_replay_buffer=save_replay_buffer_checkpoints,
             save_vecnormalize=True,
         )
         callbacks.append(checkpoint_callback)
@@ -887,6 +897,8 @@ def main(argv):
             "task": task,
             "total_timesteps": _TOTAL_TIMESTEPS.value,
             "num_envs": _NUM_ENVS.value,
+            "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
+            "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
         })
         # Include domain randomization config for quadruped envs
         if is_quadruped:
@@ -990,6 +1002,7 @@ def main(argv):
             num_envs=_NUM_ENVS.value,
             is_quadruped=is_quadruped,
             robot=_ROBOT.value,
+            save_replay_buffer_checkpoints=_SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
@@ -1018,7 +1031,7 @@ def main(argv):
             vec_env.save(vec_normalize_path)
             
             # Save replay buffer (for off-policy algorithms)
-            if hasattr(model, 'save_replay_buffer'):
+            if _SAVE_REPLAY_BUFFER_FINAL.value and hasattr(model, 'save_replay_buffer'):
                 model.save_replay_buffer(replay_buffer_path)
                 print(f"Replay buffer saved (size: {model.replay_buffer.size()})")
             
