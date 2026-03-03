@@ -2,10 +2,9 @@ name: mpc-rl
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
-  - pip
-  - git
-  - ffmpeg
+  - python=3.11.13
+  - pip=25.2
+  - git=2.51.0
   - pip:
       # dev indexes first so mujoco/mjx/warp dev wheels resolve
       # - --extra-index-url https://py.mujoco.org
@@ -26,31 +25,32 @@ dependencies:
       # - etils
       # - ml_collections
       # - orbax-checkpoint>=0.11.22
-      - tqdm
-      - wandb
-      - tensorboard
+      - tqdm==4.67.1
+      - wandb==0.22.1
+      - tensorboard==2.20.0
 
       # SB3/SBX RL stack
-      - sbx-rl
-      - stable-baselines3
-      - gymnasium[classical_control]
-      - gymnasium-robotics
-      - shimmy[dm-control]
-      - opencv-python
+      - sbx-rl==0.23.0
+      - stable-baselines3==2.7.0
+      - gymnasium[classical_control]==1.2.1
+      - gymnasium-robotics==1.4.1
+      - shimmy[dm-control]==2.0.0
+      - opencv-python==4.12.0.88
 
-      # MuJoCo stack (dev wheels)
-      - mujoco>=3.3.6.dev
-      - mujoco-mjx>=3.3.6.dev
+      # MuJoCo stack
+      - mujoco==3.3.6
+      - mujoco-mjx==3.3.6
 
       # Warp dev wheels
-      - warp-lang==1.10.0.dev20251006
+      - warp-lang==1.10.1
 
       # utils
-      - lxml
-      - mediapy
-      - matplotlib
-      - jupyter
-      - umap-learn
-      - viser
-      - robot_descriptions
-      - tyro
+      - lxml==6.0.2
+      - mediapy==1.2.4
+      - matplotlib==3.10.6
+      - jupyter==1.1.1
+      - umap-learn==0.5.9.post2
+      - viser==1.0.21
+      - robot_descriptions==1.22.0
+      - tyro==1.0.5
+

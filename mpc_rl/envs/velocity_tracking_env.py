@@ -75,7 +75,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # PD controller gains
         kp: float = 40.0,
         kd: float = 0.5,
-        action_scale: float = 0.5, # NOTE: mjlab uses 0.5 scaling for larger joint excursions
+        action_scale: float = 0.25, # NOTE: mjlab uses 0.5
         # Command ranges
         lin_vel_x_range: tuple[float, float] = (-0.5, 1.0), # NOTE mjlab biases forward
         lin_vel_y_range: tuple[float, float] = (-0.5, 0.5),
@@ -83,8 +83,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Reward weights
         reward_cfg: dict[str, float] | None = None,
         # Termination thresholds
-        max_pitch: float = 0.6,
-        max_roll: float = 0.6,
+        max_pitch: float = 0.87, # radians
+        max_roll: float = 0.87, # radians
         min_base_height: float = 0.1,
         # Episode settings
         command_resample_interval: int = 250, # og 500
@@ -1319,44 +1319,44 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # ── Tracking rewards ──
             # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
             "tracking_sigma": 0.25,
-            "w_track_lin_vel": 1.0,
-            "w_track_ang_vel": 1.0,
+            "w_track_lin_vel": 1.5,
+            "w_track_ang_vel": 1.5,
             # ── Forward velocity rewards (linear, constant gradient) ──
             # Critical for SAC to escape the standing-still local optimum.
             # Projects velocity onto command direction, clipped at cmd magnitude.
             "w_lin_vel_forward": 1.5,
-            "w_ang_vel_forward": 0.5,
+            "w_ang_vel_forward": 1.0,
             # ── Alive bonus (constant per-step survival reward) ──
-            "w_alive": 0.3,
+            "w_alive": 0.0,
             # ── Orientation penalty ──
-            "w_flat_orientation": -2.0,
+            "w_flat_orientation": -0.25,
             # ── Variable posture reward ──
             # Speed-dependent default pose tracking with per-joint-type stds
             "w_pose": 0.5,
             "posture_walking_threshold": 0.1,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # ── Body angular velocity penalty (world frame, xy only) ──
-            "w_body_ang_vel": -0.05,
+            "w_body_ang_vel": -0.01,
             # ── Angular momentum penalty (whole-body) ──
-            "w_angular_momentum": -0.0125,
+            "w_angular_momentum": -0.001,
             # ── Termination penalty (large negative on fall) ──
-            "w_is_terminated": -200.0,
+            "w_is_terminated": -10.0,
             # ── Joint acceleration L2 penalty ──
-            "w_joint_acc": -2.5e-7,
+            "w_joint_acc": -1.5e-7,
             # ── Joint position limits penalty (soft limits at 95% range) ──
-            "w_joint_pos_limits": -10.0,
+            "w_joint_pos_limits": -1.0,
             # ── Action rate L2 penalty ──
-            "w_action_rate": -0.05,
+            "w_action_rate": -0.02,
             # ── Feet air time reward (trotting gait) ──
             "w_feet_air_time": 1.0,
             "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
             # ── Feet clearance penalty (target swing foot height) ──
-            "w_feet_clearance": -1.0,
+            "w_feet_clearance": -0.25,
             "foot_clearance_target": 0.10,    # meters
             # ── Feet slip penalty (no sliding during contact) ──
-            "w_feet_slip": -0.25,
+            "w_feet_slip": -0.1,
             # ── Soft landing penalty (minimize impact forces) ──
-            "w_soft_landing": -1e-3,
+            "w_soft_landing": -1e-4,
             # ── Command threshold for scaling locomotion rewards/penalties ──
             "command_threshold": 0.1,
             # ── Reward clipping ──
