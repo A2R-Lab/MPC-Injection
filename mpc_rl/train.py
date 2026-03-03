@@ -908,7 +908,7 @@ def main(argv):
             }
         save_config(logdir, config_dict)
     
-    # ── Domain randomization setup (quadruped only) ──────────────────────
+    # -- Domain randomization setup (quadruped only) ----------------------
     dr_cfg = None
     if is_quadruped:
         if _DOMAIN_RAND.value:
