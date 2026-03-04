@@ -1409,7 +1409,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "w_feet_air_time": 1.0,
             "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
             # -- Feet clearance penalty (target swing foot height) --
-            "w_feet_clearance": -0.25,
+            "w_feet_clearance": -0.5,
             "foot_clearance_target": 0.10,    # meters
             # -- Feet slip penalty (no sliding during contact) --
             "w_feet_slip": -0.1,
