@@ -75,13 +75,10 @@ logging.set_verbosity(logging.WARNING)
 # Add parent directory to path to import from mpc_rl
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mpc_rl.planner.mpc_planner import MPCPlanner
+#from mpc_rl.planner.mpc_planner import MPCPlanner
 from mpc_rl.common import TaggedReplayBuffer, FixedMPCInjectCallback, PercentMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
-
-# From custom gymnasium environment for the shadow hand
-import shadow_hand_gym
 
 # Register custom quadruped velocity tracking environment
 import mpc_rl.envs

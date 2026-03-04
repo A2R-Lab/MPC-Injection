@@ -6,8 +6,6 @@ from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
 import mujoco
-import shadow_hand_gym
-
 
 class FixedMPCInjectCallback(BaseCallback):
     """
