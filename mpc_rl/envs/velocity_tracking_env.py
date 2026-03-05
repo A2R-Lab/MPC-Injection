@@ -1467,9 +1467,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "posture_walking_threshold": 0.1,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
-            "w_body_ang_vel": -0.01,
+            "w_body_ang_vel": -0.05, # FROM 1 to 5
             # -- Angular momentum penalty (whole-body) --
-            "w_angular_momentum": -0.001,
+            "w_angular_momentum": -0.005, # FROM 1 TO 5
             # -- Termination penalty (large negative on fall) --
             "w_is_terminated": -10.0,
             # -- Joint acceleration L2 penalty --
