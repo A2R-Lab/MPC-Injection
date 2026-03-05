@@ -5,9 +5,21 @@ range of randomized environments. By varying physical parameters (friction, mass
 etc.), observation noise, and external perturbations, the policy learns to be
 robust to the inevitable sim-to-real gap.
 
+Architecture (modeled after MjLab's EventManager):
+    - **Startup** (persistent per-env): Physics parameters (friction, COM,
+      encoder bias) are randomized once at environment creation and stay fixed
+      for the lifetime of the env instance. Each parallel env gets different
+      values, but they never change across episodes. This is critical for SAC's
+      off-policy replay buffer — transitions within an env come from a
+      consistent MDP.
+    - **Per-step**: Observation noise (i.i.d. additive uniform noise on actor
+      observations only; critic sees clean ground truth).
+    - **Interval**: Push perturbations with randomized timing per-env.
+
 References:
-    - mjlab (mujocolab/mjlab): randomize_field(), randomize_pd_gains(), push_by_setting_velocity()
-    - MuJoCo Playground (google-deepmind/mujoco_playground): observation noise config
+    - mjlab (mujocolab/mjlab): randomize_field(), randomize_pd_gains(),
+      push_by_setting_velocity(), EventManager startup/reset/interval modes
+    - MuJoCo Playground (google-deepmind/mujoco_playground): observation noise
     - IsaacGymEnvs (isaac-sim/IsaacGymEnvs): friction randomization, push robots
     - Legged Gym / Isaac Lab: standard quadruped DR pipeline
 
@@ -20,8 +32,8 @@ Usage:
 
     # Custom config:
     dr_cfg = DomainRandomizationConfig(
-        friction_range=(0.3, 2.0),
-        added_mass_range=(-1.5, 1.5),
+        friction_range=(0.3, 1.2),
+        com_displacement_range=(-0.05, 0.05),
         obs_noise_level=0.5,
     )
 
@@ -38,74 +50,84 @@ from dataclasses import dataclass, field
 class DomainRandomizationConfig:
     """Configuration for domain randomization.
 
-    All randomization is applied per-episode at reset() time (physics parameters)
-    or per-step (observation noise, perturbations). Parameters use multiplicative
-    scaling or additive offsets relative to the nominal (XML) model values.
+    Physics parameters are applied once at env creation ("startup" mode) and
+    persist across all episodes within that env instance. Observation noise is
+    applied per-step, and perturbations are applied at random intervals.
 
-    The default values are calibrated for the Unitree Go2 quadruped based on
-    common ranges from Legged Gym, Isaac Lab, mjlab, and MuJoCo Playground.
+    The default values are calibrated for the Unitree Go2 quadruped, matching
+    the MjLab Go2 velocity task configuration.
 
     Attributes:
         enable: Master switch. When False, no randomization is applied.
 
-        # ── Physics parameter randomization (applied at reset) ──────────
-        # These modify the MuJoCo model (mjModel) fields at the start of
-        # each episode. Values are restored to nominal before re-randomizing.
+        # ── Physics parameter randomization (startup — applied once) ────
+        # These modify the MuJoCo model (mjModel) fields at env creation.
+        # Each parallel env gets different values, but they stay fixed
+        # across episodes. This matches MjLab's "startup" event mode.
 
-        friction_range: (min, max) multiplicative scale for geom_friction[:, 0]
-            (tangential friction). 1.0 = nominal. Range [0.2, 2.0] covers
-            slippery tile to high-grip rubber.
+        friction_range: (min, max) absolute range for geom_friction[:, 0]
+            (tangential friction). Matches MjLab operation="abs".
+            (0.0, 0.0) disables.
         added_mass_range: (min, max) kg added to the base body mass.
-            Simulates payload variation. [-1.0, 2.0] kg for Go2 (~12 kg).
+            Simulates payload variation. (0.0, 0.0) disables.
         com_displacement_range: (min, max) meters displacement added to
             body_ipos of the base body (x, y, z independently). Simulates
-            center-of-mass shift from payload mounting.
+            center-of-mass shift from payload mounting. (0.0, 0.0) disables.
+        encoder_bias_range: (min, max) radians of persistent bias added to
+            joint position readings. Simulates encoder calibration error.
+            (0.0, 0.0) disables.
         kp_scale_range: (min, max) multiplicative scale for PD proportional
-            gain. [0.8, 1.2] = ±20% variation.
+            gain. (1.0, 1.0) disables.
         kd_scale_range: (min, max) multiplicative scale for PD derivative
-            gain. [0.5, 2.0] = wide range since Kd is hard to measure.
+            gain. (1.0, 1.0) disables.
         joint_damping_scale_range: (min, max) multiplicative scale for
-            dof_damping (joint viscous friction). [0.8, 1.2].
+            dof_damping (joint viscous friction). (1.0, 1.0) disables.
         joint_armature_scale_range: (min, max) multiplicative scale for
-            dof_armature (rotor inertia reflected to joint). [0.8, 1.2].
+            dof_armature (rotor inertia reflected to joint). (1.0, 1.0)
+            disables.
         joint_friction_range: (min, max) absolute range for dof_frictionloss
-            (Coulomb friction at joints). [0.0, 0.05] Nm.
+            (Coulomb friction at joints). (0.0, 0.0) disables.
+        motor_strength_range: (min, max) multiplicative scale for torque
+            limits. (1.0, 1.0) disables.
 
         # ── Observation noise (applied every step) ──────────────────────
-        # Additive Gaussian noise on sensor readings to simulate real-sensor
+        # Additive uniform noise on sensor readings to simulate real-sensor
         # noise and imperfect state estimation. Scaled by obs_noise_level.
+        # Applied only to policy obs (actor), NOT privileged obs (critic).
 
-        obs_noise_level: Master noise scale (0.0 = no noise, 1.0 = full noise).
-        obs_noise_scales: Per-sensor noise standard deviations at level=1.0.
-            Keys match the observation components.
+        obs_noise_level: Master noise scale (0.0 = no noise, 1.0 = full).
+        obs_noise_scales: Per-sensor noise half-widths at level=1.0.
+            Keys match observation components.
 
-        # ── External perturbations (applied periodically during episode) ─
-        # Random velocity kicks to the base, simulating external pushes or
-        # collisions. Applied by directly setting base velocity.
+        # ── External perturbations (applied at random intervals) ────────
+        # Random velocity kicks to the base, simulating external pushes.
+        # Applied by adding to the current base velocity (additive, same
+        # as MjLab's push_by_setting_velocity). Interval is randomized
+        # per-episode from push_interval_range_s.
 
         push_robots: Whether to apply random velocity pushes.
-        push_interval_s: Average time between pushes (seconds).
-        push_vel_xy_range: (min, max) m/s for random base velocity kicks
-            in the xy plane.
-        push_ang_vel_range: (min, max) rad/s for random angular velocity
-            kicks around z axis.
-
-        # ── Motor strength randomization ────────────────────────────────
-        motor_strength_range: (min, max) multiplicative scale for torque
-            limits. Simulates motor degradation or variation. [0.85, 1.15].
+        push_interval_range_s: (min, max) seconds between pushes. Each
+            episode samples a new interval. Matches MjLab's
+            interval_range_s=(1.0, 3.0).
+        push_velocity_ranges: Per-DOF velocity kick ranges matching MjLab's
+            6-DOF push: x, y, z (m/s) and roll, pitch, yaw (rad/s).
     """
 
     enable: bool = True
 
-    # ── Physics parameter randomization ─────────────────────────────────
-    friction_range: tuple[float, float] = (0.4, 1.8)
-    added_mass_range: tuple[float, float] = (-1.0, 2.0)
+    # ── Physics parameter randomization (startup — applied once) ────────
+    # Default ranges match MjLab Go2: friction + COM + encoder bias enabled;
+    # mass, damping, armature, joint friction, gains, motor strength disabled.
+    friction_range: tuple[float, float] = (0.3, 1.2)
+    added_mass_range: tuple[float, float] = (0.0, 0.0)
     com_displacement_range: tuple[float, float] = (-0.05, 0.05)
-    kp_scale_range: tuple[float, float] = (0.85, 1.15)
-    kd_scale_range: tuple[float, float] = (0.7, 1.3)
-    joint_damping_scale_range: tuple[float, float] = (0.8, 1.2)
-    joint_armature_scale_range: tuple[float, float] = (0.8, 1.2)
-    joint_friction_range: tuple[float, float] = (0.0, 0.05)
+    encoder_bias_range: tuple[float, float] = (-0.015, 0.015)
+    kp_scale_range: tuple[float, float] = (1.0, 1.0)
+    kd_scale_range: tuple[float, float] = (1.0, 1.0)
+    joint_damping_scale_range: tuple[float, float] = (1.0, 1.0)
+    joint_armature_scale_range: tuple[float, float] = (1.0, 1.0)
+    joint_friction_range: tuple[float, float] = (0.0, 0.0)
+    motor_strength_range: tuple[float, float] = (1.0, 1.0)
 
     # ── Observation noise ───────────────────────────────────────────────
     obs_noise_level: float = 1.0
@@ -118,12 +140,17 @@ class DomainRandomizationConfig:
 
     # ── External perturbations ──────────────────────────────────────────
     push_robots: bool = True
-    push_interval_s: float = 2.0
-    push_vel_xy_range: tuple[float, float] = (-0.5, 0.5)
-    push_ang_vel_range: tuple[float, float] = (-0.3, 0.3)
-
-    # ── Motor strength randomization ────────────────────────────────────
-    motor_strength_range: tuple[float, float] = (0.9, 1.1)
+    push_interval_range_s: tuple[float, float] = (1.0, 3.0)
+    push_velocity_ranges: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: {
+            "x": (-0.5, 0.5),
+            "y": (-0.5, 0.5),
+            "z": (-0.25, 0.25),
+            "roll": (-0.52, 0.52),
+            "pitch": (-0.52, 0.52),
+            "yaw": (-0.78, 0.78),
+        }
+    )
 
     @classmethod
     def disabled(cls) -> DomainRandomizationConfig:
