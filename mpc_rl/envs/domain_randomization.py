@@ -58,9 +58,9 @@ class DomainRandomizationConfig:
     the MjLab Go2 velocity task configuration.
 
     Attributes:
-        enable: Master switch. When False, no randomization is applied.
+        enable: When False, no randomization is applied.
 
-        # ── Physics parameter randomization (startup — applied once) ────
+        # -- Physics parameter randomization (startup — applied once) ----
         # These modify the MuJoCo model (mjModel) fields at env creation.
         # Each parallel env gets different values, but they stay fixed
         # across episodes. This matches MjLab's "startup" event mode.
@@ -90,7 +90,7 @@ class DomainRandomizationConfig:
         motor_strength_range: (min, max) multiplicative scale for torque
             limits. (1.0, 1.0) disables.
 
-        # ── Observation noise (applied every step) ──────────────────────
+        # -- Observation noise (applied every step) ----------------------
         # Additive uniform noise on sensor readings to simulate real-sensor
         # noise and imperfect state estimation. Scaled by obs_noise_level.
         # Applied only to policy obs (actor), NOT privileged obs (critic).
@@ -99,7 +99,7 @@ class DomainRandomizationConfig:
         obs_noise_scales: Per-sensor noise half-widths at level=1.0.
             Keys match observation components.
 
-        # ── External perturbations (applied at random intervals) ────────
+        # -- External perturbations (applied at random intervals) --------
         # Random velocity kicks to the base, simulating external pushes.
         # Applied by adding to the current base velocity (additive, same
         # as MjLab's push_by_setting_velocity). Interval is randomized
@@ -115,7 +115,7 @@ class DomainRandomizationConfig:
 
     enable: bool = True
 
-    # ── Physics parameter randomization (startup — applied once) ────────
+    # -- Physics parameter randomization (startup — applied once) --------
     # Default ranges match MjLab Go2: friction + COM + encoder bias enabled;
     # mass, damping, armature, joint friction, gains, motor strength disabled.
     friction_range: tuple[float, float] = (0.3, 1.2)
@@ -129,7 +129,7 @@ class DomainRandomizationConfig:
     joint_friction_range: tuple[float, float] = (0.0, 0.0)
     motor_strength_range: tuple[float, float] = (1.0, 1.0)
 
-    # ── Observation noise ───────────────────────────────────────────────
+    # -- Observation noise -----------------------------------------------
     obs_noise_level: float = 1.0
     obs_noise_scales: dict[str, float] = field(default_factory=lambda: {
         "joint_pos": 0.01,      # radians (encoder noise)
@@ -138,7 +138,7 @@ class DomainRandomizationConfig:
         "gravity": 0.05,        # (IMU orientation estimation noise)
     })
 
-    # ── External perturbations ──────────────────────────────────────────
+    # -- External perturbations ------------------------------------------
     push_robots: bool = True
     push_interval_range_s: tuple[float, float] = (1.0, 3.0)
     push_velocity_ranges: dict[str, tuple[float, float]] = field(
