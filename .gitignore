@@ -225,3 +225,6 @@ MUJOCO_LOG.TXT
 
 # Ignore jax cache
 jax_cache/
+
+# Ignore workspace settings for Visual Studio Code
+.vscode/

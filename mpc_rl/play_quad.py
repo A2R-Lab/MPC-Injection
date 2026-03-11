@@ -45,11 +45,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
 
-
-# ═════════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # Algorithm detection
-# ═════════════════════════════════════════════════════════════════════════════
-
+# ========================================================================
 
 ALGO_MAP = {
     "SAC": SB3_SAC,
@@ -115,9 +113,9 @@ def resolve_model_path(model_arg: str) -> Path:
     return Path(matches[0])
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # Keyboard controller (via MuJoCo viewer GLFW key_callback)
-# ═════════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 # GLFW key codes (from glfw3.h)
 _KEY_UP = 265
@@ -177,9 +175,9 @@ class VelocityCommander:
             return self.stop
 
 
-# ═════════════════════════════════════════════════════════════════════════════
+# ========================================================================
 # Main play loop
-# ═════════════════════════════════════════════════════════════════════════════
+# ========================================================================
 
 
 def make_quadruped_env(robot: str = "go2", render_mode: str | None = None):
@@ -316,7 +314,7 @@ def main():
                 obs = vec_env.reset()
                 env_base.set_commands(vx=vx, vy=vy, wz=wz)
 
-            # ── Real-time synchronization ──────────────────────────────
+            # -- Real-time synchronization ------------------------------
             # Sleep so that each control step takes exactly control_dt of
             # wall time, matching the real robot's 50 Hz control loop.
             elapsed = time.perf_counter() - step_start
