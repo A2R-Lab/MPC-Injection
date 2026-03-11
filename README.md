@@ -108,6 +108,24 @@ Train an SAC agent on a dm_control environment:
 python mpc_rl/train.py --env_name=cartpole-swingup
 ```
 
+### Training a Quadruped Policy
+
+To train a quadruped velocity-tracking policy use:
+
+```bash
+python mpc_rl/train.py --env_name quadruped-velocity_tracking --algorithm SAC --total_timesteps 5000000 --num_envs 512 --seed 1 --learning_starts 50000 --save_replay_buffer_checkpoints=False --save_replay_buffer_final=False --domain_rand=True
+```
+
+Test a trained quadruped model locally with:
+
+```bash
+python mpc_rl/play_quad.py --model=logs/quadruped-velocity_tracking-*-*-*
+```
+
+## Deploy
+
+The project's deployment workflow is currently being worked on. See `deploy/README.md` for work-in-progress notes and instructions.
+
 Note that we keep the `--env_name` flag to be split up into `domain-task` or `domain_task`. You can quickly list the available environments with this command:
 ```
 python -c "from dm_control import suite; print('\n'.join([f'{domain}/{task}' for domain, task in suite.ALL_TASKS]))"
@@ -333,12 +351,3 @@ See this [issue discussion](https://github.com/jax-ml/jax/issues/28980) for more
 
 ### Model Not Loading
 Ensure you're using the exact run name (with timestamp) when loading checkpoints. Check the `logs/` directory for available runs.
-
-### ModuleNotFoundError: No module named 'mpc_rl'
-If you encounter this error when running tests or scripts, it means the `mpc_rl` package is not installed. Make sure you've run:
-
-```bash
-pip install -e .
-```
-
-from the project root directory. This installs the package in editable mode and makes it importable from anywhere in your conda environment.
