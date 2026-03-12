@@ -254,7 +254,7 @@ The compiled binary `go2_ctrl` will be at `deploy/robots/go2/build/go2_ctrl`.
 4. **Run the deployment binary**:
    ```bash
    cd deploy/robots/go2/build
-   ./go2_ctrl --network=enp5s0
+   ./go2_ctrl --network=network_name # Found via ifconfig
    ```
 
 5. **Operate the FSM** via the controller:

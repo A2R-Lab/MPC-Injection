@@ -959,8 +959,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         Positive rewards (encourage desired behavior):
             - track_linear_velocity: Exponential tracking of commanded xy vel
             - track_angular_velocity: Exponential tracking of commanded yaw rate
-            - lin_vel_forward: Linear forward velocity toward command (constant gradient)
-            - ang_vel_forward: Linear angular velocity toward command (constant gradient)
+            - lin_vel_forward: Linear forward velocity toward command
+            - ang_vel_forward: Linear angular velocity toward command
             - alive: Constant per-step survival bonus
             - variable_posture: Speed-dependent default pose tracking
             - feet_air_time: Encourage trotting gait with proper timing

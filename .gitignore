@@ -228,3 +228,6 @@ jax_cache/
 
 # Ignore workspace settings for Visual Studio Code
 .vscode/
+
+# Ignore the deploy build cache
+deploy/robots/go2/build/
