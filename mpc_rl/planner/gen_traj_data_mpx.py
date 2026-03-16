@@ -1,0 +1,383 @@
+import jax.numpy as jnp
+import jax
+import mujoco
+# JAX configuration (must be before other JAX imports)
+jax.config.update("jax_compilation_cache_dir", "./jax_cache")
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+
+import numpy as np
+from pathlib import Path
+import sys
+import argparse
+from scipy.spatial.transform import Rotation
+from timeit import default_timer as timer
+
+from gym_quadruped.quadruped_env import QuadrupedEnv
+
+import mpx.utils.mpc_wrapper as mpc_wrapper
+import mpx.config.config_go2 as config
+
+# Select device (GPU if available, else CPU)
+try:
+    gpu_device = jax.devices('gpu')[0]
+except RuntimeError:
+    gpu_device = jax.devices('cpu')[0]
+jax.default_device(gpu_device)
+
+
+# RL environment defaults (from QuadrupedVelocityTrackingEnv)
+RL_SIM_DT = 0.005          # 200 Hz physics
+RL_DECIMATION = 4           # control at 50 Hz
+RL_CONTROL_DT = RL_SIM_DT * RL_DECIMATION  # 0.02s
+RL_ACTION_SCALE = 0.5
+RL_LIN_VEL_X_RANGE = (-0.5, 1.0)
+RL_LIN_VEL_Y_RANGE = (-0.5, 0.5)
+RL_ANG_VEL_Z_RANGE = (-1.0, 1.0)
+RL_COMMAND_RESAMPLE_INTERVAL = 250  # control steps
+RL_JOINT_POS_NOISE = 0.05          # radians
+RL_BASE_ORIENT_NOISE = 0.03        # radians (roll, pitch)
+RL_JOINT_VEL_NOISE = 0.05          # rad/s
+
+
+def sample_commands(rng):
+    """Sample velocity commands matching the RL env distribution."""
+    vx = rng.uniform(*RL_LIN_VEL_X_RANGE)
+    vy = rng.uniform(*RL_LIN_VEL_Y_RANGE)
+    wz = rng.uniform(*RL_ANG_VEL_Z_RANGE)
+    # Zero small xy commands (same as RL env)
+    if np.sqrt(vx**2 + vy**2) < 0.2:
+        vx = 0.0
+        vy = 0.0
+    return np.array([vx, vy, wz])
+
+
+def randomize_initial_state(env, rng):
+    """Apply initial state randomization matching QuadrupedVelocityTrackingEnv.reset().
+
+    Args:
+        env: QuadrupedEnv instance whose mjData will be modified in-place.
+        rng: numpy RandomState for deterministic randomization.
+    """
+    n_joints = config.n_joints
+
+    # Reset to home keyframe
+    keyframe_id = mujoco.mj_name2id(env.mjModel, mujoco.mjtObj.mjOBJ_KEY, "home")
+    if keyframe_id >= 0:
+        mujoco.mj_resetDataKeyframe(env.mjModel, env.mjData, keyframe_id)
+
+    # Add joint position noise (matching RL env)
+    env.mjData.qpos[7:7 + n_joints] += rng.uniform(
+        -RL_JOINT_POS_NOISE, RL_JOINT_POS_NOISE, size=n_joints
+    )
+
+    # Small random base orientation perturbation (roll, pitch)
+    roll_noise = rng.uniform(-RL_BASE_ORIENT_NOISE, RL_BASE_ORIENT_NOISE)
+    pitch_noise = rng.uniform(-RL_BASE_ORIENT_NOISE, RL_BASE_ORIENT_NOISE)
+    base_quat_wxyz = env.mjData.qpos[3:7].copy()
+    base_quat_xyzw = np.roll(base_quat_wxyz, -1)
+    base_rot = Rotation.from_quat(base_quat_xyzw)
+    noise_rot = Rotation.from_euler("xyz", [roll_noise, pitch_noise, 0.0])
+    combined_rot = noise_rot * base_rot
+    combined_quat_xyzw = combined_rot.as_quat()
+    env.mjData.qpos[3:7] = np.roll(combined_quat_xyzw, 1)  # back to wxyz
+
+    # Zero all velocities
+    env.mjData.qvel[:] = 0.0
+    env.mjData.qacc[:] = 0.0
+    env.mjData.ctrl[:] = 0.0
+
+    # Forward kinematics (without advancing sim)
+    mujoco.mj_forward(env.mjModel, env.mjData)
+
+    # Add small joint velocity noise after forward kinematics (matching RL env)
+    nv = env.mjModel.nv
+    env.mjData.qvel[6:] = rng.uniform(-RL_JOINT_VEL_NOISE, RL_JOINT_VEL_NOISE, size=nv - 6)
+
+
+def generate_trajectory(seed, episode_length=1000, verbose=1):
+    """Generate a single MPX-controlled quadruped trajectory with random init and commands.
+
+    The simulation runs at 200 Hz. The MPX controller updates at 50 Hz (every 4 sim steps).
+    Velocity commands are resampled every 250 control steps (= 1000 sim steps), matching the
+    RL environment's command_resample_interval.
+
+    A trajectory is marked as fallen (``fell=True``) when ``env.step()`` returns
+    ``is_terminated=True``, which happens if any non-foot body part contacts the ground.
+    The sim loop exits early in that case.
+
+    Args:
+        seed: Random seed for reproducible initial state and command sampling.
+        episode_length: Number of control steps (50 Hz). Total sim steps = episode_length * 4.
+        verbose: 0=quiet, 1=progress, 2=detailed.
+
+    Returns:
+        dict with trajectory data arrays, including a ``fell`` boolean key.
+    """
+    rng = np.random.RandomState(seed)
+    n_joints = config.n_joints
+    sim_frequency = 200.0
+    mpc_frequency = config.mpc_frequency  # 50 Hz
+    sim_steps_per_ctrl = int(sim_frequency / mpc_frequency)  # 4
+    total_sim_steps = episode_length * sim_steps_per_ctrl
+
+    # Default joint positions (from Go2 keyframe "home")
+    default_joint_pos = np.array(config.q0, dtype=np.float64)
+
+    # Create environment (headless, no rendering)
+    robot_feet_geom_names = dict(FR='FR', FL='FL', RR='RR', RL='RL')
+    env = QuadrupedEnv(
+        robot="go2",
+        scene="flat",
+        sim_dt=1 / sim_frequency,
+        ref_base_lin_vel=0.0,
+        ground_friction_coeff=0.7,
+        base_vel_command_type="human",
+        state_obs_names=tuple(QuadrupedEnv.ALL_OBS),
+    )
+    env.reset(random=False)
+
+    # Apply random initial state (matching RL env distribution)
+    randomize_initial_state(env, rng)
+
+    # Create MPC controller and reset with the randomized state
+    mpc = mpc_wrapper.MPCControllerWrapper(config)
+    mpc.robot_height = config.robot_height
+    mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
+
+    # Initialize MPC state variables
+    tau = jnp.zeros(n_joints)
+    q_des = config.q0.copy()
+    dq_des = jnp.zeros(n_joints)
+
+    # Pre-allocate trajectory storage (at sim frequency)
+    nq = env.mjModel.nq  # 19
+    nv = env.mjModel.nv  # 18
+    qpos_traj = np.zeros((nq, total_sim_steps + 1))
+    qvel_traj = np.zeros((nv, total_sim_steps + 1))
+    tau_applied_traj = np.zeros((n_joints, total_sim_steps))     # total torques applied
+    tau_mpx_traj = np.zeros((n_joints, total_sim_steps))         # MPX feedforward torques
+    q_des_traj = np.zeros((n_joints, total_sim_steps))           # MPX desired joint positions
+    time_traj = np.zeros(total_sim_steps + 1)
+    commands_traj = np.zeros((3, total_sim_steps))
+
+    # Cache initial state
+    qpos_traj[:, 0] = env.mjData.qpos.copy()
+    qvel_traj[:, 0] = env.mjData.qvel.copy()
+    time_traj[0] = env.mjData.time
+
+    # Sample initial velocity commands
+    commands = sample_commands(rng)
+    steps_since_resample = 0  # in control steps
+
+    if verbose > 0:
+        print(f"[Seed {seed}] Starting trajectory generation")
+        print(f"  Episode length: {episode_length} ctrl steps ({total_sim_steps} sim steps)")
+        print(f"  Init qpos (joints): {env.mjData.qpos[7:7+n_joints]}")
+        print(f"  Init commands: vx={commands[0]:.2f}, vy={commands[1]:.2f}, wz={commands[2]:.2f}")
+
+    mpc_solve_times = []
+    fell = False
+
+    for t in range(total_sim_steps):
+        qpos = env.mjData.qpos.copy()
+        qvel = env.mjData.qvel.copy()
+
+        is_mpc_step = (t % sim_steps_per_ctrl == 0)
+
+        if is_mpc_step:
+            ctrl_step = t // sim_steps_per_ctrl
+
+            # Resample commands periodically (every 250 control steps)
+            if steps_since_resample >= RL_COMMAND_RESAMPLE_INTERVAL and ctrl_step > 0:
+                commands = sample_commands(rng)
+                steps_since_resample = 0
+                if verbose > 1:
+                    print(f"  [t={t}] Resampled commands: vx={commands[0]:.2f}, "
+                          f"vy={commands[1]:.2f}, wz={commands[2]:.2f}")
+            steps_since_resample += 1
+
+            # Build MPX input: [vx, vy, vz, wx, wy, wz, height]
+            mpx_input = np.array([
+                commands[0], commands[1], 0.0,
+                0.0, 0.0, commands[2],
+                config.robot_height
+            ])
+
+            # Get foot contact states
+            contact_temp, _ = env.feet_contact_state()
+            contact = np.array([
+                contact_temp[robot_feet_geom_names[leg]]
+                for leg in ['FL', 'FR', 'RL', 'RR']
+            ])
+
+            # Solve MPC
+            start_t = timer()
+            tau, q_des, dq_des = mpc.run(qpos, qvel, mpx_input, contact)
+            solve_time = timer() - start_t
+            mpc_solve_times.append(solve_time)
+
+        # Compute PD feedback and total torque (same gains as MPXPlanner: kp=10, kd=2)
+        tau_fb = 10 * (q_des - qpos[7:7 + n_joints]) - 2 * qvel[6:6 + n_joints]
+        total_tau = np.array(tau + tau_fb)
+
+        # Record (at sim frequency)
+        commands_traj[:, t] = commands
+        tau_applied_traj[:, t] = total_tau
+        tau_mpx_traj[:, t] = np.array(tau)
+        q_des_traj[:, t] = np.array(q_des)
+
+        # Step simulation
+        state, reward, is_terminated, is_truncated, info = env.step(action=total_tau)
+
+        # Record state after stepping
+        qpos_traj[:, t + 1] = env.mjData.qpos.copy()
+        qvel_traj[:, t + 1] = env.mjData.qvel.copy()
+        time_traj[t + 1] = env.mjData.time
+
+        if is_terminated:
+            # Non-foot body part contacted the ground - robot fell
+            fell = True
+            if verbose > 1:
+                print(f"  [Seed {seed}] Robot fell at sim step {t+1} - aborting trajectory")
+            break
+
+        if verbose > 0 and (t + 1) % 1000 == 0:
+            print(f"  [Seed {seed}] Sim step {t+1}/{total_sim_steps}")
+
+    if verbose > 0:
+        avg_solve = np.mean(mpc_solve_times) if mpc_solve_times else 0
+        status = "FELL" if fell else "OK"
+        print(f"  [Seed {seed}] Done [{status}]. Avg MPC solve: {avg_solve*1000:.1f}ms")
+
+    return {
+        "qpos": qpos_traj,                      # (nq, T+1) at sim freq
+        "qvel": qvel_traj,                       # (nv, T+1) at sim freq
+        "tau_applied": tau_applied_traj,         # (n_joints, T) total torques
+        "tau_mpx": tau_mpx_traj,                 # (n_joints, T) MPX feedforward torques
+        "q_des": q_des_traj,                     # (n_joints, T) MPX desired joint positions
+        "time": time_traj,                       # (T+1,) timestamps
+        "commands": commands_traj,               # (3, T) velocity commands [vx, vy, wz]
+        "seed": seed,
+        "default_joint_pos": default_joint_pos,  # (n_joints,) for RL action conversion
+        "action_scale": RL_ACTION_SCALE,
+        "sim_dt": 1 / sim_frequency,
+        "control_dt": RL_CONTROL_DT,
+        "episode_length": episode_length,
+        "fell": fell,
+    }
+
+
+def gen_traj_quadruped(
+    num_trajectories=100,
+    episode_length=1000,
+    start_seed=0,
+    output_dir=None,
+    verbose=1,
+):
+    """Generate N quadruped trajectories where the robot does not fall.
+
+    Trajectories in which any non-foot body part contacts the ground are discarded
+    and a new attempt is made with the next seed value.  The function keeps retrying
+    until exactly ``num_trajectories`` valid trajectories have been saved.
+
+    Args:
+        num_trajectories: Number of valid (non-fallen) trajectories to collect.
+        episode_length: Control steps per trajectory (50 Hz). Sim steps = episode_length * 4.
+        start_seed: First seed value.  Seeds increment by 1 for every attempt
+            (both successful and failed).
+        output_dir: Output directory. Defaults to MPC-RL/data/quadruped/.
+        verbose: Verbosity level.
+    """
+    if output_dir is None:
+        output_dir = Path(__file__).parent.parent.parent / "data" / "quadruped"
+    else:
+        output_dir = Path(output_dir)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if verbose > 0:
+        print(f"Generating {num_trajectories} valid (non-fallen) quadruped trajectories")
+        print(f"  Episode length: {episode_length} ctrl steps")
+        print(f"  Starting seed: {start_seed}")
+        print(f"  Output: {output_dir}")
+        print()
+
+    saved = 0       # number of valid trajectories saved
+    attempt = 0     # total attempts (valid + fallen)
+
+    while saved < num_trajectories:
+        seed = start_seed + attempt
+        attempt += 1
+
+        if verbose > 0:
+            print(f"--- Attempt {attempt} | Saved {saved}/{num_trajectories} (seed={seed}) ---")
+
+        traj_data = generate_trajectory(
+            seed=seed,
+            episode_length=episode_length,
+            verbose=verbose,
+        )
+
+        if traj_data["fell"]:
+            if verbose > 0:
+                print(f"  [Seed {seed}] Robot fell - discarding trajectory, trying next seed")
+                print()
+            continue
+
+        filename = f"quadruped_seed_{seed:06d}_ep_{episode_length}.npz"
+        filepath = output_dir / filename
+
+        np.savez_compressed(filepath, **traj_data)
+        saved += 1
+
+        if verbose > 0:
+            print(f"  Saved ({saved}/{num_trajectories}): {filepath}")
+            print()
+
+    if verbose > 0:
+        print(
+            f"Done! Saved {num_trajectories} valid trajectories in {output_dir} "
+            f"({attempt - num_trajectories} discarded due to falls)"
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate MPX quadruped trajectories for MPC-Injection into RL"
+    )
+    parser.add_argument(
+        "--num-trajectories", "-n", type=int, default=100,
+        help="Number of trajectories to generate (default: 100)"
+    )
+    parser.add_argument(
+        "--episode-length", type=int, default=1000,
+        help="Episode length in control steps at 50 Hz (default: 1000 = 20s)"
+    )
+    parser.add_argument(
+        "--start-seed", type=int, default=0,
+        help="Starting random seed (default: 0)"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Output directory (default: data/quadruped/)"
+    )
+    parser.add_argument(
+        "--verbose", "-v", type=int, default=1, choices=[0, 1, 2],
+        help="Verbosity level (default: 1)"
+    )
+
+    args = parser.parse_args()
+
+    gen_traj_quadruped(
+        num_trajectories=args.num_trajectories,
+        episode_length=args.episode_length,
+        start_seed=args.start_seed,
+        output_dir=args.output_dir,
+        verbose=args.verbose,
+    )
+
+
+if __name__ == "__main__":
+    main()

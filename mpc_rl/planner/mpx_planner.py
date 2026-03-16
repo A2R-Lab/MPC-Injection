@@ -16,7 +16,8 @@ import mpx.config.config_go2 as config
 
 from timeit import default_timer as timer
 # Set GPU device for JAX
-gpu_device = jax.devices('gpu')[0]
+#gpu_device = jax.devices('gpu')[0]
+gpu_device = jax.devices('cpu')[0]  # Use CPU if GPU is not available
 jax.default_device(gpu_device)
 
 class MPXPlanner():
