@@ -39,6 +39,10 @@ RL_COMMAND_RESAMPLE_INTERVAL = 250  # control steps
 RL_JOINT_POS_NOISE = 0.05          # radians
 RL_BASE_ORIENT_NOISE = 0.03        # radians (roll, pitch)
 RL_JOINT_VEL_NOISE = 0.05          # rad/s
+# Termination thresholds - must match QuadrupedVelocityTrackingEnv defaults
+RL_MAX_ROLL = 0.5          # radians
+RL_MAX_PITCH = 0.5         # radians
+RL_MIN_BASE_HEIGHT = 0.1   # meters
 
 
 def sample_commands(rng):
@@ -96,16 +100,41 @@ def randomize_initial_state(env, rng):
     env.mjData.qvel[6:] = rng.uniform(-RL_JOINT_VEL_NOISE, RL_JOINT_VEL_NOISE, size=nv - 6)
 
 
-def generate_trajectory(seed, episode_length=1000, verbose=1):
+def _check_fell(mjdata):
+    """Check whether the robot has fallen using the same criteria as the RL env.
+
+    Mirrors ``QuadrupedVelocityTrackingEnv._check_termination()``: the episode
+    ends if the base roll or pitch exceeds 0.5 rad, or the base height drops
+    below 0.1 m.  Body-ground contact is intentionally NOT checked here because
+    the RL training environment does not use that criterion.
+
+    Args:
+        mjdata: mujoco.MjData of the running simulation.
+
+    Returns:
+        True if the robot should be considered fallen, False otherwise.
+    """
+    quat_wxyz = mjdata.qpos[3:7]
+    quat_xyzw = np.roll(quat_wxyz, -1)
+    euler = Rotation.from_quat(quat_xyzw).as_euler("xyz")
+    roll, pitch = euler[0], euler[1]
+    if abs(roll) > RL_MAX_ROLL or abs(pitch) > RL_MAX_PITCH:
+        return True
+    if mjdata.qpos[2] < RL_MIN_BASE_HEIGHT:
+        return True
+    return False
+
+(seed, episode_length=1000, verbose=1):
     """Generate a single MPX-controlled quadruped trajectory with random init and commands.
 
     The simulation runs at 200 Hz. The MPX controller updates at 50 Hz (every 4 sim steps).
     Velocity commands are resampled every 250 control steps (= 1000 sim steps), matching the
     RL environment's command_resample_interval.
 
-    A trajectory is marked as fallen (``fell=True``) when ``env.step()`` returns
-    ``is_terminated=True``, which happens if any non-foot body part contacts the ground.
-    The sim loop exits early in that case.
+    A trajectory is marked as fallen (``fell=True``) when the base roll/pitch exceeds
+    0.5 rad or the base height drops below 0.1 m, matching the termination criteria of
+    ``QuadrupedVelocityTrackingEnv``.  The check is performed once per control step (50 Hz)
+    to match the RL env's behavior.  The sim loop exits early when the robot has fallen.
 
     Args:
         seed: Random seed for reproducible initial state and command sampling.
@@ -229,19 +258,23 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
         q_des_traj[:, t] = np.array(q_des)
 
         # Step simulation
-        state, reward, is_terminated, is_truncated, info = env.step(action=total_tau)
+        env.step(action=total_tau)
 
         # Record state after stepping
         qpos_traj[:, t + 1] = env.mjData.qpos.copy()
         qvel_traj[:, t + 1] = env.mjData.qvel.copy()
         time_traj[t + 1] = env.mjData.time
 
-        if is_terminated:
-            # Non-foot body part contacted the ground - robot fell
-            fell = True
-            if verbose > 1:
-                print(f"  [Seed {seed}] Robot fell at sim step {t+1} - aborting trajectory")
-            break
+        # Check termination once per complete control step (matching RL env at 50 Hz).
+        # Uses roll/pitch/height thresholds - NOT body-ground contact - so that valid
+        # trajectories are not discarded for transient knee/thigh grazes.
+        if (t + 1) % sim_steps_per_ctrl == 0:
+            if _check_fell(env.mjData):
+                fell = True
+                if verbose > 1:
+                    ctrl_step_done = (t + 1) // sim_steps_per_ctrl
+                    print(f"  [Seed {seed}] Robot fell at ctrl step {ctrl_step_done} - aborting")
+                break
 
         if verbose > 0 and (t + 1) % 1000 == 0:
             print(f"  [Seed {seed}] Sim step {t+1}/{total_sim_steps}")
@@ -274,13 +307,15 @@ def gen_traj_quadruped(
     episode_length=1000,
     start_seed=0,
     output_dir=None,
+    max_attempts=None,
     verbose=1,
 ):
     """Generate N quadruped trajectories where the robot does not fall.
 
-    Trajectories in which any non-foot body part contacts the ground are discarded
-    and a new attempt is made with the next seed value.  The function keeps retrying
-    until exactly ``num_trajectories`` valid trajectories have been saved.
+    Trajectories where the robot falls (roll/pitch > 0.5 rad or height < 0.1 m,
+    matching the RL env) are discarded and a new attempt is made with the next
+    seed.  The function keeps retrying until exactly ``num_trajectories`` valid
+    trajectories are saved, or until ``max_attempts`` total attempts are made.
 
     Args:
         num_trajectories: Number of valid (non-fallen) trajectories to collect.
@@ -288,6 +323,8 @@ def gen_traj_quadruped(
         start_seed: First seed value.  Seeds increment by 1 for every attempt
             (both successful and failed).
         output_dir: Output directory. Defaults to MPC-RL/data/quadruped/.
+        max_attempts: Maximum total attempts (successful + failed) before stopping.
+            If None, retries indefinitely until num_trajectories are saved.
         verbose: Verbosity level.
     """
     if output_dir is None:
@@ -301,6 +338,7 @@ def gen_traj_quadruped(
         print(f"Generating {num_trajectories} valid (non-fallen) quadruped trajectories")
         print(f"  Episode length: {episode_length} ctrl steps")
         print(f"  Starting seed: {start_seed}")
+        print(f"  Max attempts: {'unlimited' if max_attempts is None else max_attempts}")
         print(f"  Output: {output_dir}")
         print()
 
@@ -308,6 +346,13 @@ def gen_traj_quadruped(
     attempt = 0     # total attempts (valid + fallen)
 
     while saved < num_trajectories:
+        if max_attempts is not None and attempt >= max_attempts:
+            print(
+                f"Warning: reached max_attempts={max_attempts} after saving "
+                f"{saved}/{num_trajectories} trajectories. Stopping."
+            )
+            break
+
         seed = start_seed + attempt
         attempt += 1
 
@@ -364,6 +409,10 @@ def main():
         help="Output directory (default: data/quadruped/)"
     )
     parser.add_argument(
+        "--max-attempts", type=int, default=None,
+        help="Maximum total attempts before stopping (default: unlimited)"
+    )
+    parser.add_argument(
         "--verbose", "-v", type=int, default=1, choices=[0, 1, 2],
         help="Verbosity level (default: 1)"
     )
@@ -375,6 +424,7 @@ def main():
         episode_length=args.episode_length,
         start_seed=args.start_seed,
         output_dir=args.output_dir,
+        max_attempts=args.max_attempts,
         verbose=args.verbose,
     )
 
