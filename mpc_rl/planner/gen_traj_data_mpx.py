@@ -124,7 +124,8 @@ def _check_fell(mjdata):
         return True
     return False
 
-(seed, episode_length=1000, verbose=1):
+
+def generate_trajectory(seed, episode_length=1000, verbose=1):
     """Generate a single MPX-controlled quadruped trajectory with random init and commands.
 
     The simulation runs at 200 Hz. The MPX controller updates at 50 Hz (every 4 sim steps).
