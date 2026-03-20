@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 import sys
 import argparse
+import time
 from scipy.spatial.transform import Rotation
 from timeit import default_timer as timer
 
@@ -32,9 +33,9 @@ RL_SIM_DT = 0.005          # 200 Hz physics
 RL_DECIMATION = 4           # control at 50 Hz
 RL_CONTROL_DT = RL_SIM_DT * RL_DECIMATION  # 0.02s
 RL_ACTION_SCALE = 0.5
-RL_LIN_VEL_X_RANGE = (-0.5, 1.0)
-RL_LIN_VEL_Y_RANGE = (-0.5, 0.5)
-RL_ANG_VEL_Z_RANGE = (-1.0, 1.0)
+RL_LIN_VEL_X_RANGE = (-0.5/2, 1.0/2)
+RL_LIN_VEL_Y_RANGE = (-0.5/2, 0.5/2)
+RL_ANG_VEL_Z_RANGE = (-1.0/2, 1.0/2)
 RL_COMMAND_RESAMPLE_INTERVAL = 250  # control steps
 RL_JOINT_POS_NOISE = 0.05          # radians
 RL_BASE_ORIENT_NOISE = 0.03        # radians (roll, pitch)
@@ -125,7 +126,7 @@ def _check_fell(mjdata):
     return False
 
 
-def generate_trajectory(seed, episode_length=1000, verbose=1):
+def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=False):
     """Generate a single MPX-controlled quadruped trajectory with random init and commands.
 
     The simulation runs at 200 Hz. The MPX controller updates at 50 Hz (every 4 sim steps).
@@ -139,8 +140,14 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
 
     Args:
         seed: Random seed for reproducible initial state and command sampling.
+        mpc: Optional pre-built MPCControllerWrapper. When provided (e.g. from
+            gen_traj_quadruped), the JIT-compiled kernels are reused across
+            trajectories and only mpc.reset() is called to reinitialise the
+            warm-start. When None, a new wrapper is created and compiled here.
         episode_length: Number of control steps (50 Hz). Total sim steps = episode_length * 4.
         verbose: 0=quiet, 1=progress, 2=detailed.
+        render: If True, open a passive MuJoCo viewer window and display the simulation
+            in real time.  Closes automatically when the trajectory ends or the robot falls.
 
     Returns:
         dict with trajectory data arrays, including a ``fell`` boolean key.
@@ -155,7 +162,6 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
     # Default joint positions (from Go2 keyframe "home")
     default_joint_pos = np.array(config.q0, dtype=np.float64)
 
-    # Create environment (headless, no rendering)
     robot_feet_geom_names = dict(FR='FR', FL='FL', RR='RR', RL='RL')
     env = QuadrupedEnv(
         robot="go2",
@@ -171,9 +177,29 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
     # Apply random initial state (matching RL env distribution)
     randomize_initial_state(env, rng)
 
-    # Create MPC controller and reset with the randomized state
-    mpc = mpc_wrapper.MPCControllerWrapper(config)
-    mpc.robot_height = config.robot_height
+    # Create the MPC controller if one was not supplied by the caller.
+    # When called from gen_traj_quadruped a single pre-compiled instance is
+    # passed in so that JIT compilation only occurs once for all trajectories.
+    own_mpc = mpc is None
+    if own_mpc:
+        mpc = mpc_wrapper.MPCControllerWrapper(config)
+        mpc.robot_height = config.robot_height
+        # Trigger JIT compilation before opening the viewer or recording data.
+        if verbose > 0:
+            print(f"[Seed {seed}] Pre-compiling JAX MPC kernels...")
+        _jit_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
+        _jit_contact_temp, _ = env.feet_contact_state()
+        _jit_contact = np.array([
+            _jit_contact_temp[robot_feet_geom_names[leg]]
+            for leg in ['FL', 'FR', 'RL', 'RR']
+        ])
+        _start_compile = timer()
+        mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
+        mpc.run(env.mjData.qpos.copy(), env.mjData.qvel.copy(), _jit_input, _jit_contact)
+        if verbose > 0:
+            print(f"[Seed {seed}] JIT compilation done in {timer() - _start_compile:.1f}s")
+
+    # Reset warm-start to match the current randomised initial state.
     mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
 
     # Initialize MPC state variables
@@ -197,9 +223,13 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
     qvel_traj[:, 0] = env.mjData.qvel.copy()
     time_traj[0] = env.mjData.time
 
-    # Sample initial velocity commands
+    # Sample target velocity commands; they will be ramped up from zero to
+    # avoid hitting the MPC with full-speed requests from a standing start.
     commands = sample_commands(rng)
     steps_since_resample = 0  # in control steps
+    # Number of control steps over which to linearly ramp commands to full value.
+    # At 50 Hz, 50 steps = 1 second of ramp-up time.
+    CMD_RAMP_STEPS = 50
 
     if verbose > 0:
         print(f"[Seed {seed}] Starting trajectory generation")
@@ -209,6 +239,12 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
 
     mpc_solve_times = []
     fell = False
+
+    if render:
+        import mujoco.viewer as mjviewer
+        viewer = mjviewer.launch_passive(env.mjModel, env.mjData)
+    else:
+        viewer = None
 
     for t in range(total_sim_steps):
         qpos = env.mjData.qpos.copy()
@@ -229,9 +265,12 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
             steps_since_resample += 1
 
             # Build MPX input: [vx, vy, vz, wx, wy, wz, height]
+            # Linearly ramp commands from zero to the target over CMD_RAMP_STEPS
+            # so the MPC solver is not hit with full-speed requests from step 0.
+            ramp_scale = min(1.0, ctrl_step / CMD_RAMP_STEPS)
             mpx_input = np.array([
-                commands[0], commands[1], 0.0,
-                0.0, 0.0, commands[2],
+                ramp_scale * commands[0], ramp_scale * commands[1], 0.0,
+                0.0, 0.0, ramp_scale * commands[2],
                 config.robot_height
             ])
 
@@ -266,6 +305,14 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
         qvel_traj[:, t + 1] = env.mjData.qvel.copy()
         time_traj[t + 1] = env.mjData.time
 
+        if viewer is not None:
+            viewer.sync()
+            time.sleep(1.0 / sim_frequency)  # pace to real time
+            if not viewer.is_running():
+                if verbose > 0:
+                    print(f"  [Seed {seed}] Viewer closed by user - ending trajectory")
+                break
+
         # Check termination once per complete control step (matching RL env at 50 Hz).
         # Uses roll/pitch/height thresholds - NOT body-ground contact - so that valid
         # trajectories are not discarded for transient knee/thigh grazes.
@@ -279,6 +326,9 @@ def generate_trajectory(seed, episode_length=1000, verbose=1):
 
         if verbose > 0 and (t + 1) % 1000 == 0:
             print(f"  [Seed {seed}] Sim step {t+1}/{total_sim_steps}")
+
+    if viewer is not None:
+        viewer.close()
 
     if verbose > 0:
         avg_solve = np.mean(mpc_solve_times) if mpc_solve_times else 0
@@ -310,6 +360,7 @@ def gen_traj_quadruped(
     output_dir=None,
     max_attempts=None,
     verbose=1,
+    render=False,
 ):
     """Generate N quadruped trajectories where the robot does not fall.
 
@@ -327,6 +378,7 @@ def gen_traj_quadruped(
         max_attempts: Maximum total attempts (successful + failed) before stopping.
             If None, retries indefinitely until num_trajectories are saved.
         verbose: Verbosity level.
+        render: If True, open a viewer window for each trajectory attempt.
     """
     if output_dir is None:
         output_dir = Path(__file__).parent.parent.parent / "data" / "quadruped"
@@ -341,6 +393,24 @@ def gen_traj_quadruped(
         print(f"  Starting seed: {start_seed}")
         print(f"  Max attempts: {'unlimited' if max_attempts is None else max_attempts}")
         print(f"  Output: {output_dir}")
+        print()
+
+    # Build and JIT-compile the MPC controller once. All trajectory calls reuse
+    # the same compiled kernels; only mpc.reset() is called between trajectories
+    # to reinitialise the warm-start.
+    if verbose > 0:
+        print("Pre-compiling JAX MPC kernels (once for all trajectories)...")
+    shared_mpc = mpc_wrapper.MPCControllerWrapper(config)
+    shared_mpc.robot_height = config.robot_height
+    _dummy_qpos = np.concatenate([np.array(config.p0), np.array(config.quat0), np.array(config.q0)])
+    _dummy_qvel = np.zeros(config.n_joints + 6)
+    _dummy_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
+    _dummy_contact = np.zeros(config.n_contact)
+    shared_mpc.reset(_dummy_qpos, _dummy_qvel)
+    _t0 = timer()
+    shared_mpc.run(_dummy_qpos, _dummy_qvel, _dummy_input, _dummy_contact)
+    if verbose > 0:
+        print(f"JIT compilation done in {timer() - _t0:.1f}s")
         print()
 
     saved = 0       # number of valid trajectories saved
@@ -362,8 +432,10 @@ def gen_traj_quadruped(
 
         traj_data = generate_trajectory(
             seed=seed,
+            mpc=shared_mpc,
             episode_length=episode_length,
             verbose=verbose,
+            render=render,
         )
 
         if traj_data["fell"]:
@@ -417,6 +489,10 @@ def main():
         "--verbose", "-v", type=int, default=1, choices=[0, 1, 2],
         help="Verbosity level (default: 1)"
     )
+    parser.add_argument(
+        "--render", action="store_true",
+        help="Open a MuJoCo viewer window to display each trajectory attempt in real time"
+    )
 
     args = parser.parse_args()
 
@@ -427,6 +503,7 @@ def main():
         output_dir=args.output_dir,
         max_attempts=args.max_attempts,
         verbose=args.verbose,
+        render=args.render,
     )
 
 
