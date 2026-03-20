@@ -76,9 +76,12 @@ logging.set_verbosity(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 #from mpc_rl.planner.mpc_planner import MPCPlanner
-from mpc_rl.common import TaggedReplayBuffer, FixedMPCInjectCallback, PercentMPCInjectCallback
+from mpc_rl.common import TaggedReplayBuffer, TaggedDictReplayBuffer, FixedMPCInjectCallback, PercentMPCInjectCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
+# SB3 (PyTorch) MPC-augmented algorithms for quadruped (supports asymmetric policies + Dict obs)
+from mpc_rl.sac_mpc.sb3_sac_mpc import SB3_SAC_MPC
+from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 
 # Register custom quadruped velocity tracking environment
 import mpc_rl.envs
@@ -383,7 +386,10 @@ def load_model(algorithm: str, model_path: Path, env, is_quadruped: bool = False
     """
     if is_quadruped:
         # Quadruped uses SB3 PyTorch with asymmetric policy
-        algo_class = {"SAC": SB3_SAC, "TD3": SB3_TD3}[algorithm]
+        algo_class = {
+            "SAC": SB3_SAC, "TD3": SB3_TD3,
+            "SAC-MPC": SB3_SAC_MPC, "TD3-MPC": SB3_TD3_MPC,
+        }[algorithm]
     else:
         algo_class = {"SAC": SAC, "PPO": PPO, "TD3": TD3, "SAC-MPC": SAC_MPC, "TD3-MPC": TD3_MPC}[algorithm]
     print(f"Loading model from: {model_path}")
@@ -435,10 +441,42 @@ def create_model(env, cfg, is_quadruped: bool = False):
                 seed=cfg.seed,
                 tensorboard_log=cfg.tensorboard_log,
             )
+        elif cfg.algorithm == "SAC-MPC":
+            model = SB3_SAC_MPC(
+                AsymmetricSACPolicy,
+                env,
+                learning_rate=cfg.learning_rate,
+                buffer_size=cfg.buffer_size,
+                learning_starts=cfg.learning_starts,
+                batch_size=cfg.batch_size,
+                tau=cfg.tau,
+                gamma=cfg.gamma,
+                gradient_steps=cfg.gradient_steps,
+                replay_buffer_class=TaggedDictReplayBuffer,
+                verbose=1,
+                seed=cfg.seed,
+                tensorboard_log=cfg.tensorboard_log,
+            )
+        elif cfg.algorithm == "TD3-MPC":
+            model = SB3_TD3_MPC(
+                AsymmetricTD3Policy,
+                env,
+                learning_rate=cfg.learning_rate,
+                buffer_size=cfg.buffer_size,
+                learning_starts=cfg.learning_starts,
+                batch_size=cfg.batch_size,
+                tau=cfg.tau,
+                gamma=cfg.gamma,
+                gradient_steps=cfg.gradient_steps,
+                replay_buffer_class=TaggedDictReplayBuffer,
+                verbose=1,
+                seed=cfg.seed,
+                tensorboard_log=cfg.tensorboard_log,
+            )
         else:
             raise ValueError(
                 f"Algorithm '{cfg.algorithm}' is not supported for quadruped environments. "
-                "Use SAC or TD3 (SAC-MPC and TD3-MPC will be integrated later)."
+                "Use SAC, TD3, SAC-MPC, or TD3-MPC."
             )
         return model
     
@@ -632,6 +670,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
                 seed=seed,  # Pass seed for reproducible trajectory selection
+                robot=robot if is_quadruped else "go2",
                 verbose=1,
             )
         callbacks.append(inject_callback)

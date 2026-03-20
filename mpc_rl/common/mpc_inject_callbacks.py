@@ -367,19 +367,21 @@ class PercentMPCInjectCallback(BaseCallback):
     """
     def __init__(
         self,
-        domain: str,                          # Environment domain (e.g., 'cartpole', 'walker')
-        task: str,                            # Environment task (e.g., 'swingup', 'walk')
+        domain: str,                          # Environment domain (e.g., 'cartpole', 'walker', 'quadruped')
+        task: str,                            # Environment task (e.g., 'swingup', 'walk', 'velocity_tracking')
         target_percentage: int=25,            # Target percentage of replay buffer to be MPC data (0-100)
         data_dir: str=None,                   # Path to directory with saved trajectories
         random_select: bool=True,             # If True, randomly select trajectories from data_dir
         trajectory_files: list=None,          # List of specific filenames to load (used when random_select=False)
         seed: int=None,                       # Random seed for trajectory selection (for reproducibility)
+        robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
         self.domain = domain
         self.task = task
         self.target_percentage = target_percentage
+        self.robot = robot
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
         
         # Trajectory loading configuration
@@ -466,6 +468,102 @@ class PercentMPCInjectCallback(BaseCallback):
         """
         return True  # Continue training
     
+    def _replay_quadruped_trajectory(
+        self, temp_env, qpos, qvel, tau_applied, commands,
+        episode_length, decimation, default_joint_pos,
+    ):
+        """
+        Replay one quadruped MPC trajectory in the RL env and inject transitions.
+
+        MPC (MPX) outputs torques, but the RL policy outputs joint position residuals.
+        This method uses general inverse PD to convert recorded MPC torques into the
+        RL action that would produce the same torque given the current env state:
+            q_target = q_current + (tau_desired + kd * dq_current) / kp
+            action   = (q_target - default_joint_pos) / action_scale
+
+        Args:
+            temp_env: QuadrupedVelocityTrackingEnv instance (non-vectorized).
+            qpos: Recorded positions, shape (19, T_sim+1).
+            qvel: Recorded velocities, shape (18, T_sim+1).
+            tau_applied: Recorded torques at sim frequency, shape (12, T_sim).
+            commands: Velocity commands at sim frequency, shape (3, T_sim).
+            episode_length: Number of control steps in the trajectory.
+            decimation: Sim steps per control step (typically 4).
+            default_joint_pos: Default standing joint positions, shape (12,).
+
+        Returns:
+            Number of transitions added to the replay buffer.
+        """
+        # Reset temp env then override with trajectory initial state
+        temp_env.reset()
+        temp_env.mjData.qpos[:] = qpos[:, 0]
+        temp_env.mjData.qvel[:] = qvel[:, 0]
+        temp_env.mjData.ctrl[:] = 0.0
+        temp_env.mjData.qacc_warmstart[:] = 0.0
+        mujoco.mj_forward(temp_env.mjModel, temp_env.mjData)
+        # Reset internal tracking state (matches gen_traj_data_test_quad.py)
+        temp_env._last_action[:] = 0.0
+        temp_env._prev_last_action[:] = 0.0
+        temp_env._last_joint_vel = temp_env.mjData.qvel[6:].copy()
+
+        obs = temp_env._get_obs()  # Dict with "policy" and "privileged"
+
+        # PD gains and action scale from the RL environment
+        kp = temp_env.kp
+        kd = temp_env.kd
+        action_scale = temp_env.action_scale
+
+        n_envs = self.training_env.num_envs
+        steps_added = 0
+
+        for ctrl_step in range(episode_length):
+            sim_idx = ctrl_step * decimation
+            if sim_idx >= tau_applied.shape[1]:
+                break
+
+            # General inverse PD: compute RL action that matches MPC torque
+            q_current = temp_env.mjData.qpos[7:19].copy()
+            dq_current = temp_env.mjData.qvel[6:18].copy()
+            tau_desired = tau_applied[:, sim_idx]
+            q_target = q_current + (tau_desired + kd * dq_current) / kp
+            action = (q_target - default_joint_pos) / action_scale
+            action = np.clip(action, -1.0, 1.0)
+
+            # Set velocity commands from the trajectory
+            cmd = commands[:, sim_idx]
+            temp_env.set_commands(vx=float(cmd[0]), vy=float(cmd[1]), wz=float(cmd[2]))
+
+            next_obs, reward, terminated, truncated, info = temp_env.step(action)
+            done = terminated or truncated
+
+            # Tile Dict obs for n_envs (replay buffer API)
+            obs_vec = {k: np.tile(v, (n_envs, 1)) for k, v in obs.items()}
+            next_obs_vec = {k: np.tile(v, (n_envs, 1)) for k, v in next_obs.items()}
+            action_vec = np.tile(action, (n_envs, 1))
+            reward_vec = np.full(n_envs, reward)
+            done_vec = np.full(n_envs, done)
+            info_vec = [info] * n_envs
+
+            self.model.replay_buffer.add(
+                obs=obs_vec,
+                next_obs=next_obs_vec,
+                action=action_vec,
+                reward=reward_vec,
+                done=done_vec,
+                infos=info_vec,
+                source=1,  # MPC source
+            )
+
+            steps_added += 1
+            obs = next_obs
+
+            if done:
+                if self.verbose > 1:
+                    print(f"    Quadruped trajectory terminated at ctrl step {ctrl_step+1}/{episode_length}")
+                break
+
+        return steps_added
+
     def _inject_mpc_trajectories(self):
         """
         Load or generate and inject MPC trajectories into replay buffer to maintain target percentage.
@@ -497,9 +595,14 @@ class PercentMPCInjectCallback(BaseCallback):
         #           TODO: Try Cartpole data collection at 0.01s to match RL timestep?
         # Walker: MPC at 0.0025s, RL at 0.025s -> downsample by 10
         # Shadow Hand: MPC at 0.002s, RL at 0.002s -> downsample by 1
+        # Quadruped: MPC at sim_dt, trajectory indexed at control_dt via decimation
         # NOTE: This can be calculated/seen from the env_modified.xml and the related
         #       task.xml files for MPC vs the env.py and env.py files for RL in dm_control.
-        if self.domain == "cartpole":
+        is_quadruped = (self.domain == "quadruped")
+        downsample_factor = None  # Not used for quadruped
+        if is_quadruped:
+            pass  # Quadruped indexes trajectory at control frequency via decimation
+        elif self.domain == "cartpole":
             downsample_factor = 10  # MPC at 0.001s, RL at 0.01s
         elif self.domain == "walker":
             downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
@@ -511,7 +614,15 @@ class PercentMPCInjectCallback(BaseCallback):
         # Create a temporary environment for MPC trajectory generation
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
-        if self.domain == "shadow_hand":
+        if is_quadruped:
+            from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+            from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+            temp_env = QuadrupedVelocityTrackingEnv(
+                robot=getattr(self, 'robot', 'go2'),
+                render_mode=None,
+                domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+            )
+        elif self.domain == "shadow_hand":
             # For shadow_hand, task is the full gym env name
             temp_env = gym.make(self.task, render_mode=None)
             temp_env = FlattenObservation(temp_env)
@@ -609,8 +720,11 @@ class PercentMPCInjectCallback(BaseCallback):
                             print(f"{'='*60}\n")
                         break
                     
-                    # Stop if adding one more trajectory would overshoot by too much (>3%)
-                    if estimated_new_pct > self.target_percentage + 3.0:
+                    # Only apply overshoot prevention after at least one trajectory has been
+                    # injected this session. Without this guard, the overshoot check would
+                    # prevent any injection when starting from 0% with large trajectories
+                    # (e.g., quadruped ~1000 steps that would push % well above target).
+                    if num_trajectories_added > 0 and estimated_new_pct > self.target_percentage + 3.0:
                         if self.verbose > 0:
                             print(f"  Stopping to avoid overshoot:")
                             print(f"    Current: {actual_mpc_pct:.2f}%")
@@ -652,16 +766,29 @@ class PercentMPCInjectCallback(BaseCallback):
                         selected_file = self._select_trajectory_file()
                         
                         # Load the MPC trajectory data
-                        traj_data = np.load(selected_file)
+                        traj_data = np.load(selected_file, allow_pickle=True)
                         qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
                         qvel = traj_data['qvel']
-                        ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
                         
-                        # Downsample controls to match RL action timestep
-                        ctrl_downsampled = ctrl[:, ::downsample_factor]
-                        
-                        if self.verbose > 2:
-                            print(f"    Loaded trajectory: MPC steps={ctrl.shape[1]}, Downsampled steps={ctrl_downsampled.shape[1]}")
+                        if is_quadruped:
+                            # Quadruped trajectory format (from gen_traj_data_mpx.py)
+                            traj_tau_applied = traj_data['tau_applied']  # (12, T_sim)
+                            traj_commands = traj_data['commands']        # (3, T_sim)
+                            traj_episode_length = int(traj_data['episode_length'])
+                            traj_sim_dt = float(traj_data['sim_dt'])
+                            traj_control_dt = float(traj_data['control_dt'])
+                            traj_decimation = int(round(traj_control_dt / traj_sim_dt))
+                            traj_default_joint_pos = traj_data['default_joint_pos']
+                            if self.verbose > 2:
+                                print(f"    Loaded quadruped trajectory: {traj_episode_length} ctrl steps, "
+                                      f"decimation={traj_decimation}")
+                        else:
+                            ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
+                            # Downsample controls to match RL action timestep
+                            ctrl_downsampled = ctrl[:, ::downsample_factor]
+                            if self.verbose > 2:
+                                print(f"    Loaded trajectory: MPC steps={ctrl.shape[1]}, "
+                                      f"Downsampled steps={ctrl_downsampled.shape[1]}")
                         
                         # Successfully loaded, break out of retry loop
                         break
@@ -681,81 +808,69 @@ class PercentMPCInjectCallback(BaseCallback):
                 # Generate trajectory using MPC planner
                 raise NotImplementedError("On-the-fly MPC generation not yet implemented. Please provide data_dir.")
             
-            # Set the environment to the MPC initial state by setting physics directly
-            if self.domain == "shadow_hand":
-                # For shadow_hand (gymnasium environment)
-                temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
-                temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
-                # Forward the physics to update the observation
-                mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
-                # Get observation from environment
-                obs = temp_env.unwrapped._get_obs()
-            else:
-                # For dm_control environments
-                temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
-                temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
-                # Forward the physics to update the observation
-                temp_env.unwrapped._env.physics.forward()
-                # Get initial observation from environment (let the environment compute it)
-                obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
-            
-            # Flatten the observation if it's a dict
-            if isinstance(obs, dict):
-                obs = np.concatenate([v.flatten() for v in obs.values()])
-            obs = obs.astype(np.float32)
-            
-            # Step through trajectory using MPC actions
-            num_steps = ctrl_downsampled.shape[1]
-            steps_added_this_traj = 0
-            
-            for step in range(num_steps):
-                # Get MPC action
-                action = ctrl_downsampled[:, step]
-                
-                # Step environment to get real reward
-                # Gymnasium API returns 5 values: (obs, reward, terminated, truncated, info)
-                # NOTE: You could use the state vectors from the MPC trajetory, but with this
-                # gymnasium setup you already get the obs from the environment anyway because
-                # you have to get the reward.
-                next_obs, reward, terminated, truncated, info = temp_env.step(action)
-                done = terminated or truncated
-                
-                # Add to replay buffer
-                # The replay buffer expects vectorized data (shape for n_envs)
-                # Replicate the MPC transition n_envs times to match expected shape
-                n_envs = self.training_env.num_envs
-                
-                # Tile/repeat the same MPC data across all n_envs slots
-                obs_vec = np.tile(obs, (n_envs, 1))  # (n_envs, obs_dim)
-                next_obs_vec = np.tile(next_obs, (n_envs, 1))  # (n_envs, obs_dim)
-                action_vec = np.tile(action, (n_envs, 1))  # (n_envs, action_dim)
-                reward_vec = np.full(n_envs, reward)  # (n_envs,)
-                done_vec = np.full(n_envs, done)  # (n_envs,)
-                info_vec = [info] * n_envs  # list of n_envs infos
-                
-                # Note: VecNormalize will normalize obs/rewards when sampling
-                self.model.replay_buffer.add(
-                    obs=obs_vec,
-                    next_obs=next_obs_vec,
-                    action=action_vec,
-                    reward=reward_vec,
-                    done=done_vec,
-                    infos=info_vec,
-                    source=1  # Mark as MPC source
+            # ----------------------------------------------------------------
+            # Quadruped: inverse-PD conversion and Dict obs replay
+            # ----------------------------------------------------------------
+            if is_quadruped:
+                steps_added_this_traj = self._replay_quadruped_trajectory(
+                    temp_env, qpos, qvel, traj_tau_applied, traj_commands,
+                    traj_episode_length, traj_decimation, traj_default_joint_pos,
                 )
+            else:
+                # ----------------------------------------------------------------
+                # dm_control / shadow_hand: direct action replay
+                # ----------------------------------------------------------------
+                # Set the environment to the MPC initial state
+                if self.domain == "shadow_hand":
+                    temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
+                    temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
+                    mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
+                    obs = temp_env.unwrapped._get_obs()
+                else:
+                    temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                    temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                    temp_env.unwrapped._env.physics.forward()
+                    obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
                 
-                # Track transitions added (each MPC step = 1 unique transition in buffer)
-                # NOTE: Even though we tile/replicate data n_envs times above, the replay
-                # buffer stores each transition only once. The vectorization is just for API
-                # compatibility with the expected input shape.
-                steps_added_this_traj += 1
+                # Flatten the observation if it's a dict
+                if isinstance(obs, dict):
+                    obs = np.concatenate([v.flatten() for v in obs.values()])
+                obs = obs.astype(np.float32)
                 
-                # Update observation for next step
-                obs = next_obs
+                # Step through trajectory using MPC actions
+                num_steps = ctrl_downsampled.shape[1]
+                steps_added_this_traj = 0
                 
-                # Stop if episode ended early (shouldn't happen with MPC)
-                if done:
-                    break
+                for step in range(num_steps):
+                    action = ctrl_downsampled[:, step]
+                    
+                    next_obs, reward, terminated, truncated, info = temp_env.step(action)
+                    done = terminated or truncated
+                    
+                    # Add to replay buffer (tile for n_envs API compatibility)
+                    n_envs = self.training_env.num_envs
+                    obs_vec = np.tile(obs, (n_envs, 1))
+                    next_obs_vec = np.tile(next_obs, (n_envs, 1))
+                    action_vec = np.tile(action, (n_envs, 1))
+                    reward_vec = np.full(n_envs, reward)
+                    done_vec = np.full(n_envs, done)
+                    info_vec = [info] * n_envs
+                    
+                    self.model.replay_buffer.add(
+                        obs=obs_vec,
+                        next_obs=next_obs_vec,
+                        action=action_vec,
+                        reward=reward_vec,
+                        done=done_vec,
+                        infos=info_vec,
+                        source=1  # Mark as MPC source
+                    )
+                    
+                    steps_added_this_traj += 1
+                    obs = next_obs
+                    
+                    if done:
+                        break
             
             # Update tracking counters for this trajectory
             self.total_mpc_trajectories_injected += 1
