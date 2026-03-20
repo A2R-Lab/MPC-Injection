@@ -193,7 +193,7 @@ def replay_joint_position_mode(env, traj, max_steps, render_mode=None):
         if frame is not None:
             frames.append(frame)
         if render_mode == "human":
-            time.sleep(sim_dt)
+            time.sleep(sim_dt / 2)
 
         if terminated or truncated:
             print(f"  Episode ended at step {ctrl_step+1}/{num_steps} "

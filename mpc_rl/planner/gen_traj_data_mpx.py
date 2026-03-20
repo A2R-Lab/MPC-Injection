@@ -33,7 +33,7 @@ RL_SIM_DT = 0.005          # 200 Hz physics
 RL_DECIMATION = 4           # control at 50 Hz
 RL_CONTROL_DT = RL_SIM_DT * RL_DECIMATION  # 0.02s
 RL_ACTION_SCALE = 0.5
-RL_LIN_VEL_X_RANGE = (-0.5/2, 1.0/2)
+RL_LIN_VEL_X_RANGE = (-0.5, 1.0/2)
 RL_LIN_VEL_Y_RANGE = (-0.5/2, 0.5/2)
 RL_ANG_VEL_Z_RANGE = (-1.0/2, 1.0/2)
 RL_COMMAND_RESAMPLE_INTERVAL = 250  # control steps
@@ -159,9 +159,6 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
     sim_steps_per_ctrl = int(sim_frequency / mpc_frequency)  # 4
     total_sim_steps = episode_length * sim_steps_per_ctrl
 
-    # Default joint positions (from Go2 keyframe "home")
-    default_joint_pos = np.array(config.q0, dtype=np.float64)
-
     robot_feet_geom_names = dict(FR='FR', FL='FL', RR='RR', RL='RL')
     env = QuadrupedEnv(
         robot="go2",
@@ -173,6 +170,11 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
         state_obs_names=tuple(QuadrupedEnv.ALL_OBS),
     )
     env.reset(random=False)
+
+    # Default joint positions from the MuJoCo model keyframe (float64).
+    # Using the keyframe directly avoids precision loss from JAX's float32
+    # default when reading config.q0.
+    default_joint_pos = env.mjModel.key_qpos[0, 7:7 + n_joints].copy()
 
     # Apply random initial state (matching RL env distribution)
     randomize_initial_state(env, rng)
@@ -229,7 +231,7 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
     steps_since_resample = 0  # in control steps
     # Number of control steps over which to linearly ramp commands to full value.
     # At 50 Hz, 50 steps = 1 second of ramp-up time.
-    CMD_RAMP_STEPS = 50
+    CMD_RAMP_STEPS = 50 # TODO: test out longer like 150
 
     if verbose > 0:
         print(f"[Seed {seed}] Starting trajectory generation")
@@ -287,15 +289,22 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
             solve_time = timer() - start_t
             mpc_solve_times.append(solve_time)
 
+        # Convert MPC outputs from JAX float32 to numpy float64 before the PD
+        # computation.  JAX demotes mixed float32/float64 ops to float32, which
+        # would silently truncate the float64 MuJoCo state and produce torques
+        # that differ from a pure-float64 replay.
+        tau_f64 = np.asarray(tau, dtype=np.float64)
+        q_des_f64 = np.asarray(q_des, dtype=np.float64)
+
         # Compute PD feedback and total torque (same gains as MPXPlanner: kp=10, kd=2)
-        tau_fb = 10 * (q_des - qpos[7:7 + n_joints]) - 2 * qvel[6:6 + n_joints]
-        total_tau = np.array(tau + tau_fb)
+        tau_fb = 10 * (q_des_f64 - qpos[7:7 + n_joints]) - 2 * qvel[6:6 + n_joints]
+        total_tau = tau_f64 + tau_fb
 
         # Record (at sim frequency)
         commands_traj[:, t] = commands
         tau_applied_traj[:, t] = total_tau
-        tau_mpx_traj[:, t] = np.array(tau)
-        q_des_traj[:, t] = np.array(q_des)
+        tau_mpx_traj[:, t] = tau_f64
+        q_des_traj[:, t] = q_des_f64
 
         # Step simulation
         env.step(action=total_tau)
