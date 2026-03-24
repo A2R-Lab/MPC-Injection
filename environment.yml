@@ -1,4 +1,4 @@
-name: mpc-rl-test
+name: mpc-rl
 channels:
   - conda-forge
 dependencies:

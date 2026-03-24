@@ -469,26 +469,27 @@ class PercentMPCInjectCallback(BaseCallback):
         return True  # Continue training
     
     def _replay_quadruped_trajectory(
-        self, temp_env, qpos, qvel, q_des, tau_mpx, commands,
+        self, temp_env, qpos, qvel, tau_applied, commands,
         episode_length, decimation, default_joint_pos,
     ):
-        """
-        Replay one quadruped MPC trajectory in the RL env and inject transitions.
+        """Replay one quadruped MPC trajectory and inject transitions into the replay buffer.
 
-        The temp env is created with MPX-matching PD gains (kp=10, kd=2) and a
-        wider action_scale=4.0 so the PD controller exactly reproduces the MPX
-        control law at every substep within the decimation. The action is computed
-        using the matched-gain formula from gen_traj_data_test_quad.py:
-            q_target = q_des + tau_mpx / kp
+        Uses per-substep inverse PD torque matching: at each sim substep the recorded
+        tau_applied is set directly on mjData.ctrl so the physics exactly reproduce the
+        recorded trajectory. The RL action stored for each control step is derived from
+        the first substep's current env state via the inverse PD identity:
+
+            q_target = q_current + (tau_applied_first + kd * dq_current) / kp
             action   = (q_target - default_joint_pos) / action_scale
 
+        This mirrors gen_traj_data_test_quad.py exactly and works with any PD gains
+        because the q_target is recomputed from the CURRENT state at each control step.
+
         Args:
-            temp_env: QuadrupedVelocityTrackingEnv instance with kp=10, kd=2,
-                action_scale=4.0 (non-vectorized).
+            temp_env: QuadrupedVelocityTrackingEnv instance (non-vectorized).
             qpos: Recorded positions, shape (19, T_sim+1).
             qvel: Recorded velocities, shape (18, T_sim+1).
-            q_des: Recorded desired joint positions, shape (12, T_sim).
-            tau_mpx: Recorded MPC feedforward torques, shape (12, T_sim).
+            tau_applied: Actually applied torques at sim frequency, shape (12, T_sim).
             commands: Velocity commands at sim frequency, shape (3, T_sim).
             episode_length: Number of control steps in the trajectory.
             decimation: Sim steps per control step (typically 4).
@@ -504,14 +505,12 @@ class PercentMPCInjectCallback(BaseCallback):
         temp_env.mjData.ctrl[:] = 0.0
         temp_env.mjData.qacc_warmstart[:] = 0.0
         mujoco.mj_forward(temp_env.mjModel, temp_env.mjData)
-        # Reset internal tracking state (matches gen_traj_data_test_quad.py)
         temp_env._last_action[:] = 0.0
         temp_env._prev_last_action[:] = 0.0
         temp_env._last_joint_vel = temp_env.mjData.qvel[6:].copy()
 
         obs = temp_env._get_obs()  # Dict with "policy" and "privileged"
 
-        # PD gains and action scale from the RL environment
         kp = temp_env.kp
         kd = temp_env.kd
         action_scale = temp_env.action_scale
@@ -520,30 +519,67 @@ class PercentMPCInjectCallback(BaseCallback):
         steps_added = 0
 
         for ctrl_step in range(episode_length):
-            sim_idx = ctrl_step * decimation
-            if sim_idx >= q_des.shape[1]:
+            sim_idx_start = ctrl_step * decimation
+            if sim_idx_start >= tau_applied.shape[1]:
                 break
 
-            # Matched-gain formula (from gen_traj_data_test_quad.py):
-            # With kp=10, kd=2 matching MPX, q_target = q_des + tau_mpx / kp
-            # exactly reproduces the MPX control law at every substep.
-            q_target = q_des[:, sim_idx] + tau_mpx[:, sim_idx] / kp
-            action = (q_target - default_joint_pos) / action_scale
-            action = np.clip(action, -1.0, 1.0)
-
             # Set velocity commands from the trajectory
-            cmd = commands[:, sim_idx]
+            cmd = commands[:, sim_idx_start]
             temp_env.set_commands(vx=float(cmd[0]), vy=float(cmd[1]), wz=float(cmd[2]))
 
-            next_obs, reward, terminated, truncated, info = temp_env.step(action)
-            done = terminated or truncated
+            # Inverse PD on the current env state at the first substep:
+            #   q_target = q_current + (tau_applied_first + kd * dq_current) / kp
+            #   action   = (q_target - default_joint_pos) / action_scale
+            q_current = temp_env.mjData.qpos[7:19].copy()
+            dq_current = temp_env.mjData.qvel[6:18].copy()
+            tau_first = tau_applied[:, sim_idx_start]
+            q_target_first = q_current + (tau_first + kd * dq_current) / kp
+            action = (q_target_first - default_joint_pos) / action_scale
+            action = np.clip(action, -1.0, 1.0)
+
+            # Mirror env.step() action-tracking bookkeeping
+            temp_env._prev_last_action = temp_env._last_action.copy()
+            temp_env._last_action = action.copy()
+
+            # Per-substep direct torque application - exactly reproduces the recorded
+            # torques regardless of PD gains, matching gen_traj_data_test_quad.py
+            for sub in range(decimation):
+                sim_idx = sim_idx_start + sub
+                if sim_idx >= tau_applied.shape[1]:
+                    break
+                torques = tau_applied[:, sim_idx].copy()
+                torques = np.clip(
+                    torques,
+                    temp_env.torque_limits[:, 0],
+                    temp_env.torque_limits[:, 1],
+                )
+                temp_env._applied_torques = torques
+                temp_env.mjData.ctrl[:] = torques
+                mujoco.mj_step(temp_env.mjModel, temp_env.mjData)
+
+            # Replicate env.step() post-substep bookkeeping
+            temp_env._step_count += 1
+            temp_env._steps_since_command_resample += 1
+            temp_env._maybe_push_robot()
+            temp_env._update_feet_air_time()
+
+            joint_vel_current = temp_env.mjData.qvel[6:].copy()
+            temp_env._joint_acc = (joint_vel_current - temp_env._last_joint_vel) / temp_env.control_dt
+            temp_env._last_joint_vel = joint_vel_current
+
+            next_obs = temp_env._get_obs()
+            terminated = temp_env._check_termination()
+            reward = temp_env._compute_reward(action, terminated)
+            temp_env._swing_peak *= ~temp_env._current_contacts
+
+            info = temp_env._get_info()
 
             # Tile Dict obs for n_envs (replay buffer API)
             obs_vec = {k: np.tile(v, (n_envs, 1)) for k, v in obs.items()}
             next_obs_vec = {k: np.tile(v, (n_envs, 1)) for k, v in next_obs.items()}
             action_vec = np.tile(action, (n_envs, 1))
             reward_vec = np.full(n_envs, reward)
-            done_vec = np.full(n_envs, done)
+            done_vec = np.full(n_envs, float(terminated))
             info_vec = [info] * n_envs
 
             self.model.replay_buffer.add(
@@ -553,13 +589,21 @@ class PercentMPCInjectCallback(BaseCallback):
                 reward=reward_vec,
                 done=done_vec,
                 infos=info_vec,
-                source=1,  # MPC source
+                source=1,
             )
 
             steps_added += 1
             obs = next_obs
 
-            if done:
+            # Periodically check MPC% mid-trajectory to avoid overshooting
+            if steps_added % 100 == 0 and hasattr(self, 'target_percentage'):
+                mid_pct = self.model.replay_buffer.get_mpc_percentage()
+                if mid_pct >= self.target_percentage:
+                    if self.verbose > 1:
+                        print(f"    Mid-trajectory stop: MPC% {mid_pct:.2f}% >= target {self.target_percentage}%")
+                    break
+
+            if terminated:
                 if self.verbose > 1:
                     print(f"    Quadruped trajectory terminated at ctrl step {ctrl_step+1}/{episode_length}")
                 break
@@ -619,15 +663,13 @@ class PercentMPCInjectCallback(BaseCallback):
         if is_quadruped:
             from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
             from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
-            # Use MPX-matching PD gains (kp=10, kd=2) and wider action_scale=4.0
-            # so the PD controller exactly reproduces the MPX control law.
-            # This matches gen_traj_data_test_quad.py's replay setup.
+            # Use default training-env gains (kp=[20,20,40,...], kd=[1,1,2,...],
+            # action_scale=0.5) so that the inverse-PD action formula produces
+            # actions in the same space as the RL policy.  The per-substep direct
+            # torque application makes the gains irrelevant for physics accuracy.
             temp_env = QuadrupedVelocityTrackingEnv(
                 robot=getattr(self, 'robot', 'go2'),
                 render_mode=None,
-                kp=10.0,
-                kd=2.0,
-                action_scale=4.0,
                 domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
             )
         elif self.domain == "shadow_hand":
@@ -712,10 +754,19 @@ class PercentMPCInjectCallback(BaseCallback):
                     current_mpc_count = stats["mpc_transitions"]
                     current_total = stats["total_transitions"]
                     
-                    # Estimate after adding 1 more trajectory (~1000 transitions)
-                    # Note: 1 trajectory = 1000 MPC steps, each added once to buffer
-                    estimated_new_mpc = current_mpc_count + 1000
-                    estimated_new_total = current_total + 1000
+                    # Estimate after adding 1 more trajectory (~1000 transitions).
+                    # Each step is tiled across n_envs in the buffer, so scale
+                    # the estimate to match the n_envs-scaled counts from
+                    # get_composition_stats().
+                    n_envs = self.model.replay_buffer.n_envs
+                    traj_transitions = 1000 * n_envs
+                    estimated_new_mpc = current_mpc_count + traj_transitions
+                    # When the buffer is full, adding rows overwrites old ones;
+                    # total stays at buffer_capacity * n_envs.
+                    if self.model.replay_buffer.full:
+                        estimated_new_total = current_total
+                    else:
+                        estimated_new_total = current_total + traj_transitions
                     estimated_new_pct = (estimated_new_mpc / estimated_new_total) * 100.0
                     
                     # Stop if we're already at target OR if adding one more would overshoot significantly
@@ -780,8 +831,7 @@ class PercentMPCInjectCallback(BaseCallback):
                         
                         if is_quadruped:
                             # Quadruped trajectory format (from gen_traj_data_mpx.py)
-                            traj_q_des = traj_data['q_des']              # (12, T_sim)
-                            traj_tau_mpx = traj_data['tau_mpx']          # (12, T_sim)
+                            traj_tau_applied = traj_data['tau_applied']  # (12, T_sim) - actually applied torques
                             traj_commands = traj_data['commands']        # (3, T_sim)
                             traj_episode_length = int(traj_data['episode_length'])
                             traj_sim_dt = float(traj_data['sim_dt'])
@@ -822,7 +872,7 @@ class PercentMPCInjectCallback(BaseCallback):
             # ----------------------------------------------------------------
             if is_quadruped:
                 steps_added_this_traj = self._replay_quadruped_trajectory(
-                    temp_env, qpos, qvel, traj_q_des, traj_tau_mpx, traj_commands,
+                    temp_env, qpos, qvel, traj_tau_applied, traj_commands,
                     traj_episode_length, traj_decimation, traj_default_joint_pos,
                 )
             else:
