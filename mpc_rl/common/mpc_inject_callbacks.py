@@ -667,10 +667,13 @@ class PercentMPCInjectCallback(BaseCallback):
             # action_scale=0.5) so that the inverse-PD action formula produces
             # actions in the same space as the RL policy.  The per-substep direct
             # torque application makes the gains irrelevant for physics accuracy.
+            # Use simplified reward to match the training environment when using
+            # MPC injection (this callback is only active for SAC-MPC/TD3-MPC).
             temp_env = QuadrupedVelocityTrackingEnv(
                 robot=getattr(self, 'robot', 'go2'),
                 render_mode=None,
                 domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+                simple_reward=True,
             )
         elif self.domain == "shadow_hand":
             # For shadow_hand, task is the full gym env name

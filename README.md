@@ -342,6 +342,13 @@ Then open your browser to `http://localhost:6006` to view training metrics in re
 ### DMControl 2D Walker Reward Function Change
 If you installed the DMControl environments via pip then to run the experiments with a simple (velocity only) reward function you need to go into the `site-packages/dm_control/suite/walker.py` installation in your conda environment and edit the line `return stand_reward * (5*move_reward + 1) / 6` to `return (5*move_reward + 1) / 6`
 
+### Running Headless
+If you're running headless and want to save videos make sure to set these environmental variables
+```
+export MUJOCO_GL=egl
+unset DISPLAY
+```
+
 ### JAX GPU Recognition Issue
 There is a known bug where JAX may not recognize the GPU. A temporary fix:
 

@@ -97,6 +97,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         command_resample_interval: int = 250, # og 500
         # Domain randomization
         domain_rand_cfg: DomainRandomizationConfig | None = None,
+        # Simplified reward mode (for MPC-injection training)
+        simple_reward: bool = False,
     ):
         """Initialize the velocity tracking environment.
 
@@ -120,6 +122,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             max_roll: Maximum roll angle before termination (radians).
             min_base_height: Minimum base height before termination (meters).
             command_resample_interval: Resample velocity commands every N control steps.
+            simple_reward: If True, use a simplified reward function with only
+                velocity tracking and termination penalty. Used when training
+                with MPC injection (SAC-MPC/TD3-MPC) to provide a cleaner
+                learning signal that aligns better with MPC demonstrations.
         """
         super().__init__()
 
@@ -149,6 +155,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Domain randomization configuration
         self.domain_rand_cfg = domain_rand_cfg or DomainRandomizationConfig()
+
+        # Simplified reward mode
+        self.simple_reward = simple_reward
 
         # Reward configuration
         self.reward_cfg = self._default_reward_cfg()
@@ -953,6 +962,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     def _compute_reward(self, action: np.ndarray, terminated: bool) -> float:
         """Compute the reward for the current step.
 
+        Dispatches to either the full reward or a simplified reward based on
+        self.simple_reward. The simplified reward is used when training with
+        MPC injection (SAC-MPC/TD3-MPC) to provide a cleaner learning signal.
+
         Reward formulation ported from unitree_rl_mjlab velocity tracking task,
         which is proven to produce stable quadruped locomotion gaits.
 
@@ -977,6 +990,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - feet_slip: Penalize foot sliding during contact
             - soft_landing: Penalize high impact forces at landing
         """
+        if self.simple_reward:
+            return self._compute_simple_reward(action, terminated)
         cfg = self.reward_cfg
 
         # -- Ground truth velocities (simulation only) --
@@ -1201,6 +1216,56 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "feet_clearance": cfg["w_feet_clearance"] * feet_clearance_penalty,
             "feet_slip": cfg["w_feet_slip"] * feet_slip_penalty,
             "soft_landing": cfg["w_soft_landing"] * soft_landing_penalty,
+        }
+
+        if cfg.get("only_positive_rewards", False):
+            reward = max(reward, 0.0)
+
+        return float(reward)
+
+    def _compute_simple_reward(self, action: np.ndarray, terminated: bool) -> float:
+        """Simplified reward for MPC-injection training (SAC-MPC/TD3-MPC).
+
+        Focuses on the core velocity tracking objective with minimal shaping
+        to provide a cleaner learning signal that aligns with MPC demonstrations.
+
+        Terms:
+            - track_lin_vel: Exponential tracking of commanded xy velocity
+            - track_ang_vel: Exponential tracking of commanded yaw rate
+            - is_terminated: Large penalty for falling
+        """
+        cfg = self.reward_cfg
+
+        # -- Ground truth velocities (simulation only) --
+        base_lin_vel_body = self._base_lin_vel_body()
+        base_ang_vel_body = self.mjData.qvel[3:6].copy()
+
+        # -- Linear velocity tracking --
+        xy_error = np.sum((self._commands[:2] - base_lin_vel_body[:2]) ** 2)
+        z_error = base_lin_vel_body[2] ** 2
+        lin_vel_error = xy_error + 2.0 * z_error
+        track_lin_vel = np.exp(-lin_vel_error / cfg["tracking_sigma"])
+
+        # -- Angular velocity tracking --
+        z_ang_error = (self._commands[2] - base_ang_vel_body[2]) ** 2
+        xy_ang_error = np.sum(base_ang_vel_body[:2] ** 2)
+        ang_vel_error = z_ang_error + 0.05 * xy_ang_error
+        track_ang_vel = np.exp(-ang_vel_error / cfg["tracking_sigma"])
+
+        # -- Termination penalty --
+        termination_cost = 1.0 if terminated else 0.0
+
+        reward = (
+            cfg["w_track_lin_vel"] * track_lin_vel
+            + cfg["w_track_ang_vel"] * track_ang_vel
+            + cfg["w_is_terminated"] * termination_cost
+        )
+
+        # Store reward components for logging
+        self._reward_components = {
+            "track_lin_vel": cfg["w_track_lin_vel"] * track_lin_vel,
+            "track_ang_vel": cfg["w_track_ang_vel"] * track_ang_vel,
+            "is_terminated": cfg["w_is_terminated"] * termination_cost,
         }
 
         if cfg.get("only_positive_rewards", False):
@@ -1488,59 +1553,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "w_feet_slip": -0.1,
             # -- Soft landing penalty (minimize impact forces) --
             "w_soft_landing": -1e-4,
-            # -- Command threshold for scaling locomotion rewards/penalties --
+            # -- Command threshold for actually walking --
             "command_threshold": 0.1,
             # -- Reward clipping --
             "only_positive_rewards": False,
         }
-    
-
-        """
-        NOTE: For reference only against MjLab
-            return {
-            # -- Tracking rewards --
-            # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
-            "tracking_sigma": 0.25,
-            "w_track_lin_vel": 1.5,
-            "w_track_ang_vel": 1.5,
-            # -- Forward velocity rewards --
-            # Helps SAC escape the standing-still local optimum.
-            # Projects velocity onto command direction, clipped at cmd magnitude.
-            "w_lin_vel_forward": 0.75,
-            "w_ang_vel_forward": 0.5,
-            # -- Alive bonus (constant per-step survival reward) --
-            "w_alive": 0.0,
-            # -- Orientation penalty (MJLab: -5.0) --
-            "w_flat_orientation": -0.25,
-            # -- Variable posture reward (MJLab: 1.0) --
-            # Speed-dependent default pose tracking with per-joint-type stds
-            "w_pose": 0.5,
-            "posture_walking_threshold": 0.1,   # speed below this → standing
-            "posture_running_threshold": 1.5,   # speed above this → running
-            # -- Body angular velocity penalty (world frame, xy only; MJLab: -0.05) --
-            "w_body_ang_vel": -0.005,
-            # -- Angular momentum penalty (whole-body; MJLab: -0.025) --
-            "w_angular_momentum": -0.0005,
-            # -- Termination penalty (large negative on fall; MJLab: -200.0) --
-            "w_is_terminated": -10.0,
-            # -- Joint acceleration L2 penalty (MJLab: -2.5e-7) --
-            "w_joint_acc": -2.5e-8,
-            # -- Joint position limits penalty (soft limits at 95% range; MJLab: -10.0) --
-            "w_joint_pos_limits": -1.0,
-            # -- Action rate L2 penalty (MJLab: -0.05) --
-            "w_action_rate": -0.01,
-            # -- Feet air time reward (trotting gait; MJLab: 1.0) --
-            "w_feet_air_time": 1.25,
-            "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
-            # -- Feet clearance penalty (target swing foot height; MJLab: -1.0) --
-            "w_feet_clearance": -0.25,
-            "foot_clearance_target": 0.10,    # meters
-            # -- Feet slip penalty (no sliding during contact; MJLab: -0.25) --
-            "w_feet_slip": -0.1,
-            # -- Soft landing penalty (minimize impact forces; MJLab: -1e-3) --
-            "w_soft_landing": -1e-4,
-            # -- Command threshold for scaling locomotion rewards/penalties --
-            "command_threshold": 0.1,
-            # -- Reward clipping --
-            "only_positive_rewards": False,
-        }"""

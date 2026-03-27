@@ -44,6 +44,7 @@ RL_JOINT_VEL_NOISE = 0.05          # rad/s
 RL_MAX_ROLL = 0.5          # radians
 RL_MAX_PITCH = 0.5         # radians
 RL_MIN_BASE_HEIGHT = 0.1   # meters
+COMMAND_THRESHOLD = 0.05    # m/s threshold to go from standing to walking
 
 
 def sample_commands(rng):
@@ -51,10 +52,6 @@ def sample_commands(rng):
     vx = rng.uniform(*RL_LIN_VEL_X_RANGE)
     vy = rng.uniform(*RL_LIN_VEL_Y_RANGE)
     wz = rng.uniform(*RL_ANG_VEL_Z_RANGE)
-    # Zero small xy commands (same as RL env)
-    if np.sqrt(vx**2 + vy**2) < 0.2:
-        vx = 0.0
-        vy = 0.0
     return np.array([vx, vy, wz])
 
 
@@ -228,6 +225,19 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
     # Sample target velocity commands; they will be ramped up from zero to
     # avoid hitting the MPC with full-speed requests from a standing start.
     commands = sample_commands(rng)
+
+    # Check if commands are above the threshold for zeroing (matching RL env)
+    cmd_lin_norm = np.linalg.norm(commands[:2])
+    cmd_ang_norm = abs(commands[2])
+    total_cmd = cmd_lin_norm + cmd_ang_norm
+    print("total command: ", total_cmd)
+    if total_cmd < COMMAND_THRESHOLD:
+        config.duty_factor = 1.0  # standing still, so set duty factor to 1.0 (no walking)
+        mpc.duty_factor = 1.0
+    else:
+        config.duty_factor = 0.5  # moving, so set duty factor to 0.5 (trotting)
+        mpc.duty_factor = 0.5
+
     steps_since_resample = 0  # in control steps
     # Number of control steps over which to linearly ramp commands to full value.
     # At 50 Hz, 50 steps = 1 second of ramp-up time.
@@ -491,8 +501,8 @@ def main():
         help="Output directory (default: data/quadruped/)"
     )
     parser.add_argument(
-        "--max-attempts", type=int, default=None,
-        help="Maximum total attempts before stopping (default: unlimited)"
+        "--max-attempts", type=int, default=10000,
+        help="Maximum total attempts before stopping (default: 10000)"
     )
     parser.add_argument(
         "--verbose", "-v", type=int, default=1, choices=[0, 1, 2],

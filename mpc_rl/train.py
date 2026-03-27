@@ -318,7 +318,8 @@ def is_quadruped_env(env_name: str) -> bool:
     return env_name.lower().startswith("quadruped-")
 
 
-def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None):
+def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None,
+                       simple_reward: bool = False):
     """
     Create a quadruped velocity tracking gymnasium environment.
     
@@ -333,6 +334,8 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         robot: Robot model name (go2, go1, mini_cheetah, aliengo, etc.)
         render_mode: Render mode for the environment
         domain_rand_cfg: Domain randomization config. None uses defaults.
+        simple_reward: If True, use simplified reward (velocity tracking + termination only).
+            Used when training with MPC injection (SAC-MPC/TD3-MPC).
     
     Returns:
         QuadrupedVelocityTracking gymnasium environment with Dict obs space
@@ -344,6 +347,8 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
     )
     if domain_rand_cfg is not None:
         kwargs["domain_rand_cfg"] = domain_rand_cfg
+    if simple_reward:
+        kwargs["simple_reward"] = True
     gym_env = gym.make(
         "QuadrupedVelocityTracking-v0",
         **kwargs,
@@ -559,7 +564,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                      domain: str, task: str, seed: int,
                      checkpoint_freq: int, eval_freq: int, num_envs: int,
                      is_quadruped: bool = False, robot: str = "go2",
-                     save_replay_buffer_checkpoints: bool = False):
+                     save_replay_buffer_checkpoints: bool = False,
+                     simple_reward: bool = False):
     """
     Factory function to create all callbacks based on configuration.
     
@@ -576,6 +582,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         is_quadruped: Whether the environment is a quadruped velocity tracking env
         robot: Quadruped robot model name (only used when is_quadruped=True)
         save_replay_buffer_checkpoints: Whether to save replay buffer at every checkpoint
+        simple_reward: If True, use simplified reward for quadruped eval envs
     
     Returns:
         Tuple of (callbacks list, eval_env or None, inject_callback or None)
@@ -606,8 +613,10 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         is_shadow_hand = (domain == "shadow_hand")
         if is_quadruped:
             _dr_eval = DomainRandomizationConfig.disabled()
+            _sr_eval = simple_reward  # capture for lambda closure
             eval_env = make_vec_env(
-                lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval),
+                lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval,
+                                          simple_reward=_sr_eval),
                 n_envs=1,
                 seed=seed+1000,
             )
@@ -683,7 +692,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
 
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
                         num_videos: int, video_dir: Path, normalize_env=None, seed: int = None,
-                        is_quadruped: bool = False, robot: str = "go2"):
+                        is_quadruped: bool = False, robot: str = "go2",
+                        simple_reward: bool = False):
     """
     Evaluate model and record videos.
     
@@ -698,6 +708,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         seed: Random seed for reproducible evaluation (uses seed+2000+episode for each episode)
         is_quadruped: Whether the environment is a quadruped velocity tracking env
         robot: Quadruped robot model name (only used when is_quadruped=True)
+        simple_reward: If True, use simplified reward for quadruped eval envs
     """
     video_dir.mkdir(parents=True, exist_ok=True)
     
@@ -717,6 +728,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
             eval_env_base = make_quadruped_env(
                 robot=robot, render_mode="rgb_array",
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
+                simple_reward=simple_reward,
             )
         elif is_shadow_hand:
             eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
@@ -959,13 +971,20 @@ def main(argv):
     # Eval environments never use DR (deterministic evaluation)
     dr_cfg_eval = DomainRandomizationConfig.disabled() if is_quadruped else None
 
+    # Use simplified reward for quadruped environments when training with MPC injection
+    use_simple_reward = is_quadruped and _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"]
+    if use_simple_reward:
+        print("Using simplified reward function (velocity tracking + termination only)")
+
     # Create training environment
     print(f"Creating {_NUM_ENVS.value} parallel environments...")
     if is_quadruped:
         robot_name = _ROBOT.value
         _dr = dr_cfg  # capture for lambda closure
+        _sr = use_simple_reward  # capture for lambda closure
         vec_env = make_vec_env(
-            lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr),
+            lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr,
+                                      simple_reward=_sr),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )
@@ -1039,6 +1058,7 @@ def main(argv):
             is_quadruped=is_quadruped,
             robot=_ROBOT.value,
             save_replay_buffer_checkpoints=_SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
+            simple_reward=use_simple_reward,
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
@@ -1091,6 +1111,7 @@ def main(argv):
             seed=_SEED.value,  # Pass seed for reproducible evaluation
             is_quadruped=is_quadruped,
             robot=_ROBOT.value,
+            simple_reward=use_simple_reward,
         )
     
     vec_env.close()
