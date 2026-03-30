@@ -1027,8 +1027,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # ------------------------------------------------------------
         # 2b. Linear forward velocity reward (weight > 0)
         #     Projects body velocity onto command direction. Provides
-        #     constant gradient toward the commanded velocity, critical
-        #     for SAC to escape the standing-still local optimum.
+        #     constant gradient toward the commanded velocity, useful
+        #     for off-policy algos to escape the standing-still local optimum.
         #     Clipped at command magnitude to prevent overshooting.
         # ------------------------------------------------------------
         cmd_xy = self._commands[:2]
@@ -1252,20 +1252,54 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         ang_vel_error = z_ang_error + 0.05 * xy_ang_error
         track_ang_vel = np.exp(-ang_vel_error / cfg["tracking_sigma"])
 
+        # -- Linear forward velocity reward --
+        cmd_xy = self._commands[:2]
+        cmd_speed = np.linalg.norm(cmd_xy)
+        if cmd_speed > 0.1:
+            cmd_dir = cmd_xy / cmd_speed
+            vel_proj = np.dot(base_lin_vel_body[:2], cmd_dir)
+            lin_vel_forward_reward = np.clip(vel_proj, 0.0, cmd_speed)
+        else:
+            lin_vel_forward_reward = 0.0
+
+        # -- Angular forward velocity reward --
+        cmd_wz = self._commands[2]
+        if abs(cmd_wz) > 0.1:
+            wz_proj = base_ang_vel_body[2] * np.sign(cmd_wz)
+            ang_vel_forward_reward = np.clip(wz_proj, 0.0, abs(cmd_wz))
+        else:
+            ang_vel_forward_reward = 0.0
+
         # -- Termination penalty --
         termination_cost = 1.0 if terminated else 0.0
+
+        # -- Joint acceleration L2 penalty --
+        joint_acc_penalty = np.sum(self._joint_acc ** 2)
+
+        # -- Action rate L2 penalty --
+        action_rate_penalty = np.sum(
+            (action - self._prev_last_action) ** 2
+        )
 
         reward = (
             cfg["w_track_lin_vel"] * track_lin_vel
             + cfg["w_track_ang_vel"] * track_ang_vel
+            + cfg["w_lin_vel_forward"] * lin_vel_forward_reward
+            + cfg["w_ang_vel_forward"] * ang_vel_forward_reward
             + cfg["w_is_terminated"] * termination_cost
+            + cfg["w_joint_acc"] * joint_acc_penalty
+            + cfg["w_action_rate"] * action_rate_penalty
         )
 
         # Store reward components for logging
         self._reward_components = {
             "track_lin_vel": cfg["w_track_lin_vel"] * track_lin_vel,
             "track_ang_vel": cfg["w_track_ang_vel"] * track_ang_vel,
+            "lin_vel_forward": cfg["w_lin_vel_forward"] * lin_vel_forward_reward,
+            "ang_vel_forward": cfg["w_ang_vel_forward"] * ang_vel_forward_reward,
             "is_terminated": cfg["w_is_terminated"] * termination_cost,
+            "joint_acc": cfg["w_joint_acc"] * joint_acc_penalty,
+            "action_rate": cfg["w_action_rate"] * action_rate_penalty,
         }
 
         if cfg.get("only_positive_rewards", False):
@@ -1529,7 +1563,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Variable posture reward --
             # Speed-dependent default pose tracking with per-joint-type stds
             "w_pose": 0.5,
-            "posture_walking_threshold": 0.1,   # speed below this → standing
+            "posture_walking_threshold": 0.05,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
             "w_body_ang_vel": -0.05, # FROM 1 to 5

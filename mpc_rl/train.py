@@ -76,7 +76,8 @@ logging.set_verbosity(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 #from mpc_rl.planner.mpc_planner import MPCPlanner
-from mpc_rl.common import TaggedReplayBuffer, TaggedDictReplayBuffer, FixedMPCInjectCallback, PercentMPCInjectCallback
+from mpc_rl.common import TaggedReplayBuffer, TaggedDictReplayBuffer
+from mpc_rl.common import FixedMPCInjectCallback, PercentMPCInjectCallback, QuadrupedTensorboardCallback
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 # SB3 (PyTorch) MPC-augmented algorithms for quadruped (supports asymmetric policies + Dict obs)
@@ -591,6 +592,10 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     callbacks = []
     eval_env = None
     inject_callback = None  # Initialize to None for non-SAC-MPC algorithms
+
+    # Add rollout Tensorboard callback for quadruped TD3-MPC or SAC-MPC
+    if is_quadruped and cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
+        callbacks.append(QuadrupedTensorboardCallback(log_freq=100))
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
