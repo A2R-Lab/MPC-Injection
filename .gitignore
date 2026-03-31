@@ -231,3 +231,6 @@ jax_cache/
 
 # Ignore the deploy build cache
 deploy/robots/go2/build/
+
+# Ignore OpenAI Codex file
+.codex

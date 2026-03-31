@@ -150,12 +150,13 @@ _ENABLE_LOGGING = flags.DEFINE_boolean(
     "enable_logging", True, "Enable checkpoints, videos, and TensorBoard logging. Set to False for hyperparameter optimization with optuna."
 )
 
-# Hyperparameter flags (this is for SAC for now, not optimized yet)
+# Hyperparameter flags (not optimized yet)
 _LEARNING_RATE = flags.DEFINE_float("learning_rate", 3e-4, "Learning rate")
 _BUFFER_SIZE = flags.DEFINE_integer("buffer_size", 1_000_000, "Replay buffer size")
 _LEARNING_STARTS = flags.DEFINE_integer(
     "learning_starts", 10_000, "Steps of model to collect transitions before learning starts"
 )
+_POLICY_DELAY = flags.DEFINE_integer("policy_delay", 2, "TD3 (only) actor update delay. Actor and target networks update once every policy_delay critic updates.")
 _BATCH_SIZE = flags.DEFINE_integer("batch_size", 256, "Minibatch size")
 _TAU = flags.DEFINE_float("tau", 0.005, "Soft update coefficient")
 _GAMMA = flags.DEFINE_float("gamma", 0.99, "Discount factor")
@@ -226,6 +227,7 @@ class AllConfig:
     tau: float
     gamma: float
     gradient_steps: int
+    policy_delay: int
     seed: int
     tensorboard_log: str
     inject_n_timesteps: int
@@ -443,6 +445,7 @@ def create_model(env, cfg, is_quadruped: bool = False):
                 tau=cfg.tau,
                 gamma=cfg.gamma,
                 gradient_steps=cfg.gradient_steps,
+                policy_delay=cfg.policy_delay,
                 verbose=1,
                 seed=cfg.seed,
                 tensorboard_log=cfg.tensorboard_log,
@@ -474,6 +477,7 @@ def create_model(env, cfg, is_quadruped: bool = False):
                 tau=cfg.tau,
                 gamma=cfg.gamma,
                 gradient_steps=cfg.gradient_steps,
+                policy_delay=cfg.policy_delay,
                 replay_buffer_class=TaggedDictReplayBuffer,
                 verbose=1,
                 seed=cfg.seed,
@@ -528,6 +532,8 @@ def create_model(env, cfg, is_quadruped: bool = False):
             batch_size=cfg.batch_size,
             tau=cfg.tau,
             gamma=cfg.gamma,
+            gradient_steps=cfg.gradient_steps,
+            policy_delay=cfg.policy_delay,
             replay_buffer_class=TaggedReplayBuffer,
             verbose=1,
             seed=cfg.seed,
@@ -553,6 +559,8 @@ def create_model(env, cfg, is_quadruped: bool = False):
             batch_size=cfg.batch_size,
             tau=cfg.tau,
             gamma=cfg.gamma,
+            gradient_steps=cfg.gradient_steps,
+            policy_delay=cfg.policy_delay,
             verbose=1,
             seed=cfg.seed,
             tensorboard_log=cfg.tensorboard_log,
@@ -929,6 +937,7 @@ def main(argv):
         tau=_TAU.value,
         gamma=_GAMMA.value,
         gradient_steps=_GRADIENT_STEPS.value,
+        policy_delay=_POLICY_DELAY.value,
         seed=_SEED.value,
         tensorboard_log=tensorboard_log_path,
         inject_n_timesteps=_INJECT_N_TIMESTEPS.value,

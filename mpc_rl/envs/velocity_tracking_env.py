@@ -84,14 +84,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         
         action_scale: float = 0.5, # NOTE: mjlab uses 0.5
         # Command ranges
-        lin_vel_x_range: tuple[float, float] = (-0.5, 1.0), # NOTE mjlab biases forward
-        lin_vel_y_range: tuple[float, float] = (-0.5, 0.5),
-        ang_vel_z_range: tuple[float, float] = (-1.0, 1.0),
+        lin_vel_x_range: tuple[float, float] = (-0.5, 0.5), # NOTE mjlab biases forward
+        lin_vel_y_range: tuple[float, float] = (-0.25, 0.25),
+        ang_vel_z_range: tuple[float, float] = (-0.5, 0.5),
         # Reward weights
         reward_cfg: dict[str, float] | None = None,
         # Termination thresholds
-        max_pitch: float = 0.25, # 0.5 | radians 87 was too aggressive and allowed for torso tip and hit ground
-        max_roll: float = 0.25, # 0.5 | radians
+        max_pitch: float = 0.5, # 0.5 | radians 87 was too aggressive and allowed for torso tip and hit ground
+        max_roll: float = 0.5, # 0.5 | radians
         min_base_height: float = 0.1,
         # Episode settings
         command_resample_interval: int = 250, # og 500
