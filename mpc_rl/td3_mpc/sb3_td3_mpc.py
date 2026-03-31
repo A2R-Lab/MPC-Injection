@@ -114,6 +114,7 @@ class SB3_TD3_MPC(TD3):
                 )
                 next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
 
+                # Form the Bellman target
                 target_q_values = replay_data.rewards + (
                     1 - replay_data.dones
                 ) * discounts * next_q_values

@@ -90,8 +90,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Reward weights
         reward_cfg: dict[str, float] | None = None,
         # Termination thresholds
-        max_pitch: float = 0.5, # radians 87 was too aggressive and allowed for torso tip and hit ground
-        max_roll: float = 0.5, # radians
+        max_pitch: float = 0.25, # 0.5 | radians 87 was too aggressive and allowed for torso tip and hit ground
+        max_roll: float = 0.25, # 0.5 | radians
         min_base_height: float = 0.1,
         # Episode settings
         command_resample_interval: int = 250, # og 500
@@ -1320,9 +1320,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             return True
 
         # Check base height
-        base_height = self.mjData.qpos[2]
-        if base_height < self.min_base_height:
-            return True
+        #base_height = self.mjData.qpos[2]
+        #if base_height < self.min_base_height:
+        #    return True
 
         return False
 
