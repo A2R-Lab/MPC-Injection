@@ -84,9 +84,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         
         action_scale: float = 0.5, # NOTE: mjlab uses 0.5
         # Command ranges
-        lin_vel_x_range: tuple[float, float] = (-0.5, 0.5), # NOTE mjlab biases forward
-        lin_vel_y_range: tuple[float, float] = (-0.25, 0.25),
-        ang_vel_z_range: tuple[float, float] = (-0.5, 0.5),
+        lin_vel_x_range: tuple[float, float] = (0., 0.5), #(-0.5, 0.5), # NOTE mjlab biases forward
+        lin_vel_y_range: tuple[float, float] = (0., 0.), #(-0.25, 0.25),
+        ang_vel_z_range: tuple[float, float] = (0., 0.), #(-0.5, 0.5),
         # Reward weights
         reward_cfg: dict[str, float] | None = None,
         # Termination thresholds

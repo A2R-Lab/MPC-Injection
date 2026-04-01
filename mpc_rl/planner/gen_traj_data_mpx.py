@@ -33,9 +33,9 @@ RL_SIM_DT = 0.005          # 200 Hz physics
 RL_DECIMATION = 4           # control at 50 Hz
 RL_CONTROL_DT = RL_SIM_DT * RL_DECIMATION  # 0.02s
 RL_ACTION_SCALE = 0.5
-RL_LIN_VEL_X_RANGE = (-0.5, 1.0/2)
-RL_LIN_VEL_Y_RANGE = (-0.5/2, 0.5/2)
-RL_ANG_VEL_Z_RANGE = (-1.0/2, 1.0/2)
+RL_LIN_VEL_X_RANGE = (0.0, 0.5) #(-0.5, 0.5)
+RL_LIN_VEL_Y_RANGE = (0., 0.) #(-0.5/2, 0.5/2)
+RL_ANG_VEL_Z_RANGE = (0., 0.) #(-1.0/2, 1.0/2)
 RL_COMMAND_RESAMPLE_INTERVAL = 250  # control steps
 RL_JOINT_POS_NOISE = 0.05          # radians
 RL_BASE_ORIENT_NOISE = 0.03        # radians (roll, pitch)
@@ -44,7 +44,7 @@ RL_JOINT_VEL_NOISE = 0.05          # rad/s
 RL_MAX_ROLL = 0.5          # radians
 RL_MAX_PITCH = 0.5         # radians
 RL_MIN_BASE_HEIGHT = 0.1   # meters
-COMMAND_THRESHOLD = 0.05    # m/s threshold to go from standing to walking
+COMMAND_THRESHOLD = 0.05   # m/s threshold to go from standing to walking
 
 
 def sample_commands(rng):
