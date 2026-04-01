@@ -311,7 +311,7 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
         total_tau = tau_f64 + tau_fb
 
         # Record (at sim frequency)
-        commands_traj[:, t] = commands
+        commands_traj[:, t] = mpx_input[[0, 1, 5]] # commands
         tau_applied_traj[:, t] = total_tau
         tau_mpx_traj[:, t] = tau_f64
         q_des_traj[:, t] = q_des_f64
