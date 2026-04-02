@@ -8,23 +8,9 @@ import gymnasium as gym
 import mujoco
 
 
-def _match_quadruped_generation_friction(
-    env,
-    tangential: float = 0.7,
-    torsional: float = 0.005,
-    rolling: float = 0.0,
-):
-    """Match the contact friction used when generating quadruped demos."""
-    friction = np.array([tangential, torsional, rolling], dtype=np.float64)
-    floor_names = {"ground", "floor", "hfield", "terrain"}
-    foot_geom_ids = set(env._foot_geom_ids.values())
-
-    for geom_id in range(env.mjModel.ngeom):
-        geom_name = mujoco.mj_id2name(
-            env.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id
-        )
-        if (geom_name and geom_name.lower() in floor_names) or geom_id in foot_geom_ids:
-            env.mjModel.geom_friction[geom_id, :] = friction
+def _assert_quadruped_generation_friction(env):
+    """Fail loudly if the quadruped temp env drifts from the demo plant."""
+    env.assert_generation_contact_friction_matches()
 
 
 class FixedMPCInjectCallback(BaseCallback):
@@ -695,7 +681,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
                 simple_reward=True,
             )
-            _match_quadruped_generation_friction(temp_env)
+            _assert_quadruped_generation_friction(temp_env)
         elif self.domain == "shadow_hand":
             # For shadow_hand, task is the full gym env name
             temp_env = gym.make(self.task, render_mode=None)

@@ -19,11 +19,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import mujoco
 
 # Ensure mpc_rl is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import mpc_rl.envs
+from gym_quadruped.quadruped_env import QuadrupedEnv
+from mpc_rl.common.mpc_inject_callbacks import _assert_quadruped_generation_friction
+from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
 
 
@@ -274,6 +278,89 @@ class TestEnvSanity:
         assert info["base_height"] > 0.15, (
             f"Base height {info['base_height']:.3f}m is too low"
         )
+
+
+class TestNominalPlantAlignment:
+    """Ensure the no-DR RL env matches the quadruped MPC plant."""
+
+    @staticmethod
+    def _geom_friction(model, geom_name: str) -> np.ndarray:
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
+        assert geom_id >= 0, f"Geom '{geom_name}' not found"
+        return model.geom_friction[geom_id].copy()
+
+    def test_no_dr_matches_generation_plant(self):
+        rl_env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        )
+        mpc_env = QuadrupedEnv(
+            robot="go2",
+            scene="flat",
+            sim_dt=1 / 200,
+            ref_base_lin_vel=0.0,
+            ground_friction_coeff=0.7,
+            base_vel_command_type="human",
+            state_obs_names=tuple(QuadrupedEnv.ALL_OBS),
+        )
+
+        try:
+            rl_env.reset(seed=0)
+            mpc_env.reset(random=False)
+
+            rl_env.assert_generation_contact_friction_matches()
+
+            for geom_name in ["floor", "FL", "FR", "RL", "RR"]:
+                np.testing.assert_allclose(
+                    self._geom_friction(rl_env.mjModel, geom_name),
+                    self._geom_friction(mpc_env.mjModel, geom_name),
+                )
+
+            np.testing.assert_allclose(rl_env.mjModel.dof_damping, mpc_env.mjModel.dof_damping)
+            np.testing.assert_allclose(rl_env.mjModel.dof_armature, mpc_env.mjModel.dof_armature)
+            np.testing.assert_allclose(
+                rl_env.mjModel.dof_frictionloss, mpc_env.mjModel.dof_frictionloss
+            )
+            np.testing.assert_allclose(rl_env.mjModel.body_mass, mpc_env.mjModel.body_mass)
+            np.testing.assert_allclose(rl_env.mjModel.geom_size, mpc_env.mjModel.geom_size)
+            assert int(rl_env.mjModel.opt.cone) == int(mpc_env.mjModel.opt.cone)
+            assert rl_env.mjModel.opt.iterations == mpc_env.mjModel.opt.iterations
+            assert rl_env.mjModel.opt.ls_iterations == mpc_env.mjModel.opt.ls_iterations
+        finally:
+            rl_env.close()
+            mpc_env.close()
+
+    def test_no_dr_reset_restores_nominal_contact_friction(self):
+        rl_env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        )
+
+        try:
+            rl_env.reset(seed=0)
+            rl_env.mjModel.geom_friction[:, :] = np.array([1.1, 0.1, 0.01], dtype=np.float64)
+            rl_env.reset(seed=1)
+            rl_env.assert_generation_contact_friction_matches()
+        finally:
+            rl_env.close()
+
+    def test_callback_temp_env_needs_no_friction_patch(self):
+        temp_env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            render_mode=None,
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+            simple_reward=True,
+        )
+
+        try:
+            _assert_quadruped_generation_friction(temp_env)
+            temp_env.reset(seed=0)
+            _assert_quadruped_generation_friction(temp_env)
+        finally:
+            temp_env.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

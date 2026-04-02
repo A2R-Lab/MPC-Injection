@@ -407,28 +407,6 @@ def plot_trajectory_comparison(traj, env_qpos_history, replay_mode, max_steps):
     ax4.grid(True)
     plt.tight_layout()
     plt.show()
-
-
-def _match_generation_friction(env, tangential=0.7, torsional=0.005, rolling=0.0):
-    """Set floor and foot geom friction to match the generation environment.
-
-    QuadrupedEnv._set_ground_friction() applies the same friction values to
-    floor-like geoms and foot geoms. Replicate that here so the RL env's
-    contact dynamics match exactly.
-    """
-    friction = np.array([tangential, torsional, rolling])
-    floor_names = {"ground", "floor", "hfield", "terrain"}
-
-    foot_geom_ids = set(env._foot_geom_ids.values())
-
-    for geom_id in range(env.mjModel.ngeom):
-        geom_name = mujoco.mj_id2name(
-            env.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id
-        )
-        if (geom_name and geom_name.lower() in floor_names) or geom_id in foot_geom_ids:
-            env.mjModel.geom_friction[geom_id, :] = friction
-
-
 def test_trajectory(data_dir, random_select=True, filename=None,
                     max_steps=500, replay_mode="joint_position",
                     render_mode="rgb_array"):
@@ -466,11 +444,7 @@ def test_trajectory(data_dir, random_select=True, filename=None,
         render_mode=render_mode,
         domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
     )
-
-    # Match ground friction to the generation environment.
-    # gen_traj_data_mpx.py creates QuadrupedEnv with ground_friction_coeff=0.7,
-    # which sets friction to [0.7, 0.005, 0.0] on the floor and all foot geoms.
-    _match_generation_friction(env, tangential=0.7, torsional=0.005, rolling=0.0)
+    env.assert_generation_contact_friction_matches()
 
     # Disable early termination during replay so we can observe the full
     # trajectory even if small errors accumulate. The replay is diagnostic,
@@ -481,6 +455,7 @@ def test_trajectory(data_dir, random_select=True, filename=None,
 
     # Reset the environment
     obs, info = env.reset(seed=42)
+    env.assert_generation_contact_friction_matches()
 
     # Set the initial state from the recorded trajectory
     init_qpos = traj["qpos"][:, 0]

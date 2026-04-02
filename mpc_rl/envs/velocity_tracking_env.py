@@ -50,6 +50,9 @@ from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 
 log = logging.getLogger(__name__)
 
+_GENERATION_CONTACT_GEOM_NAMES = frozenset({"ground", "floor", "hfield", "terrain"})
+_GENERATION_CONTACT_FRICTION = (0.7, 0.005, 0.0)
+
 
 class QuadrupedVelocityTrackingEnv(gym.Env):
     """Gymnasium environment for training a quadruped to track commanded velocities.
@@ -214,6 +217,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             self._foot_geom_ids[leg_name] = geom_id
         self._foot_geom_id_set = set(self._foot_geom_ids.values())
         self._num_feet = len(self._foot_geom_ids)
+
+        # Match the nominal MuJoCo plant used by quadruped MPC trajectory
+        # generation before capturing the baseline model parameters.
+        self._set_generation_contact_friction()
 
         # --- Store nominal model values for domain randomization --------
         # These are the "ground truth" XML values that randomization scales/offsets.
@@ -444,6 +451,11 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Reset to keyframe ("home" standing pose)
         mujoco.mj_resetDataKeyframe(self.mjModel, self.mjData, 0)
+
+        # In the no-DR setting, always restore the nominal contact friction so
+        # resets are idempotent even if a previous code path mutated mjModel.
+        if not self.domain_rand_cfg.enable:
+            self.mjModel.geom_friction[:] = self._nominal_friction
 
         # Apply custom zero position if specified
         if self.robot_cfg.qpos0_js is not None:
@@ -727,6 +739,48 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Apply custom zero position if specified
         if self.robot_cfg.qpos0_js is not None:
             self.mjModel.qpos0[7:] = np.array(self.robot_cfg.qpos0_js)
+
+    def _generation_contact_geom_ids(self) -> set[int]:
+        """Return floor and foot geom IDs that must match the MPC plant."""
+        target_geom_ids = set(self._foot_geom_ids.values())
+
+        for geom_id in range(self.mjModel.ngeom):
+            geom_name = mujoco.mj_id2name(
+                self.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+            )
+            if geom_name and geom_name.lower() in _GENERATION_CONTACT_GEOM_NAMES:
+                target_geom_ids.add(geom_id)
+
+        return target_geom_ids
+
+    def _set_generation_contact_friction(self):
+        """Mirror QuadrupedEnv ground/foot friction for the nominal plant."""
+        friction = np.array(_GENERATION_CONTACT_FRICTION, dtype=np.float64)
+        for geom_id in self._generation_contact_geom_ids():
+            self.mjModel.geom_friction[geom_id, :] = friction
+
+    def assert_generation_contact_friction_matches(self):
+        """Raise if the no-DR contact friction drifts from the MPC plant."""
+        expected = np.array(_GENERATION_CONTACT_FRICTION, dtype=np.float64)
+        mismatches = []
+
+        for geom_id in sorted(self._generation_contact_geom_ids()):
+            geom_name = mujoco.mj_id2name(
+                self.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+            )
+            actual = self.mjModel.geom_friction[geom_id, :]
+            if not np.allclose(actual, expected):
+                label = geom_name if geom_name is not None else f"geom_{geom_id}"
+                mismatches.append(
+                    f"{label}: got {actual.tolist()}, expected {expected.tolist()}"
+                )
+
+        if mismatches:
+            details = "; ".join(mismatches)
+            raise AssertionError(
+                "QuadrupedVelocityTrackingEnv contact friction no longer matches "
+                f"the MPC generation plant: {details}"
+            )
 
     def _get_obs(self) -> dict[str, np.ndarray]:
         """Compute the observation dictionary for asymmetric actor-critic.
