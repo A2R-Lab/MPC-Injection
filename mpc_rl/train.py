@@ -142,6 +142,12 @@ _NUM_EVAL_EPISODES = flags.DEFINE_integer(
 _NUM_VIDEOS = flags.DEFINE_integer(
     "num_videos", 3, "Number of videos to record during evaluation"
 )
+_CHECKPOINT_EVALS = flags.DEFINE_string(
+    "checkpoint_evals", None,
+    "Comma-separated checkpoint steps for additional video evaluations, "
+    "for example '400000,500000'. Each checkpoint writes videos to "
+    "logdir/video_<step>/."
+)
 
 # Experiment flags
 _SUFFIX = flags.DEFINE_string("suffix", None, "Suffix for the experiment name")
@@ -260,6 +266,55 @@ def parse_env_name(env_name: str) -> tuple[str, str]:
     domain = parts[0]
     task = "-".join(parts[1:])  # Handle tasks with hyphens like 'stand-and-reach'
     return domain, task
+
+
+def parse_checkpoint_eval_steps(checkpoint_evals: Optional[str]) -> list[int]:
+    """
+    Parse a checkpoint evaluation flag into a list of unique positive steps.
+
+    Accepts values like:
+    - "400000"
+    - "400000,500000"
+    - "(400000, 500000)"
+    - "[400000,500000]"
+    """
+    if checkpoint_evals is None:
+        return []
+
+    cleaned = checkpoint_evals.strip()
+    if not cleaned:
+        return []
+
+    cleaned = cleaned.strip("()[]")
+    tokens = []
+    for chunk in cleaned.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        tokens.extend(part for part in chunk.split() if part)
+
+    checkpoint_steps = []
+    seen_steps = set()
+    for token in tokens:
+        try:
+            step = int(token)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid checkpoint step '{token}' in --checkpoint_evals={checkpoint_evals!r}. "
+                "Use a comma-separated list of integers, e.g. "
+                "--checkpoint_evals=400000,500000"
+            ) from exc
+
+        if step <= 0:
+            raise ValueError(
+                f"Checkpoint steps must be positive integers, got {step}."
+            )
+
+        if step not in seen_steps:
+            checkpoint_steps.append(step)
+            seen_steps.add(step)
+
+    return checkpoint_steps
 
 
 def is_shadow_hand_env(env_name: str) -> bool:
@@ -384,6 +439,50 @@ def save_config(logdir: Path, config: dict):
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
     print(f"Configuration saved to: {config_path}")
+
+
+def make_single_env_for_model_loading(domain: str, task: str,
+                                      is_quadruped: bool = False,
+                                      robot: str = "go2",
+                                      simple_reward: bool = False):
+    """Create a single-env VecEnv for loading a saved model."""
+    is_shadow_hand = (domain == "shadow_hand")
+
+    if is_quadruped:
+        return DummyVecEnv([
+            lambda: make_quadruped_env(
+                robot=robot,
+                domain_rand_cfg=DomainRandomizationConfig.disabled(),
+                simple_reward=simple_reward,
+            )
+        ])
+    if is_shadow_hand:
+        return DummyVecEnv([lambda: make_shadow_hand_env(task)])
+    return DummyVecEnv([lambda: make_dm_env(domain, task)])
+
+
+def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
+                                    vecnormalize_path: Optional[Path],
+                                    domain: str, task: str,
+                                    is_quadruped: bool = False,
+                                    robot: str = "go2",
+                                    simple_reward: bool = False):
+    """Load a saved model plus its VecNormalize stats for video evaluation."""
+    model_env = make_single_env_for_model_loading(
+        domain=domain,
+        task=task,
+        is_quadruped=is_quadruped,
+        robot=robot,
+        simple_reward=simple_reward,
+    )
+
+    if vecnormalize_path is not None and vecnormalize_path.exists():
+        model_env = VecNormalize.load(vecnormalize_path, model_env)
+        model_env.training = False
+        model_env.norm_reward = False
+
+    model = load_model(algorithm, model_path, model_env, is_quadruped=is_quadruped)
+    return model, model_env
 
 
 def load_model(algorithm: str, model_path: Path, env, is_quadruped: bool = False):
@@ -844,6 +943,67 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     print("="*50)
 
 
+def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
+                               algorithm: str, domain: str, task: str,
+                               num_episodes: int, num_videos: int, seed: int,
+                               is_quadruped: bool = False, robot: str = "go2",
+                               simple_reward: bool = False):
+    """Load requested checkpoints and record videos for each one."""
+    checkpoint_dir = logdir / "checkpoints"
+
+    for checkpoint_step in checkpoint_steps:
+        model_path = checkpoint_dir / f"model_{checkpoint_step}_steps"
+        model_zip_path = model_path.with_suffix(".zip")
+        vecnormalize_path = checkpoint_dir / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
+        checkpoint_video_dir = logdir / f"video_{checkpoint_step}"
+
+        if not model_path.exists() and not model_zip_path.exists():
+            print(
+                f"Skipping checkpoint eval at step {checkpoint_step}: "
+                f"checkpoint model not found at {model_zip_path}"
+            )
+            continue
+
+        if not vecnormalize_path.exists():
+            print(
+                f"Skipping checkpoint eval at step {checkpoint_step}: "
+                f"VecNormalize stats not found at {vecnormalize_path}"
+            )
+            continue
+
+        print(
+            f"\nEvaluating checkpoint at step {checkpoint_step} "
+            f"and recording videos to {checkpoint_video_dir}..."
+        )
+        checkpoint_model, checkpoint_env = load_saved_model_for_video_eval(
+            algorithm=algorithm,
+            model_path=model_path,
+            vecnormalize_path=vecnormalize_path,
+            domain=domain,
+            task=task,
+            is_quadruped=is_quadruped,
+            robot=robot,
+            simple_reward=simple_reward,
+        )
+
+        try:
+            evaluate_and_record(
+                model=checkpoint_model,
+                domain=domain,
+                task=task,
+                num_episodes=num_episodes,
+                num_videos=num_videos,
+                video_dir=checkpoint_video_dir,
+                normalize_env=vecnormalize_path,
+                seed=seed,
+                is_quadruped=is_quadruped,
+                robot=robot,
+                simple_reward=simple_reward,
+            )
+        finally:
+            checkpoint_env.close()
+
+
 def main(argv):
     """
     Main training and evaluation function.
@@ -890,6 +1050,10 @@ def main(argv):
         domain, task = parse_env_name(_ENV_NAME.value)
         env_name = _ENV_NAME.value
         print(f"Environment: {domain}/{task}")
+
+    checkpoint_eval_steps = parse_checkpoint_eval_steps(_CHECKPOINT_EVALS.value)
+    if checkpoint_eval_steps:
+        print(f"Additional checkpoint video evals requested: {checkpoint_eval_steps}")
     
     # Determine if we're loading a checkpoint
     if _LOAD_RUN_NAME.value:
@@ -959,6 +1123,7 @@ def main(argv):
             "task": task,
             "total_timesteps": _TOTAL_TIMESTEPS.value,
             "num_envs": _NUM_ENVS.value,
+            "checkpoint_evals": checkpoint_eval_steps,
             "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
         })
@@ -1113,6 +1278,21 @@ def main(argv):
     
     # Evaluation phase (only if logging enabled)
     if _ENABLE_LOGGING.value:
+        if checkpoint_eval_steps:
+            evaluate_checkpoint_videos(
+                logdir=logdir,
+                checkpoint_steps=checkpoint_eval_steps,
+                algorithm=_ALGORITHM.value,
+                domain=domain,
+                task=task,
+                num_episodes=_NUM_EVAL_EPISODES.value,
+                num_videos=_NUM_VIDEOS.value,
+                seed=_SEED.value,
+                is_quadruped=is_quadruped,
+                robot=_ROBOT.value,
+                simple_reward=use_simple_reward,
+            )
+
         print(f"\nEvaluating model for {_NUM_EVAL_EPISODES.value} episodes...")
         evaluate_and_record(
             model=model,

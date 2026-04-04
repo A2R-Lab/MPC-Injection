@@ -1374,9 +1374,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             return True
 
         # Check base height
-        #base_height = self.mjData.qpos[2]
-        #if base_height < self.min_base_height:
-        #    return True
+        base_height = self.mjData.qpos[2]
+        if base_height < self.min_base_height:
+            return True
 
         return False
 
@@ -1393,8 +1393,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Zero small xy commands so feet_air_time reward has a clean threshold
         # between "stand" and "walk" commands
-        if np.linalg.norm(self._commands[:2]) < 0.2:
-            self._commands[:2] = 0.0
+        #if np.linalg.norm(self._commands[:2]) < 0.2:
+        #    self._commands[:2] = 0.0
 
         self._steps_since_command_resample = 0
 

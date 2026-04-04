@@ -407,6 +407,8 @@ def plot_trajectory_comparison(traj, env_qpos_history, replay_mode, max_steps):
     ax4.grid(True)
     plt.tight_layout()
     plt.show()
+
+
 def test_trajectory(data_dir, random_select=True, filename=None,
                     max_steps=500, replay_mode="joint_position",
                     render_mode="rgb_array"):
@@ -508,7 +510,8 @@ def test_trajectory(data_dir, random_select=True, filename=None,
         fps = 1.0 / traj["control_dt"]
         anim = animation.FuncAnimation(
             fig_anim, animate, frames=len(frames),
-            interval=1000 / fps, blit=True, repeat=True
+            #interval=1000 / fps, blit=True, repeat=True
+            interval=1, blit=True, repeat=True
         )
         print(f"Animation: {len(frames)} frames at {fps:.1f} FPS")
         plt.show()

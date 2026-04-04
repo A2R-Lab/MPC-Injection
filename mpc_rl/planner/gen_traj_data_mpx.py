@@ -279,12 +279,13 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
             # Build MPX input: [vx, vy, vz, wx, wy, wz, height]
             # Linearly ramp commands from zero to the target over CMD_RAMP_STEPS
             # so the MPC solver is not hit with full-speed requests from step 0.
-            ramp_scale = min(1.0, ctrl_step / CMD_RAMP_STEPS)
-            mpx_input = np.array([
-                ramp_scale * commands[0], ramp_scale * commands[1], 0.0,
-                0.0, 0.0, ramp_scale * commands[2],
-                config.robot_height
-            ])
+            #ramp_scale = min(1.0, ctrl_step / CMD_RAMP_STEPS)
+            #mpx_input = np.array([
+            #    ramp_scale * commands[0], ramp_scale * commands[1], 0.0,
+            #    0.0, 0.0, ramp_scale * commands[2],
+            #    config.robot_height
+            #])
+            mpx_input = np.array([commands[0], commands[1], 0.0, 0.0, 0.0, commands[2], config.robot_height])
 
             # Get foot contact states
             contact_temp, _ = env.feet_contact_state()
