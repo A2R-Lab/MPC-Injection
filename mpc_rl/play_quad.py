@@ -44,6 +44,7 @@ from stable_baselines3 import SAC as SB3_SAC, TD3 as SB3_TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
+from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 
 # ========================================================================
 # Algorithm detection
@@ -180,15 +181,33 @@ class VelocityCommander:
 # ========================================================================
 
 
-def make_quadruped_env(robot: str = "go2", render_mode: str | None = None):
-    """Create a quadruped velocity tracking gymnasium environment."""
-    # NOTE: domain_rand_cfg defaults to None, which means no randomization (equivalent to DomainRandomizationConfig.disabled())
+def make_quadruped_env(
+    robot: str = "go2",
+    render_mode: str | None = None,
+    enable_domain_rand: bool = False,
+):
+    """Create a quadruped velocity tracking gymnasium environment.
+
+    Replay defaults to domain randomization OFF so it matches
+    train.py --play_only evaluation and the nominal deployment plant.
+    """
+    domain_rand_cfg = None if enable_domain_rand else DomainRandomizationConfig.disabled()
     return gym.make(
         "QuadrupedVelocityTracking-v0",
         robot=robot,
         render_mode=render_mode,
         max_episode_steps=5000,
+        domain_rand_cfg=domain_rand_cfg,
     )
+
+
+def refresh_current_obs(vec_env):
+    """Rebuild the current observation after changing commands on the base env."""
+    obs_list = vec_env.env_method("_get_obs")
+    obs = {key: np.array([obs_list[0][key]]) for key in obs_list[0]}
+    if hasattr(vec_env, "normalize_obs"):
+        obs = vec_env.normalize_obs(obs)
+    return obs
 
 
 def main():
@@ -206,6 +225,10 @@ def main():
     parser.add_argument(
         "--step", type=float, default=0.1,
         help="Velocity increment per key press (default: 0.1)",
+    )
+    parser.add_argument(
+        "--domain_rand", action="store_true",
+        help="Enable domain randomization during replay (default: disabled to match eval/deployment)",
     )
     args = parser.parse_args()
 
@@ -234,10 +257,18 @@ def main():
 
     # Create environment WITHOUT render_mode (we create the viewer ourselves)
     print(f"Creating quadruped environment (robot={args.robot})...")
-    env_wrapped = make_quadruped_env(robot=args.robot, render_mode=None)
+    env_wrapped = make_quadruped_env(
+        robot=args.robot,
+        render_mode=None,
+        enable_domain_rand=args.domain_rand,
+    )
     # gym.make() wraps in TimeLimit; unwrap to access QuadrupedVelocityTrackingEnv
     env_base = env_wrapped.unwrapped
     vec_env = DummyVecEnv([lambda: env_wrapped])
+    print(
+        "Domain randomization during replay: "
+        f"{'ENABLED' if env_base.domain_rand_cfg.enable else 'DISABLED'}"
+    )
 
     # Load normalization stats if available
     vec_normalize_path = run_dir / "vec_normalize.pkl"
@@ -280,6 +311,7 @@ def main():
     # Main loop
     obs = vec_env.reset()
     env_base.set_commands(vx=0.0, vy=0.0, wz=0.0)
+    obs = refresh_current_obs(vec_env)
 
     try:
         while not commander.is_stopped() and viewer.is_running():
@@ -287,7 +319,14 @@ def main():
 
             # Update velocity commands from keyboard
             vx, vy, wz = commander.get()
+
+            # Set commands directly for testing purposes
+            #vx = 0.5
+            #vy = 0.0
+            #wz = 0.0
+
             env_base.set_commands(vx=vx, vy=vy, wz=wz)
+            obs = refresh_current_obs(vec_env)
 
             # Run policy
             action, _states = model.predict(obs, deterministic=True)
@@ -313,6 +352,7 @@ def main():
                 print("  [Episode reset - robot terminated]")
                 obs = vec_env.reset()
                 env_base.set_commands(vx=vx, vy=vy, wz=wz)
+                obs = refresh_current_obs(vec_env)
 
             # -- Real-time synchronization ------------------------------
             # Sleep so that each control step takes exactly control_dt of

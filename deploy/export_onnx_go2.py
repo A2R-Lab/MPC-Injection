@@ -243,6 +243,16 @@ def load_vecnormalize_stats(
     return obs_mean, obs_std
 
 
+def normalise_policy_obs(
+    raw_policy_obs: np.ndarray,
+    obs_mean: np.ndarray,
+    obs_std: np.ndarray,
+) -> np.ndarray:
+    """Apply the same VecNormalize transform baked into the exported ONNX graph."""
+    x = (raw_policy_obs - obs_mean) / obs_std
+    return np.clip(x, -10.0, 10.0).astype(np.float32)
+
+
 def export(
     model_zip: Path,
     vecnorm_pkl: Path,
@@ -282,7 +292,10 @@ def export(
     from stable_baselines3 import SAC, TD3
 
     algo_cls = SAC if algo == "SAC" else TD3
-    model = algo_cls.load(str(model_zip))
+    # Force CPU to match the exported ONNX deployment path and avoid
+    # mixed-device checks when a workstation has CUDA available.
+    model = algo_cls.load(str(model_zip), device="cpu")
+    model.policy = model.policy.cpu()
     actor = model.policy.actor
 
     # -- 3. Build algorithm-specific exporter ----------------------------------
@@ -347,7 +360,7 @@ def export(
     print(f"  [ok] Zero obs  -> actions shape {out_zero.shape}, "
           f"range [{out_zero.min():.4f}, {out_zero.max():.4f}]")
 
-    # Test 2: compare PyTorch and ONNX outputs on random input
+    # Test 2: compare PyTorch and ONNX outputs on random raw input
     rng = np.random.default_rng(42)
     rand_obs = rng.standard_normal((1, policy_obs_dim)).astype(np.float32)
     with torch.no_grad():
@@ -356,6 +369,25 @@ def export(
     max_diff = np.abs(pt_out - ort_out).max()
     assert max_diff < 1e-5, f"PyTorch/ONNX output mismatch: max diff = {max_diff}"
     print(f"  [ok] Random obs -> PyTorch vs ONNX max diff = {max_diff:.2e}")
+
+    # Test 3: compare ONNX against the original SB3 policy on the same raw obs.
+    raw_policy_obs = rng.standard_normal((1, policy_obs_dim)).astype(np.float32)
+    norm_policy_obs = normalise_policy_obs(raw_policy_obs, obs_mean, obs_std)
+    raw_obs_dict = {}
+    if hasattr(model, "observation_space") and hasattr(model.observation_space, "spaces"):
+        for key, space in model.observation_space.spaces.items():
+            if key == "policy":
+                raw_obs_dict[key] = norm_policy_obs
+            else:
+                raw_obs_dict[key] = np.zeros((1, *space.shape), dtype=np.float32)
+    else:
+        raw_obs_dict = norm_policy_obs
+
+    sb3_out, _ = model.predict(raw_obs_dict, deterministic=True)
+    onnx_out = sess.run(["actions"], {"obs": raw_policy_obs})[0]
+    sb3_diff = np.abs(sb3_out - onnx_out).max()
+    assert sb3_diff < 1e-5, f"SB3/ONNX output mismatch on raw obs: max diff = {sb3_diff}"
+    print(f"  [ok] Random raw obs -> SB3 vs ONNX max diff = {sb3_diff:.2e}")
 
     # Report what joint targets look like from default pose
     print(f"\nAt default standing pose (zero obs):")

@@ -57,6 +57,7 @@ import onnxruntime as ort
 
 import mpc_rl.envs  # register QuadrupedVelocityTracking-v0
 from stable_baselines3.common.vec_env import DummyVecEnv
+from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 
 # =============================================================================
 # GLFW key codes (identical to play_quad.py)
@@ -146,8 +147,25 @@ def load_sb3_model(model_zip: Path, vecnorm_pkl: Path):
     vec_norm.training = False
     vec_norm.norm_reward = False
 
-    model = algo_cls.load(str(model_zip), env=vec_norm)
+    # Force CPU so the comparison path matches ONNXRuntime and never depends
+    # on whether the local machine auto-selects CUDA.
+    model = algo_cls.load(str(model_zip), env=vec_norm, device="cpu")
+    model.policy = model.policy.cpu()
     return model, vec_norm
+
+
+def predict_sb3_action_from_raw_obs(sb3_model, sb3_vec_norm, raw_obs: dict[str, np.ndarray]) -> np.ndarray:
+    """Match deployment semantics: raw obs -> VecNormalize -> deterministic SB3 action."""
+    raw_obs_copy = {key: value.copy() for key, value in raw_obs.items()}
+    norm_obs = sb3_vec_norm.normalize_obs(raw_obs_copy)
+    sb3_actions, _ = sb3_model.predict(norm_obs, deterministic=True)
+    return sb3_actions
+
+
+def refresh_current_raw_obs(vec_env) -> dict[str, np.ndarray]:
+    """Rebuild the latest raw Dict observation after externally changing commands."""
+    obs_list = vec_env.env_method("_get_obs")
+    return {key: np.array([obs_list[0][key]], dtype=np.float32) for key in obs_list[0]}
 
 
 # =============================================================================
@@ -180,6 +198,10 @@ def main():
         "--vecnorm", type=Path, default=None,
         help="(Optional) VecNormalize .pkl paired with --compare model",
     )
+    parser.add_argument(
+        "--domain_rand", action="store_true",
+        help="Enable domain randomization during ONNX replay (default: disabled to match eval/deployment)",
+    )
     args = parser.parse_args()
 
     if not args.onnx.exists():
@@ -208,10 +230,20 @@ def main():
 
     # -- Create gymnasium environment ------------------------------------------
     print(f"\nCreating quadruped environment (robot={args.robot})...")
-    env_wrapped = gym.make("QuadrupedVelocityTracking-v0", robot=args.robot,
-                           render_mode=None, max_episode_steps=5000)
+    domain_rand_cfg = None if args.domain_rand else DomainRandomizationConfig.disabled()
+    env_wrapped = gym.make(
+        "QuadrupedVelocityTracking-v0",
+        robot=args.robot,
+        render_mode=None,
+        max_episode_steps=5000,
+        domain_rand_cfg=domain_rand_cfg,
+    )
     env_base = env_wrapped.unwrapped
     vec_env = DummyVecEnv([lambda: env_wrapped])
+    print(
+        "Domain randomization during ONNX replay: "
+        f"{'ENABLED' if env_base.domain_rand_cfg.enable else 'DISABLED'}"
+    )
     # NOTE: No VecNormalize here -- the ONNX has normalization baked in,
     # so we pass raw observations directly to the ONNX session.
 
@@ -246,6 +278,7 @@ def main():
 
     obs = vec_env.reset()
     env_base.set_commands(vx=0.0, vy=0.0, wz=0.0)
+    obs = refresh_current_raw_obs(vec_env)
 
     try:
         while not commander.is_stopped() and viewer.is_running():
@@ -254,24 +287,27 @@ def main():
             # Update velocity commands
             vx, vy, wz = commander.get()
             env_base.set_commands(vx=vx, vy=vy, wz=wz)
+            obs = refresh_current_raw_obs(vec_env)
 
             # -- ONNX inference ------------------------------------------------
             # obs["policy"] comes from DummyVecEnv with shape (1, 45).
             # We pass it directly -- the ONNX model handles normalisation.
-            raw_policy_obs = obs["policy"].astype(np.float32)  # (1, 45)
-            ort_actions = sess.run([output_name], {input_name: raw_policy_obs})[0]  # (1, 12)
+            raw_obs = {key: value.astype(np.float32, copy=True) for key, value in obs.items()}
+            ort_actions = sess.run([output_name], {input_name: raw_obs["policy"]})[0]  # (1, 12)
+
+            # -- Optional comparison with SB3 ----------------------------------
+            # Compare the two policies on the exact same raw observation before
+            # stepping the environment. SB3 expects VecNormalize to have already
+            # been applied, while the ONNX graph has that normalisation baked in.
+            sb3_actions = None
+            if sb3_model:
+                sb3_actions = predict_sb3_action_from_raw_obs(sb3_model, sb3_vec_norm, raw_obs)
 
             # Step environment with ONNX actions
             obs, reward, done, info = vec_env.step(ort_actions)
 
-            # -- Optional comparison with SB3 ----------------------------------
             step_count = env_base._step_count
-            if sb3_model and step_count % 50 == 0:
-                # Build the normalised obs dict that SB3 would see
-                sb3_obs = {"policy": raw_policy_obs, "privileged": obs["privileged"].astype(np.float32)}
-                import torch
-                with torch.no_grad():
-                    sb3_actions, _ = sb3_model.predict(obs, deterministic=True)
+            if sb3_actions is not None and step_count % 50 == 0:
                 max_diff = float(np.abs(ort_actions - sb3_actions).max())
                 print(f"  [step {step_count:5d}] ONNX vs SB3 max action diff: {max_diff:.6f}")
 
@@ -293,6 +329,7 @@ def main():
                 print("  [Episode reset - robot terminated]")
                 obs = vec_env.reset()
                 env_base.set_commands(vx=vx, vy=vy, wz=wz)
+                obs = refresh_current_raw_obs(vec_env)
 
             # -- Real-time sync ------------------------------------------------
             elapsed = time.perf_counter() - step_start

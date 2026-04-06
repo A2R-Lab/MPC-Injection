@@ -51,6 +51,7 @@ from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 log = logging.getLogger(__name__)
 
 _GENERATION_CONTACT_GEOM_NAMES = frozenset({"ground", "floor", "hfield", "terrain"})
+#_GENERATION_CONTACT_FRICTION = (0.7, 0.005, 0.0)
 _GENERATION_CONTACT_FRICTION = (0.7, 0.005, 0.0)
 
 

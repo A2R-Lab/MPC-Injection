@@ -243,7 +243,7 @@ The compiled binary `go2_ctrl` will be at `deploy/robots/go2/build/go2_ctrl`.
 ### Step D -- Deploy to the real Go2
 
 1. **Connect** your PC to the robot via Ethernet.
-   - Address: `192.168.123.99`
+   - Your Address: `192.168.123.99`
    - Netmask: `255.255.255.0`
    Use `ifconfig` to find the Ethernet interface name (e.g. `enp5s0`).
 
