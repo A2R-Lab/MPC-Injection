@@ -14,7 +14,7 @@
 
 # Common parameters (edit these as needed)
 ENV_NAME="quadruped-velocity_tracking"
-ALGORITHM="SAC-MPC"
+ALGORITHM="TD3-MPC"
 TOTAL_TIMESTEPS=1000000
 NUM_ENVS=4
 LEARNING_STARTS=50000
@@ -27,7 +27,7 @@ BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4
 POLICY_DELAY=2
 BATCH_SIZE=256
-LOG_DIR="logs/SAC-MPC-quadruped_x_vel_only_runs/"
+LOG_DIR="logs/TD3-MPC-quadruped_x_vel_only_runs_min_rwrd/"
 
 # MPC percentage sweep values
 PERCENTAGES=(0 25 50)

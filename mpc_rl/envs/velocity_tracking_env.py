@@ -1337,12 +1337,12 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         reward = (
             cfg["w_track_lin_vel"] * track_lin_vel
-            + cfg["w_track_ang_vel"] * track_ang_vel
+            #+ cfg["w_track_ang_vel"] * track_ang_vel
             + cfg["w_lin_vel_forward"] * lin_vel_forward_reward
-            + cfg["w_ang_vel_forward"] * ang_vel_forward_reward
+            #+ cfg["w_ang_vel_forward"] * ang_vel_forward_reward
             + cfg["w_is_terminated"] * termination_cost
-            + cfg["w_joint_acc"] * joint_acc_penalty
-            + cfg["w_action_rate"] * action_rate_penalty
+            #+ cfg["w_joint_acc"] * joint_acc_penalty
+            #+ cfg["w_action_rate"] * action_rate_penalty
         )
 
         # Store reward components for logging
