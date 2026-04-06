@@ -51,7 +51,7 @@ from sbx import SAC, PPO, TD3
 from stable_baselines3 import SAC as SB3_SAC, TD3 as SB3_TD3
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 import numpy as np
 import mediapy as media
 import jax
@@ -315,6 +315,72 @@ def parse_checkpoint_eval_steps(checkpoint_evals: Optional[str]) -> list[int]:
             seen_steps.add(step)
 
     return checkpoint_steps
+
+
+class ExactTimestepCheckpointCallback(BaseCallback):
+    """Save checkpoints at exact env-step milestones, even with vectorized envs.
+
+    SB3's built-in CheckpointCallback saves every N callback calls, so the common
+    ``checkpoint_freq // num_envs`` conversion floors the desired interval when
+    ``checkpoint_freq`` is not divisible by ``num_envs``. That causes drift such as
+    25,000-step checkpoints being written every 24,832 steps when ``num_envs=256``.
+
+    This callback instead tracks the next desired env-step milestone directly and
+    saves as soon as training crosses it, naming the checkpoint with the requested
+    milestone (e.g. ``model_300000_steps.zip``).
+    """
+
+    def __init__(
+        self,
+        save_freq_steps: int,
+        save_path: str,
+        name_prefix: str = "rl_model",
+        save_replay_buffer: bool = False,
+        save_vecnormalize: bool = False,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        if save_freq_steps <= 0:
+            raise ValueError(f"save_freq_steps must be positive, got {save_freq_steps}")
+
+        self.save_freq_steps = save_freq_steps
+        self.save_path = Path(save_path)
+        self.name_prefix = name_prefix
+        self.save_replay_buffer = save_replay_buffer
+        self.save_vecnormalize = save_vecnormalize
+        self.next_save_step = save_freq_steps
+
+    def _init_callback(self) -> None:
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        current_steps = int(self.model.num_timesteps)
+        self.next_save_step = ((current_steps // self.save_freq_steps) + 1) * self.save_freq_steps
+
+    def _checkpoint_path(self, step: int, checkpoint_type: str = "", extension: str = "") -> Path:
+        return self.save_path / f"{self.name_prefix}_{checkpoint_type}{step}_steps.{extension}"
+
+    def _save_checkpoint(self, target_step: int) -> None:
+        model_path = self._checkpoint_path(target_step, extension="zip")
+        self.model.save(model_path)
+        if self.verbose >= 2:
+            print(f"Saving model checkpoint to {model_path}")
+
+        if self.save_replay_buffer and hasattr(self.model, "replay_buffer") and self.model.replay_buffer is not None:
+            replay_buffer_path = self._checkpoint_path(target_step, "replay_buffer_", extension="pkl")
+            self.model.save_replay_buffer(replay_buffer_path)  # type: ignore[attr-defined]
+            if self.verbose > 1:
+                print(f"Saving model replay buffer checkpoint to {replay_buffer_path}")
+
+        if self.save_vecnormalize and self.model.get_vec_normalize_env() is not None:
+            vecnormalize_path = self._checkpoint_path(target_step, "vecnormalize_", extension="pkl")
+            self.model.get_vec_normalize_env().save(vecnormalize_path)  # type: ignore[union-attr]
+            if self.verbose >= 2:
+                print(f"Saving model VecNormalize to {vecnormalize_path}")
+
+    def _on_step(self) -> bool:
+        while self.num_timesteps >= self.next_save_step:
+            self._save_checkpoint(self.next_save_step)
+            self.next_save_step += self.save_freq_steps
+        return True
 
 
 def is_shadow_hand_env(env_name: str) -> bool:
@@ -706,10 +772,11 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
-        # CheckpointCallback's save_freq is per training step (which processes num_envs environments)
-        # So we divide by num_envs to get the correct frequency in environment steps
-        checkpoint_callback = CheckpointCallback(
-            save_freq=checkpoint_freq // num_envs,
+        # Save checkpoints against exact env-step milestones instead of
+        # floor-dividing by num_envs, which drifts when the interval is not
+        # divisible by the vectorized env count (e.g. 25,000 // 256 = 97).
+        checkpoint_callback = ExactTimestepCheckpointCallback(
+            save_freq_steps=checkpoint_freq,
             save_path=str(logdir / "checkpoints"),
             name_prefix="model",
             save_replay_buffer=save_replay_buffer_checkpoints,
@@ -943,6 +1010,47 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     print("="*50)
 
 
+def _parse_saved_checkpoint_step(model_zip_path: Path) -> Optional[int]:
+    """Extract the labeled step from a checkpoint filename like model_300000_steps.zip."""
+    stem = model_zip_path.stem
+    prefix = "model_"
+    suffix = "_steps"
+    if not stem.startswith(prefix) or not stem.endswith(suffix):
+        return None
+
+    step_str = stem[len(prefix):-len(suffix)]
+    try:
+        return int(step_str)
+    except ValueError:
+        return None
+
+
+def resolve_checkpoint_paths(checkpoint_dir: Path, checkpoint_step: int) -> tuple[Optional[int], Optional[Path], Optional[Path]]:
+    """Resolve the requested checkpoint, falling back to the nearest saved step if needed."""
+    model_path = checkpoint_dir / f"model_{checkpoint_step}_steps"
+    model_zip_path = model_path.with_suffix(".zip")
+    vecnormalize_path = checkpoint_dir / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
+    if (model_path.exists() or model_zip_path.exists()) and vecnormalize_path.exists():
+        return checkpoint_step, model_path, vecnormalize_path
+
+    candidate_steps = []
+    for candidate_zip in checkpoint_dir.glob("model_*_steps.zip"):
+        candidate_step = _parse_saved_checkpoint_step(candidate_zip)
+        if candidate_step is None:
+            continue
+        candidate_vecnormalize = checkpoint_dir / f"model_vecnormalize_{candidate_step}_steps.pkl"
+        if candidate_vecnormalize.exists():
+            candidate_steps.append(candidate_step)
+
+    if not candidate_steps:
+        return None, None, None
+
+    resolved_step = min(candidate_steps, key=lambda step: (abs(step - checkpoint_step), step))
+    resolved_model_path = checkpoint_dir / f"model_{resolved_step}_steps"
+    resolved_vecnormalize_path = checkpoint_dir / f"model_vecnormalize_{resolved_step}_steps.pkl"
+    return resolved_step, resolved_model_path, resolved_vecnormalize_path
+
+
 def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                                algorithm: str, domain: str, task: str,
                                num_episodes: int, num_videos: int, seed: int,
@@ -952,27 +1060,28 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
     checkpoint_dir = logdir / "checkpoints"
 
     for checkpoint_step in checkpoint_steps:
-        model_path = checkpoint_dir / f"model_{checkpoint_step}_steps"
-        model_zip_path = model_path.with_suffix(".zip")
-        vecnormalize_path = checkpoint_dir / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
+        resolved_step, model_path, vecnormalize_path = resolve_checkpoint_paths(
+            checkpoint_dir=checkpoint_dir,
+            checkpoint_step=checkpoint_step,
+        )
         checkpoint_video_dir = logdir / f"video_{checkpoint_step}"
 
-        if not model_path.exists() and not model_zip_path.exists():
+        if resolved_step is None or model_path is None or vecnormalize_path is None:
+            model_zip_path = (checkpoint_dir / f"model_{checkpoint_step}_steps").with_suffix(".zip")
             print(
                 f"Skipping checkpoint eval at step {checkpoint_step}: "
                 f"checkpoint model not found at {model_zip_path}"
             )
             continue
 
-        if not vecnormalize_path.exists():
+        if resolved_step != checkpoint_step:
             print(
-                f"Skipping checkpoint eval at step {checkpoint_step}: "
-                f"VecNormalize stats not found at {vecnormalize_path}"
+                f"Requested checkpoint {checkpoint_step} not found exactly; "
+                f"using nearest saved checkpoint {resolved_step} instead."
             )
-            continue
 
         print(
-            f"\nEvaluating checkpoint at step {checkpoint_step} "
+            f"\nEvaluating checkpoint at step {resolved_step} "
             f"and recording videos to {checkpoint_video_dir}..."
         )
         checkpoint_model, checkpoint_env = load_saved_model_for_video_eval(

@@ -14,9 +14,9 @@
 
 # Common parameters (edit these as needed)
 ENV_NAME="quadruped-velocity_tracking"
-ALGORITHM="TD3-MPC"
+ALGORITHM="SAC-MPC"
 TOTAL_TIMESTEPS=1000000
-NUM_ENVS=4
+NUM_ENVS=256
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="True"
@@ -27,13 +27,16 @@ BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4
 POLICY_DELAY=2
 BATCH_SIZE=256
-LOG_DIR="logs/TD3-MPC-quadruped_x_vel_only_runs_min_rwrd/"
+#LOG_DIR="logs/TD3-MPC-quadruped_x_vel_only_runs_min_rwrd/"
+LOG_DIR="logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_tiles_256/"
 
 # MPC percentage sweep values
-PERCENTAGES=(0 25 50)
+#PERCENTAGES=(0 25 50)
+PERCENTAGES=(25)
 
 # Seeds to sweep over
-SEEDS=(100 150 200)
+#SEEDS=(100 150 200)
+SEEDS=(150)
 
 # Additional checkpoint video evaluations to record during each run.
 # Bash arrays are space-separated; the script converts them to the

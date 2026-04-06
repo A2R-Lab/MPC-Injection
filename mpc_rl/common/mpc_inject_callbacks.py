@@ -389,6 +389,11 @@ class PercentMPCInjectCallback(BaseCallback):
         self.target_percentage = target_percentage
         self.robot = robot
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
+        # ReplayBuffer.add() always writes a full row of n_envs transitions.
+        # For quadruped percentage injection, accumulate unique MPC transitions
+        # here and flush them in n_env-sized batches instead of tiling one demo
+        # step across every slot.
+        self._quadruped_pending_transitions = []
         
         # Trajectory loading configuration
         self.data_dir = data_dir
@@ -473,6 +478,55 @@ class PercentMPCInjectCallback(BaseCallback):
         passes through.
         """
         return True  # Continue training
+
+    def _flush_quadruped_pending_transitions(self) -> int:
+        """Commit queued quadruped MPC transitions in full n_envs-sized batches."""
+        n_envs = self.training_env.num_envs
+        transitions_added = 0
+
+        while len(self._quadruped_pending_transitions) >= n_envs:
+            batch = self._quadruped_pending_transitions[:n_envs]
+            del self._quadruped_pending_transitions[:n_envs]
+
+            obs_vec = {
+                key: np.stack([transition["obs"][key] for transition in batch], axis=0)
+                for key in batch[0]["obs"]
+            }
+            next_obs_vec = {
+                key: np.stack([transition["next_obs"][key] for transition in batch], axis=0)
+                for key in batch[0]["next_obs"]
+            }
+            action_vec = np.stack([transition["action"] for transition in batch], axis=0)
+            reward_vec = np.asarray([transition["reward"] for transition in batch], dtype=np.float32)
+            done_vec = np.asarray([transition["done"] for transition in batch], dtype=np.float32)
+            info_vec = [transition["info"] for transition in batch]
+
+            self.model.replay_buffer.add(
+                obs=obs_vec,
+                next_obs=next_obs_vec,
+                action=action_vec,
+                reward=reward_vec,
+                done=done_vec,
+                infos=info_vec,
+                source=1,
+            )
+            transitions_added += n_envs
+
+        return transitions_added
+
+    def _queue_quadruped_transition(self, obs, next_obs, action, reward, terminated, info) -> int:
+        """Queue one unique quadruped MPC transition and flush any full batch."""
+        self._quadruped_pending_transitions.append(
+            {
+                "obs": {key: np.array(value, copy=True) for key, value in obs.items()},
+                "next_obs": {key: np.array(value, copy=True) for key, value in next_obs.items()},
+                "action": np.array(action, copy=True),
+                "reward": float(reward),
+                "done": float(terminated),
+                "info": info.copy() if isinstance(info, dict) else info,
+            }
+        )
+        return self._flush_quadruped_pending_transitions()
     
     def _replay_quadruped_trajectory(
         self, temp_env, qpos, qvel, tau_applied, commands,
@@ -502,7 +556,7 @@ class PercentMPCInjectCallback(BaseCallback):
             default_joint_pos: Default standing joint positions, shape (12,).
 
         Returns:
-            Number of transitions added to the replay buffer.
+            Number of transitions committed to the replay buffer.
         """
         # Reset temp env then override with trajectory initial state
         temp_env.reset()
@@ -521,8 +575,7 @@ class PercentMPCInjectCallback(BaseCallback):
         kd = temp_env.kd
         action_scale = temp_env.action_scale
 
-        n_envs = self.training_env.num_envs
-        steps_added = 0
+        transitions_added = 0
 
         for ctrl_step in range(episode_length):
             sim_idx_start = ctrl_step * decimation
@@ -580,29 +633,21 @@ class PercentMPCInjectCallback(BaseCallback):
 
             info = temp_env._get_info()
 
-            # Tile Dict obs for n_envs (replay buffer API)
-            obs_vec = {k: np.tile(v, (n_envs, 1)) for k, v in obs.items()}
-            next_obs_vec = {k: np.tile(v, (n_envs, 1)) for k, v in next_obs.items()}
-            action_vec = np.tile(action, (n_envs, 1))
-            reward_vec = np.full(n_envs, reward)
-            done_vec = np.full(n_envs, float(terminated))
-            info_vec = [info] * n_envs
-
-            self.model.replay_buffer.add(
-                obs=obs_vec,
-                next_obs=next_obs_vec,
-                action=action_vec,
-                reward=reward_vec,
-                done=done_vec,
-                infos=info_vec,
-                source=1,
+            # Queue unique transitions and only flush once we have enough to
+            # fill a full replay-buffer row across n_envs.
+            transitions_committed = self._queue_quadruped_transition(
+                obs=obs,
+                next_obs=next_obs,
+                action=action,
+                reward=reward,
+                terminated=terminated,
+                info=info,
             )
-
-            steps_added += 1
+            transitions_added += transitions_committed
             obs = next_obs
 
-            # Periodically check MPC% mid-trajectory to avoid overshooting
-            if steps_added % 100 == 0 and hasattr(self, 'target_percentage'):
+            # Check MPC% whenever a batch is actually committed to the buffer.
+            if transitions_committed > 0 and hasattr(self, 'target_percentage'):
                 mid_pct = self.model.replay_buffer.get_mpc_percentage()
                 if mid_pct >= self.target_percentage:
                     if self.verbose > 1:
@@ -614,7 +659,7 @@ class PercentMPCInjectCallback(BaseCallback):
                     print(f"    Quadruped trajectory terminated at ctrl step {ctrl_step+1}/{episode_length}")
                 break
 
-        return steps_added
+        return transitions_added
 
     def _inject_mpc_trajectories(self):
         """
@@ -765,11 +810,12 @@ class PercentMPCInjectCallback(BaseCallback):
                     current_total = stats["total_transitions"]
                     
                     # Estimate after adding 1 more trajectory (~1000 transitions).
-                    # Each step is tiled across n_envs in the buffer, so scale
-                    # the estimate to match the n_envs-scaled counts from
-                    # get_composition_stats().
+                    # Quadruped injection packs unique MPC transitions into the
+                    # n_envs slots of each replay row, so one trajectory remains
+                    # ~1000 counted transitions instead of 1000 * n_envs tiled
+                    # copies. Other domains still tile each step across all slots.
                     n_envs = self.model.replay_buffer.n_envs
-                    traj_transitions = 1000 * n_envs
+                    traj_transitions = 1000 if is_quadruped else 1000 * n_envs
                     estimated_new_mpc = current_mpc_count + traj_transitions
                     # When the buffer is full, adding rows overwrites old ones;
                     # total stays at buffer_capacity * n_envs.
