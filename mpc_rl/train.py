@@ -217,6 +217,13 @@ _DOMAIN_RAND = flags.DEFINE_boolean(
     "Randomizes friction, mass, PD gains, observation noise, and applies "
     "periodic push perturbations for improved sim-to-real transfer."
 )
+_DOMAIN_RAND_CONFIG_TYPE = flags.DEFINE_enum(
+    "domain_rand_config_type", "custom",
+    ["custom", "default", "default_no_push", "half_no_push", "quarter_no_push", "disabled"],
+    "Named quadruped domain-randomization preset. "
+    "'custom' preserves the legacy flag-driven behavior where only "
+    "--domain_rand_obs_noise overrides the default config."
+)
 _DOMAIN_RAND_OBS_NOISE = flags.DEFINE_float(
     "domain_rand_obs_noise", 1.0,
     "Observation noise level for domain randomization (0.0 = no noise, 1.0 = full)."
@@ -478,6 +485,22 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         **kwargs,
     )
     return gym_env
+
+
+def build_quadruped_domain_rand_config() -> DomainRandomizationConfig:
+    """Resolve the quadruped domain-randomization config from CLI flags."""
+    config_type = _DOMAIN_RAND_CONFIG_TYPE.value
+
+    if not _DOMAIN_RAND.value or config_type == "disabled":
+        return DomainRandomizationConfig.disabled()
+
+    if config_type == "custom":
+        return DomainRandomizationConfig(
+            enable=True,
+            obs_noise_level=_DOMAIN_RAND_OBS_NOISE.value,
+        )
+
+    return DomainRandomizationConfig.from_preset(config_type)
 
 
 def create_experiment_name(env_name: str, algorithm: str, suffix: str = None,
@@ -1221,6 +1244,24 @@ def main(argv):
         data_dir=_DATA_DIR.value,
     )
     
+    # ── Domain randomization setup (quadruped only) ──────────────────────
+    dr_cfg = None
+    if is_quadruped:
+        dr_cfg = build_quadruped_domain_rand_config()
+        if dr_cfg.enable:
+            print(
+                "Domain randomization: ENABLED "
+                f"(config_type={_DOMAIN_RAND_CONFIG_TYPE.value})"
+            )
+            print(f"Resolved DR config: {dr_cfg.to_dict()}")
+        else:
+            print(
+                "Domain randomization: DISABLED "
+                f"(config_type={_DOMAIN_RAND_CONFIG_TYPE.value})"
+            )
+    # Eval environments never use DR (deterministic evaluation)
+    dr_cfg_eval = DomainRandomizationConfig.disabled() if is_quadruped else None
+
     # Save configuration (only for new runs)
     if not _LOAD_RUN_NAME.value:
         # Convert dataclass to dict and add environment info
@@ -1236,28 +1277,15 @@ def main(argv):
             "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
         })
-        # Include domain randomization config for quadruped envs
         if is_quadruped:
             config_dict["domain_randomization"] = {
-                "enabled": _DOMAIN_RAND.value,
-                "obs_noise_level": _DOMAIN_RAND_OBS_NOISE.value,
+                "enabled": dr_cfg.enable,
+                "config_type": _DOMAIN_RAND_CONFIG_TYPE.value,
+                "legacy_flag_enabled": _DOMAIN_RAND.value,
+                "legacy_obs_noise_level": _DOMAIN_RAND_OBS_NOISE.value,
+                "resolved_config": dr_cfg.to_dict(),
             }
         save_config(logdir, config_dict)
-    
-    # ── Domain randomization setup (quadruped only) ──────────────────────
-    dr_cfg = None
-    if is_quadruped:
-        if _DOMAIN_RAND.value:
-            dr_cfg = DomainRandomizationConfig(
-                enable=True,
-                obs_noise_level=_DOMAIN_RAND_OBS_NOISE.value,
-            )
-            print(f"Domain randomization: ENABLED (obs_noise_level={_DOMAIN_RAND_OBS_NOISE.value})")
-        else:
-            dr_cfg = DomainRandomizationConfig.disabled()
-            print("Domain randomization: DISABLED")
-    # Eval environments never use DR (deterministic evaluation)
-    dr_cfg_eval = DomainRandomizationConfig.disabled() if is_quadruped else None
 
     # Use simplified reward for quadruped environments when training with MPC injection
     use_simple_reward = is_quadruped and _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"]

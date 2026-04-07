@@ -157,6 +157,97 @@ class DomainRandomizationConfig:
         """Create a config with all randomization disabled."""
         return cls(enable=False)
 
+    @classmethod
+    def default_no_push(cls) -> DomainRandomizationConfig:
+        """Create the default config with external perturbations disabled."""
+        return cls(push_robots=False)
+
+    @staticmethod
+    def _scaled_range(
+        value_range: tuple[float, float],
+        width_scale: float,
+    ) -> tuple[float, float]:
+        """Shrink a numeric range around its midpoint by a width scale."""
+        lo, hi = value_range
+        midpoint = 0.5 * (lo + hi)
+        half_width = 0.5 * width_scale * (hi - lo)
+        return (midpoint - half_width, midpoint + half_width)
+
+    @classmethod
+    def half_no_push(cls) -> DomainRandomizationConfig:
+        """Create a reduced-strength config with pushes disabled.
+
+        The "half" preset halves the enabled default randomization magnitudes
+        while keeping default-disabled terms disabled:
+            - numeric ranges are shrunk to half-width around their midpoint
+            - observation noise level is halved
+            - pushes are disabled entirely
+        """
+        default_cfg = cls()
+        return cls(
+            friction_range=cls._scaled_range(default_cfg.friction_range, width_scale=0.5),
+            added_mass_range=cls._scaled_range(default_cfg.added_mass_range, width_scale=0.5),
+            com_displacement_range=cls._scaled_range(default_cfg.com_displacement_range, width_scale=0.5),
+            encoder_bias_range=cls._scaled_range(default_cfg.encoder_bias_range, width_scale=0.5),
+            kp_scale_range=cls._scaled_range(default_cfg.kp_scale_range, width_scale=0.5),
+            kd_scale_range=cls._scaled_range(default_cfg.kd_scale_range, width_scale=0.5),
+            joint_damping_scale_range=cls._scaled_range(default_cfg.joint_damping_scale_range, width_scale=0.5),
+            joint_armature_scale_range=cls._scaled_range(default_cfg.joint_armature_scale_range, width_scale=0.5),
+            joint_friction_range=cls._scaled_range(default_cfg.joint_friction_range, width_scale=0.5),
+            motor_strength_range=cls._scaled_range(default_cfg.motor_strength_range, width_scale=0.5),
+            obs_noise_level=0.5 * default_cfg.obs_noise_level,
+            obs_noise_scales=default_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=cls._scaled_range(default_cfg.push_interval_range_s, width_scale=0.5),
+            push_velocity_ranges={
+                axis: cls._scaled_range(axis_range, width_scale=0.5)
+                for axis, axis_range in default_cfg.push_velocity_ranges.items()
+            },
+        )
+
+    @classmethod
+    def quarter_no_push(cls) -> DomainRandomizationConfig:
+        """Create a quarter-strength config with pushes disabled."""
+        default_cfg = cls()
+        return cls(
+            friction_range=cls._scaled_range(default_cfg.friction_range, width_scale=0.25),
+            added_mass_range=cls._scaled_range(default_cfg.added_mass_range, width_scale=0.25),
+            com_displacement_range=cls._scaled_range(default_cfg.com_displacement_range, width_scale=0.25),
+            encoder_bias_range=cls._scaled_range(default_cfg.encoder_bias_range, width_scale=0.25),
+            kp_scale_range=cls._scaled_range(default_cfg.kp_scale_range, width_scale=0.25),
+            kd_scale_range=cls._scaled_range(default_cfg.kd_scale_range, width_scale=0.25),
+            joint_damping_scale_range=cls._scaled_range(default_cfg.joint_damping_scale_range, width_scale=0.25),
+            joint_armature_scale_range=cls._scaled_range(default_cfg.joint_armature_scale_range, width_scale=0.25),
+            joint_friction_range=cls._scaled_range(default_cfg.joint_friction_range, width_scale=0.25),
+            motor_strength_range=cls._scaled_range(default_cfg.motor_strength_range, width_scale=0.25),
+            obs_noise_level=0.25 * default_cfg.obs_noise_level,
+            obs_noise_scales=default_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=cls._scaled_range(default_cfg.push_interval_range_s, width_scale=0.25),
+            push_velocity_ranges={
+                axis: cls._scaled_range(axis_range, width_scale=0.25)
+                for axis, axis_range in default_cfg.push_velocity_ranges.items()
+            },
+        )
+
+    @classmethod
+    def from_preset(cls, preset: str) -> DomainRandomizationConfig:
+        """Create a config from a named preset."""
+        preset_factories = {
+            "default": cls,
+            "default_no_push": cls.default_no_push,
+            "half_no_push": cls.half_no_push,
+            "quarter_no_push": cls.quarter_no_push,
+            "disabled": cls.disabled,
+        }
+        try:
+            return preset_factories[preset]()
+        except KeyError as exc:
+            raise ValueError(
+                f"Unknown domain randomization preset: {preset!r}. "
+                f"Expected one of: {', '.join(sorted(preset_factories))}"
+            ) from exc
+
     def to_dict(self) -> dict:
         """Serialize to dict for logging/saving."""
         from dataclasses import asdict
