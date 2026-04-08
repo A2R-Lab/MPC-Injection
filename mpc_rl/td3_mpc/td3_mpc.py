@@ -165,7 +165,7 @@ class TD3_MPC(OffPolicyAlgorithmJax):
                 )
 
                 if not target_reached:
-                    if self.verbose > 0:
+                    if self.verbose > 1:
                         print(f"\n[Train Update {self._n_updates}] MPC percentage low: {actual_mpc_pct:.2f}% < {self.target_mpc_percentage}%")
                         print(f"Injecting MPC trajectories before sampling...")
                     

@@ -45,7 +45,11 @@ from matplotlib import animation
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
-from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.domain_randomization import (
+    DomainRandomizationConfig,
+    apply_startup_domain_rand_patch,
+    extract_startup_domain_rand_patch,
+)
 
 
 def select_trajectory(data_dir, random_select=True, filename=None):
@@ -95,8 +99,17 @@ def load_trajectory(traj_file):
         "sim_dt": float(data["sim_dt"]),
         "control_dt": float(data["control_dt"]),
         "episode_length": int(data["episode_length"]),
+        "dr_patch": extract_startup_domain_rand_patch(data),
     }
     return result
+
+
+def apply_loaded_dr_patch(env, dr_patch):
+    """Apply an optional saved startup-DR patch to the replay env."""
+    if dr_patch is None:
+        env.torque_limits = env._nominal_torque_limits.copy()
+        return
+    env.torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
 
 
 def replay_joint_position_mode(env, traj, max_steps, render_mode=None):
@@ -434,6 +447,9 @@ def test_trajectory(data_dir, random_select=True, filename=None,
     print(f"  sim_dt: {traj['sim_dt']}s, control_dt: {traj['control_dt']}s")
     print(f"  default_joint_pos: {traj['default_joint_pos']}")
     print(f"  action_scale: {traj['action_scale']}")
+    if traj["dr_patch"] is not None:
+        print(f"  DR preset: {traj['dr_patch'].get('dr_config_type', 'unknown')}")
+        print(f"  DR fields: {traj['dr_patch'].get('dr_applied_fields', np.array([])).tolist()}")
 
     # Create RL environment with default PD gains and action_scale.
     # Domain randomization is disabled so the MuJoCo model matches the
@@ -446,7 +462,8 @@ def test_trajectory(data_dir, random_select=True, filename=None,
         render_mode=render_mode,
         domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
     )
-    env.assert_generation_contact_friction_matches()
+    if traj["dr_patch"] is None:
+        env.assert_generation_contact_friction_matches()
 
     # Disable early termination during replay so we can observe the full
     # trajectory even if small errors accumulate. The replay is diagnostic,
@@ -457,7 +474,9 @@ def test_trajectory(data_dir, random_select=True, filename=None,
 
     # Reset the environment
     obs, info = env.reset(seed=42)
-    env.assert_generation_contact_friction_matches()
+    apply_loaded_dr_patch(env, traj["dr_patch"])
+    if traj["dr_patch"] is None:
+        env.assert_generation_contact_friction_matches()
 
     # Set the initial state from the recorded trajectory
     init_qpos = traj["qpos"][:, 0]

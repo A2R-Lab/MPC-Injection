@@ -7,10 +7,44 @@ from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
 import mujoco
 
+from mpc_rl.envs.domain_randomization import (
+    apply_startup_domain_rand_patch,
+    extract_startup_domain_rand_patch,
+)
+
 
 def _assert_quadruped_generation_friction(env):
     """Fail loudly if the quadruped temp env drifts from the demo plant."""
     env.assert_generation_contact_friction_matches()
+
+
+def _restore_quadruped_nominal_model(env):
+    """Restore the quadruped temp env's MuJoCo model to its saved nominal plant."""
+    if not hasattr(env, "_nominal_actuator_forcerange"):
+        env._nominal_actuator_forcerange = env.mjModel.actuator_forcerange.copy()
+
+    env.mjModel.geom_friction[:] = env._nominal_friction
+    env.mjModel.body_mass[:] = env._nominal_body_mass
+    env.mjModel.body_ipos[:] = env._nominal_body_ipos
+    env.mjModel.dof_damping[:] = env._nominal_dof_damping
+    env.mjModel.dof_armature[:] = env._nominal_dof_armature
+    env.mjModel.dof_frictionloss[:] = env._nominal_dof_frictionloss
+    env.mjModel.actuator_ctrlrange[:] = env._nominal_torque_limits
+    env.mjModel.actuator_forcerange[:] = env._nominal_actuator_forcerange
+    env.torque_limits = env._nominal_torque_limits.copy()
+    env.kp = env._nominal_kp.copy()
+    env.kd = env._nominal_kd.copy()
+    env._encoder_bias[:] = 0.0
+    env._motor_strength_scale = 1.0
+    mujoco.mj_forward(env.mjModel, env.mjData)
+
+
+def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
+    """Restore nominal model state, then apply an optional saved DR patch."""
+    _restore_quadruped_nominal_model(env)
+    if dr_patch is None:
+        return
+    env.torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
 
 
 class FixedMPCInjectCallback(BaseCallback):
@@ -530,7 +564,7 @@ class PercentMPCInjectCallback(BaseCallback):
     
     def _replay_quadruped_trajectory(
         self, temp_env, qpos, qvel, tau_applied, commands,
-        episode_length, decimation, default_joint_pos,
+        episode_length, decimation, default_joint_pos, traj_domain_rand_patch=None,
     ):
         """Replay one quadruped MPC trajectory and inject transitions into the replay buffer.
 
@@ -554,12 +588,14 @@ class PercentMPCInjectCallback(BaseCallback):
             episode_length: Number of control steps in the trajectory.
             decimation: Sim steps per control step (typically 4).
             default_joint_pos: Default standing joint positions, shape (12,).
+            traj_domain_rand_patch: Optional saved startup-DR model patch.
 
         Returns:
             Number of transitions committed to the replay buffer.
         """
         # Reset temp env then override with trajectory initial state
         temp_env.reset()
+        _apply_quadruped_trajectory_dr_patch(temp_env, traj_domain_rand_patch)
         temp_env.mjData.qpos[:] = qpos[:, 0]
         temp_env.mjData.qvel[:] = qvel[:, 0]
         temp_env.mjData.ctrl[:] = 0.0
@@ -776,7 +812,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 # If buffer is full and we're close to 100% (>99%), accept it
                 # We can't maintain exactly 100% because RL transitions keep coming and evict MPC
                 if buffer_size >= buffer_capacity and actual_mpc_pct >= 99.0:
-                    if self.verbose > 0:
+                    if self.verbose > 1:
                         print(f"  Target reached (buffer full): {actual_mpc_pct:.2f}% MPC")
                         print(f"  Cannot maintain exactly 100% with full buffer and ongoing RL collection")
                         print(f"  Injected {num_trajectories_added} trajectories this session")
@@ -787,7 +823,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 
                 # If buffer not full yet, keep injecting until full or 100%
                 if buffer_size < buffer_capacity and actual_mpc_pct >= 100:
-                    if self.verbose > 0:
+                    if self.verbose > 1:
                         print(f"  Target reached: {actual_mpc_pct:.2f}% MPC")
                         print(f"  Injected {num_trajectories_added} trajectories this session")
                         print(f"  Transitions added: {total_transitions_added}")
@@ -827,7 +863,7 @@ class PercentMPCInjectCallback(BaseCallback):
                     
                     # Stop if we're already at target OR if adding one more would overshoot significantly
                     if actual_mpc_pct >= self.target_percentage:
-                        if self.verbose > 0:
+                        if self.verbose > 1:
                             print(f"  Target reached: {actual_mpc_pct:.2f}% >= {self.target_percentage}%")
                             print(f"  Injected {num_trajectories_added} trajectories this session")
                             print(f"  Transitions added: {total_transitions_added}")
@@ -853,7 +889,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 else:
                     # Empty buffer, inject at least one trajectory
                     if actual_mpc_pct >= self.target_percentage:
-                        if self.verbose > 0:
+                        if self.verbose > 1:
                             print(f"  Target reached: {actual_mpc_pct:.2f}% >= {self.target_percentage}%")
                             print(f"  Injected {num_trajectories_added} trajectories this session")
                             print(f"  Transitions added: {total_transitions_added}")
@@ -894,9 +930,16 @@ class PercentMPCInjectCallback(BaseCallback):
                             traj_control_dt = float(traj_data['control_dt'])
                             traj_decimation = int(round(traj_control_dt / traj_sim_dt))
                             traj_default_joint_pos = traj_data['default_joint_pos']
+                            traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)
                             if self.verbose > 2:
                                 print(f"    Loaded quadruped trajectory: {traj_episode_length} ctrl steps, "
                                       f"decimation={traj_decimation}")
+                                if traj_domain_rand_patch is not None:
+                                    print(
+                                        "    Loaded quadruped DR patch: "
+                                        f"{traj_domain_rand_patch.get('dr_config_type', 'unknown')} "
+                                        f"fields={traj_domain_rand_patch.get('dr_applied_fields', np.array([])).tolist()}"
+                                    )
                         else:
                             ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
                             # Downsample controls to match RL action timestep
@@ -930,6 +973,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 steps_added_this_traj = self._replay_quadruped_trajectory(
                     temp_env, qpos, qvel, traj_tau_applied, traj_commands,
                     traj_episode_length, traj_decimation, traj_default_joint_pos,
+                    traj_domain_rand_patch=traj_domain_rand_patch,
                 )
             else:
                 # ----------------------------------------------------------------
@@ -1003,7 +1047,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 
                 # Stop if we've now reached or exceeded the target
                 if actual_mpc_pct_after >= self.target_percentage:
-                    if self.verbose > 0:
+                    if self.verbose > 1:
                         print(f"  Target reached after injection: {actual_mpc_pct_after:.2f}% >= {self.target_percentage}%")
                         print(f"  Injected {num_trajectories_added} trajectories this session")
                         print(f"  Transitions added: {total_transitions_added}")
@@ -1026,7 +1070,7 @@ class PercentMPCInjectCallback(BaseCallback):
             self.logger.record("replay_buffer/rl_transitions", stats["rl_transitions"])
             self.logger.record("replay_buffer/total_transitions", stats["total_transitions"])
             
-            if self.verbose > 0:
+            if self.verbose > 1:
                 print(f"\nReplay Buffer Composition:")
                 print(f"  Target MPC percentage: {self.target_percentage}%")
                 print(f"  Actual MPC percentage: {actual_mpc_pct:.2f}%")

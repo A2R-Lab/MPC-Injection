@@ -45,6 +45,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import mujoco
+import numpy as np
+
+
+DEFAULT_STARTUP_DOMAIN_RAND_PRESET = "default_no_push"
+STARTUP_DOMAIN_RAND_PRESET_NAMES = (
+    "default",
+    "default_no_push",
+    "half_no_push",
+    "quarter_no_push",
+    "disabled",
+)
+STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS = (
+    "dr_patch_geom_friction",
+    "dr_patch_body_mass",
+    "dr_patch_body_ipos",
+    "dr_patch_dof_damping",
+    "dr_patch_dof_armature",
+    "dr_patch_dof_frictionloss",
+    "dr_patch_actuator_ctrlrange",
+    "dr_patch_actuator_forcerange",
+    "dr_torque_limits",
+)
+STARTUP_DOMAIN_RAND_PATCH_META_KEYS = (
+    "dr_enabled",
+    "dr_config_type",
+    "dr_seed",
+    "dr_applied_fields",
+)
+STARTUP_DOMAIN_RAND_PATCH_KEYS = (
+    *STARTUP_DOMAIN_RAND_PATCH_META_KEYS,
+    *STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS,
+)
+
 
 @dataclass
 class DomainRandomizationConfig:
@@ -257,3 +291,164 @@ class DomainRandomizationConfig:
     def from_dict(cls, d: dict) -> DomainRandomizationConfig:
         """Deserialize from dict."""
         return cls(**d)
+
+
+def resolve_startup_domain_rand_config(
+    config_type: str | None,
+    *,
+    default_preset: str = DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
+) -> tuple[str, DomainRandomizationConfig]:
+    """Resolve a startup DR preset name to a concrete config."""
+    resolved_type = default_preset if config_type is None else config_type
+    return resolved_type, DomainRandomizationConfig.from_preset(resolved_type)
+
+
+def extract_startup_domain_rand_patch(source) -> dict | None:
+    """Extract a saved startup DR patch from a dict-like source.
+
+    Args:
+        source: Mapping-like object such as a dict or np.load(...) result.
+
+    Returns:
+        A patch dict with copied arrays/scalars, or None if no DR metadata exists.
+    """
+    patch = {}
+    for key in STARTUP_DOMAIN_RAND_PATCH_KEYS:
+        if key not in source:
+            continue
+        value = source[key]
+        if key in STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS:
+            patch[key] = np.array(value, copy=True)
+        elif key == "dr_enabled":
+            patch[key] = bool(np.array(value).item())
+        elif key == "dr_seed":
+            patch[key] = int(np.array(value).item())
+        elif key == "dr_config_type":
+            patch[key] = str(np.array(value).item())
+        elif key == "dr_applied_fields":
+            patch[key] = np.array(value, copy=True).astype(str)
+
+    if not patch:
+        return None
+    return patch
+
+
+def sample_startup_domain_rand_patch(
+    mj_model: mujoco.MjModel,
+    domain_rand_cfg: DomainRandomizationConfig,
+    *,
+    rng: np.random.RandomState,
+    dr_config_type: str,
+    dr_seed: int,
+    base_body_id: int,
+) -> dict:
+    """Sample one portable startup DR patch for a MuJoCo model.
+
+    This covers only the subset that maps directly onto the MuJoCo plant and
+    torque limits. Wrapper-level terms such as encoder bias, observation noise,
+    pushes, and PD-gain randomization are intentionally excluded.
+    """
+    patch = {
+        "dr_enabled": bool(domain_rand_cfg.enable),
+        "dr_config_type": str(dr_config_type),
+        "dr_seed": int(dr_seed),
+        "dr_applied_fields": np.array([], dtype="<U32"),
+        "dr_patch_geom_friction": mj_model.geom_friction.copy(),
+        "dr_patch_body_mass": mj_model.body_mass.copy(),
+        "dr_patch_body_ipos": mj_model.body_ipos.copy(),
+        "dr_patch_dof_damping": mj_model.dof_damping.copy(),
+        "dr_patch_dof_armature": mj_model.dof_armature.copy(),
+        "dr_patch_dof_frictionloss": mj_model.dof_frictionloss.copy(),
+        "dr_patch_actuator_ctrlrange": mj_model.actuator_ctrlrange.copy(),
+        "dr_patch_actuator_forcerange": mj_model.actuator_forcerange.copy(),
+        "dr_torque_limits": mj_model.actuator_ctrlrange.copy(),
+    }
+
+    if not domain_rand_cfg.enable:
+        return patch
+
+    applied_fields = []
+
+    lo, hi = domain_rand_cfg.friction_range
+    if lo != hi:
+        friction_val = rng.uniform(lo, hi)
+        patch["dr_patch_geom_friction"][:, 0] = friction_val
+        applied_fields.append("geom_friction")
+
+    lo, hi = domain_rand_cfg.added_mass_range
+    if lo != hi:
+        added_mass = rng.uniform(lo, hi)
+        patch["dr_patch_body_mass"][base_body_id] += added_mass
+        applied_fields.append("body_mass")
+
+    lo, hi = domain_rand_cfg.com_displacement_range
+    if lo != hi:
+        com_disp = rng.uniform(lo, hi, size=3)
+        patch["dr_patch_body_ipos"][base_body_id] += com_disp
+        applied_fields.append("body_ipos")
+
+    lo, hi = domain_rand_cfg.joint_damping_scale_range
+    if lo != hi:
+        damping_scale = rng.uniform(lo, hi)
+        patch["dr_patch_dof_damping"] *= damping_scale
+        applied_fields.append("dof_damping")
+
+    lo, hi = domain_rand_cfg.joint_armature_scale_range
+    if lo != hi:
+        armature_scale = rng.uniform(lo, hi)
+        patch["dr_patch_dof_armature"] *= armature_scale
+        applied_fields.append("dof_armature")
+
+    lo, hi = domain_rand_cfg.joint_friction_range
+    if lo != hi:
+        patch["dr_patch_dof_frictionloss"] = rng.uniform(
+            lo, hi, size=mj_model.dof_frictionloss.shape
+        )
+        applied_fields.append("dof_frictionloss")
+
+    lo, hi = domain_rand_cfg.motor_strength_range
+    if lo != hi:
+        motor_scale = rng.uniform(lo, hi)
+        patch["dr_patch_actuator_ctrlrange"] *= motor_scale
+        patch["dr_patch_actuator_forcerange"] *= motor_scale
+        patch["dr_torque_limits"] = patch["dr_patch_actuator_ctrlrange"].copy()
+        applied_fields.append("torque_limits")
+
+    patch["dr_applied_fields"] = np.array(applied_fields, dtype="<U32")
+    return patch
+
+
+def apply_startup_domain_rand_patch(
+    mj_model: mujoco.MjModel,
+    mj_data: mujoco.MjData,
+    patch: dict | None,
+) -> np.ndarray:
+    """Apply a previously sampled startup DR patch to a MuJoCo model/data pair.
+
+    Returns:
+        The torque-limit array that should be used by the caller.
+    """
+    torque_limits = mj_model.actuator_ctrlrange.copy()
+    if patch is None:
+        return torque_limits
+
+    array_keys = {
+        "dr_patch_geom_friction": "geom_friction",
+        "dr_patch_body_mass": "body_mass",
+        "dr_patch_body_ipos": "body_ipos",
+        "dr_patch_dof_damping": "dof_damping",
+        "dr_patch_dof_armature": "dof_armature",
+        "dr_patch_dof_frictionloss": "dof_frictionloss",
+        "dr_patch_actuator_ctrlrange": "actuator_ctrlrange",
+        "dr_patch_actuator_forcerange": "actuator_forcerange",
+    }
+    for key, attr in array_keys.items():
+        if key in patch:
+            getattr(mj_model, attr)[:] = np.array(patch[key], copy=False)
+
+    if "dr_torque_limits" in patch:
+        torque_limits = np.array(patch["dr_torque_limits"], copy=True)
+        mj_model.actuator_ctrlrange[:] = torque_limits
+
+    mujoco.mj_forward(mj_model, mj_data)
+    return torque_limits

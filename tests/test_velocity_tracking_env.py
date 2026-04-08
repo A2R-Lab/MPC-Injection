@@ -25,10 +25,22 @@ import mujoco
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import mpc_rl.envs
+import mpx.config.config_go2 as go2_config
 from gym_quadruped.quadruped_env import QuadrupedEnv
-from mpc_rl.common.mpc_inject_callbacks import _assert_quadruped_generation_friction
-from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.common.mpc_inject_callbacks import (
+    _apply_quadruped_trajectory_dr_patch,
+    _assert_quadruped_generation_friction,
+)
+from mpc_rl.envs.domain_randomization import (
+    DomainRandomizationConfig,
+    apply_startup_domain_rand_patch,
+    extract_startup_domain_rand_patch,
+    resolve_startup_domain_rand_config,
+    sample_startup_domain_rand_patch,
+)
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+from mpc_rl.planner.gen_traj_data_mpx import generate_trajectory as generate_nominal_mpx_trajectory
+from mpc_rl.planner.gen_traj_data_mpx_dr import generate_trajectory as generate_dr_mpx_trajectory
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -52,6 +64,25 @@ def env_custom():
     )
     yield e
     e.close()
+
+
+class FakeQuadrupedMPC:
+    """Small deterministic MPC stub for trajectory-generator tests."""
+
+    def __init__(self):
+        self.robot_height = go2_config.robot_height
+        self.duty_factor = 0.5
+
+    def reset(self, qpos, qvel):
+        self.last_reset = (np.array(qpos, copy=True), np.array(qvel, copy=True))
+
+    def run(self, qpos, qvel, mpx_input, contact):
+        del qpos, qvel, mpx_input, contact
+        return (
+            np.zeros(go2_config.n_joints, dtype=np.float64),
+            np.array(go2_config.q0, dtype=np.float64),
+            np.zeros(go2_config.n_joints, dtype=np.float64),
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -361,6 +392,212 @@ class TestNominalPlantAlignment:
             _assert_quadruped_generation_friction(temp_env)
         finally:
             temp_env.close()
+
+
+class TestStartupDomainRandomizationPatch:
+    """Tests for portable startup DR patch sampling and replay."""
+
+    def test_patch_sampling_is_deterministic(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        )
+        try:
+            resolved_type, dr_cfg = resolve_startup_domain_rand_config("half_no_push")
+            base_body_id = env._base_body_id
+            patch_a = sample_startup_domain_rand_patch(
+                env.mjModel,
+                dr_cfg,
+                rng=np.random.RandomState(123),
+                dr_config_type=resolved_type,
+                dr_seed=123,
+                base_body_id=base_body_id,
+            )
+            patch_b = sample_startup_domain_rand_patch(
+                env.mjModel,
+                dr_cfg,
+                rng=np.random.RandomState(123),
+                dr_config_type=resolved_type,
+                dr_seed=123,
+                base_body_id=base_body_id,
+            )
+            for key in (
+                "dr_patch_geom_friction",
+                "dr_patch_body_mass",
+                "dr_patch_body_ipos",
+                "dr_patch_dof_damping",
+                "dr_patch_dof_armature",
+                "dr_patch_dof_frictionloss",
+                "dr_patch_actuator_ctrlrange",
+                "dr_patch_actuator_forcerange",
+                "dr_torque_limits",
+            ):
+                np.testing.assert_allclose(patch_a[key], patch_b[key])
+            assert patch_a["dr_config_type"] == patch_b["dr_config_type"] == resolved_type
+            assert patch_a["dr_seed"] == patch_b["dr_seed"] == 123
+            np.testing.assert_array_equal(
+                patch_a["dr_applied_fields"],
+                patch_b["dr_applied_fields"],
+            )
+        finally:
+            env.close()
+
+    def test_apply_patch_changes_targeted_model_arrays(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        )
+        try:
+            custom_cfg = DomainRandomizationConfig(
+                enable=True,
+                friction_range=(0.31, 0.32),
+                added_mass_range=(0.1, 0.2),
+                com_displacement_range=(-0.02, 0.02),
+                joint_damping_scale_range=(0.5, 0.6),
+                joint_armature_scale_range=(1.4, 1.5),
+                joint_friction_range=(0.01, 0.02),
+                motor_strength_range=(0.6, 0.7),
+                encoder_bias_range=(0.0, 0.0),
+                push_robots=False,
+            )
+            patch = sample_startup_domain_rand_patch(
+                env.mjModel,
+                custom_cfg,
+                rng=np.random.RandomState(7),
+                dr_config_type="custom-test",
+                dr_seed=7,
+                base_body_id=env._base_body_id,
+            )
+
+            nominal_body_mass = env.mjModel.body_mass.copy()
+            nominal_body_ipos = env.mjModel.body_ipos.copy()
+            nominal_damping = env.mjModel.dof_damping.copy()
+            nominal_armature = env.mjModel.dof_armature.copy()
+            nominal_frictionloss = env.mjModel.dof_frictionloss.copy()
+            nominal_torque_limits = env.torque_limits.copy()
+
+            env.torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, patch)
+
+            assert not np.allclose(env.mjModel.body_mass, nominal_body_mass)
+            assert not np.allclose(env.mjModel.body_ipos, nominal_body_ipos)
+            assert not np.allclose(env.mjModel.dof_damping, nominal_damping)
+            assert not np.allclose(env.mjModel.dof_armature, nominal_armature)
+            assert not np.allclose(env.mjModel.dof_frictionloss, nominal_frictionloss)
+            assert not np.allclose(env.torque_limits, nominal_torque_limits)
+            np.testing.assert_allclose(env.torque_limits, patch["dr_torque_limits"])
+        finally:
+            env.close()
+
+    def test_disabled_dr_generator_matches_nominal_generator(self):
+        nominal = generate_nominal_mpx_trajectory(
+            seed=5,
+            mpc=FakeQuadrupedMPC(),
+            episode_length=3,
+            verbose=0,
+            render=False,
+        )
+        dr_disabled = generate_dr_mpx_trajectory(
+            seed=5,
+            domain_rand_config_type="disabled",
+            mpc=FakeQuadrupedMPC(),
+            episode_length=3,
+            verbose=0,
+            render=False,
+        )
+
+        for key in (
+            "qpos",
+            "qvel",
+            "tau_applied",
+            "tau_mpx",
+            "q_des",
+            "time",
+            "commands",
+            "default_joint_pos",
+        ):
+            np.testing.assert_allclose(nominal[key], dr_disabled[key])
+        for key in ("seed", "action_scale", "sim_dt", "control_dt", "episode_length", "fell"):
+            assert nominal[key] == dr_disabled[key]
+
+        assert dr_disabled["dr_enabled"] is False
+        assert dr_disabled["dr_config_type"] == "disabled"
+        assert extract_startup_domain_rand_patch(dr_disabled) is not None
+
+    def test_dr_replay_matches_saved_rollout_for_short_horizon(self):
+        traj = generate_dr_mpx_trajectory(
+            seed=11,
+            domain_rand_config_type="default_no_push",
+            mpc=FakeQuadrupedMPC(),
+            episode_length=2,
+            verbose=0,
+            render=False,
+        )
+        dr_patch = extract_startup_domain_rand_patch(traj)
+
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        )
+        try:
+            env.reset(seed=0)
+            _apply_quadruped_trajectory_dr_patch(env, dr_patch)
+            env.mjData.qpos[:] = traj["qpos"][:, 0]
+            env.mjData.qvel[:] = traj["qvel"][:, 0]
+            env.mjData.ctrl[:] = 0.0
+            env.mjData.qacc_warmstart[:] = 0.0
+            mujoco.mj_forward(env.mjModel, env.mjData)
+
+            max_qpos_err = 0.0
+            max_qvel_err = 0.0
+            for sim_idx in range(traj["tau_applied"].shape[1]):
+                torques = traj["tau_applied"][:, sim_idx].copy()
+                torques = np.clip(torques, env.torque_limits[:, 0], env.torque_limits[:, 1])
+                env.mjData.ctrl[:] = torques
+                mujoco.mj_step(env.mjModel, env.mjData)
+                qpos_err = float(np.max(np.abs(env.mjData.qpos - traj["qpos"][:, sim_idx + 1])))
+                qvel_err = float(np.max(np.abs(env.mjData.qvel - traj["qvel"][:, sim_idx + 1])))
+                max_qpos_err = max(max_qpos_err, qpos_err)
+                max_qvel_err = max(max_qvel_err, qvel_err)
+
+            assert max_qpos_err < 2e-3, f"max qpos replay error too large: {max_qpos_err}"
+            assert max_qvel_err < 0.12, f"max qvel replay error too large: {max_qvel_err}"
+        finally:
+            env.close()
+
+    def test_nominal_replay_path_restores_nominal_model_after_dr(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        )
+        try:
+            env.reset(seed=0)
+            nominal_body_mass = env.mjModel.body_mass.copy()
+            nominal_body_ipos = env.mjModel.body_ipos.copy()
+            nominal_damping = env.mjModel.dof_damping.copy()
+
+            _, dr_cfg = resolve_startup_domain_rand_config("default_no_push")
+            patch = sample_startup_domain_rand_patch(
+                env.mjModel,
+                dr_cfg,
+                rng=np.random.RandomState(9),
+                dr_config_type="default_no_push",
+                dr_seed=9,
+                base_body_id=env._base_body_id,
+            )
+            _apply_quadruped_trajectory_dr_patch(env, patch)
+            assert not np.allclose(env.mjModel.body_ipos, nominal_body_ipos)
+
+            _apply_quadruped_trajectory_dr_patch(env, None)
+            np.testing.assert_allclose(env.mjModel.body_mass, nominal_body_mass)
+            np.testing.assert_allclose(env.mjModel.body_ipos, nominal_body_ipos)
+            np.testing.assert_allclose(env.mjModel.dof_damping, nominal_damping)
+            env.assert_generation_contact_friction_matches()
+        finally:
+            env.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

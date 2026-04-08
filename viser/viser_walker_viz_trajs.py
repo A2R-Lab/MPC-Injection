@@ -1174,10 +1174,10 @@ if __name__ == "__main__":
     Usage:
 
     # Basic usage (single trajectory)
-    python viser/viser_walker_viz_trajs.py --trajectory body_trajs/model_traj_data/your_run/trajectories_step_500000.npz
+    python viser/viser_walker_viz_trajs.py --trajectory body_trajs/mode_traj_data_walker/your_run/trajectories_step_500000.npz
 
     # Dual trajectory mode - compare two trajectories side by side
-    python viser/viser_walker_viz_trajs.py --trajectory1 body_trajs/model_traj_data/walker-walk-SAC-MPC-20260107-113507-percentage-50pct/trajectories_step_500000.npz --trajectory2 body_trajs/model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct/trajectories_step_500000.npz
+    python viser/viser_walker_viz_trajs.py --trajectory1 body_trajs/mode_traj_data_walker/walker-walk-SAC-MPC-20260107-113507-percentage-50pct/trajectories_step_500000.npz --trajectory2 body_trajs/mode_traj_data_walker/walker-walk-SAC-MPC-20260107-112012-percentage-0pct/trajectories_step_500000.npz
 
     # Specify custom URDF location
     python viser/viser_walker_viz_trajs.py --trajectory path/to/trajectory.npz --urdf path/to/walker.urdf

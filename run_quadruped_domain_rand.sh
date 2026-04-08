@@ -22,7 +22,7 @@ LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="True"
 DOMAIN_RAND="True"
-DOMAIN_RAND_CONFIG_TYPE="half_no_push" # "default_no_push", "half_no_push", or "quarter_no_push"
+DOMAIN_RAND_CONFIG_TYPE="quarter_no_push" # "default_no_push", "half_no_push", or "quarter_no_push"
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
 DATA_DIR="data/quadruped/"
@@ -33,8 +33,8 @@ BATCH_SIZE=256
 LOG_DIR="logs/quadruped_domain_rand/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 
 # Sweep dimensions
-#NUM_ENVS_SWEEP=(4 8 16 32 64 128 256)
-NUM_ENVS_SWEEP=(256 128 64 32 16 8 4)
+NUM_ENVS_SWEEP=(16 32 64 128 256)
+#NUM_ENVS_SWEEP=(256 128 64 32 16 8 4)
 PERCENTAGES=(25)
 SEEDS=(1)
 

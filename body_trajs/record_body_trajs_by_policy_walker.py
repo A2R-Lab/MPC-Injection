@@ -3,7 +3,7 @@
 Script to load trained SAC-MPC/TD3-MPC models and record the trajectories of each body/limb 
 of the walker across different checkpoints.
 
-The recorded trajectories will be saved in model_traj_data subdirectory for later plotting.
+The recorded trajectories will be saved in mode_traj_data_walker subdirectory for later plotting.
 """
 
 import sys
@@ -359,7 +359,7 @@ def main():
     #ALGORITHM = 'TD3-MPC'
     
     # Output directory (relative to this script)
-    OUTPUT_DIR = Path(__file__).parent / "model_traj_data"
+    OUTPUT_DIR = Path(__file__).parent / "mode_traj_data_walker"
     
     # ============================================================================
     # END USER CONFIGURATION
