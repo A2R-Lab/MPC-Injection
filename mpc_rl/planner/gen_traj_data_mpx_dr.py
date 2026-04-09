@@ -86,6 +86,12 @@ def generate_trajectory(
         state_obs_names=tuple(QuadrupedEnv.ALL_OBS),
     )
 
+    # Reset BEFORE DR so the patch samples from the post-reset model state
+    # (ground/foot friction = 0.7). Previously, sampling happened before reset,
+    # so the patch captured XML-default friction (1.0) which was then silently
+    # overwritten by reset's _set_ground_friction(0.7) call.
+    env.reset(random=False)
+
     dr_patch = sample_startup_domain_rand_patch(
         env.mjModel,
         domain_rand_cfg,
@@ -95,8 +101,6 @@ def generate_trajectory(
         base_body_id=_quadruped_base_body_id(env.mjModel),
     )
     torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
-
-    env.reset(random=False)
 
     default_joint_pos = env.mjModel.key_qpos[0, 7 : 7 + n_joints].copy()
     randomize_initial_state(env, rng)

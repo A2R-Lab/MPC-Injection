@@ -45,6 +45,14 @@ def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
     if dr_patch is None:
         return
     env.torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
+    # Workaround for existing DR data: the generation script sampled the DR
+    # patch before env.reset(), so the patch stores friction randomized from
+    # the XML default (1.0) instead of the post-reset value (0.7). But reset's
+    # _set_ground_friction(0.7) overwrote ground/foot geoms after DR was
+    # applied, so the trajectory actually ran with ground/foot friction = 0.7.
+    # Re-apply [0.7, 0.005, 0.0] to match the generation environment.
+    # NOTE: Remove this once data is regenerated with the fixed gen script.
+    env._set_generation_contact_friction()
 
 
 class FixedMPCInjectCallback(BaseCallback):

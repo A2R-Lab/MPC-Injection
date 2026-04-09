@@ -477,6 +477,15 @@ def test_trajectory(data_dir, random_select=True, filename=None,
     apply_loaded_dr_patch(env, traj["dr_patch"])
     if traj["dr_patch"] is None:
         env.assert_generation_contact_friction_matches()
+    else:
+        # Workaround for existing DR data: the generation script sampled the DR
+        # patch before env.reset(), so the patch stores friction randomized from
+        # the XML default (1.0) instead of the post-reset value (0.7). But
+        # reset's _set_ground_friction(0.7) overwrote ground/foot geoms after
+        # DR was applied, so the trajectory actually ran with ground/foot
+        # friction = 0.7. Re-apply to match the generation environment.
+        # NOTE: Remove this once data is regenerated with the fixed gen script.
+        env._set_generation_contact_friction()
 
     # Set the initial state from the recorded trajectory
     init_qpos = traj["qpos"][:, 0]

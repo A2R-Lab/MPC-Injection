@@ -45,12 +45,17 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.sac_mpc.sb3_sac_mpc import SB3_SAC_MPC
+from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 
 # ========================================================================
 # Algorithm detection
 # ========================================================================
 
+# Longer names first so "SAC-MPC" matches before "SAC".
 ALGO_MAP = {
+    "SAC-MPC": SB3_SAC_MPC,
+    "TD3-MPC": SB3_TD3_MPC,
     "SAC": SB3_SAC,
     "TD3": SB3_TD3,
 }
@@ -79,8 +84,6 @@ def detect_algorithm(run_dir: str) -> str:
         with open(config_path) as f:
             cfg = json.load(f)
         algo = cfg.get("algorithm", "").upper()
-        # Strip -MPC suffix if present (we use base SB3 for inference)
-        algo = algo.replace("-MPC", "")
         if algo in ALGO_MAP:
             return algo
 
@@ -185,6 +188,7 @@ def make_quadruped_env(
     robot: str = "go2",
     render_mode: str | None = None,
     enable_domain_rand: bool = False,
+    simple_reward: bool = False,
 ):
     """Create a quadruped velocity tracking gymnasium environment.
 
@@ -198,6 +202,7 @@ def make_quadruped_env(
         render_mode=render_mode,
         max_episode_steps=5000,
         domain_rand_cfg=domain_rand_cfg,
+        simple_reward=simple_reward,
     )
 
 
@@ -239,6 +244,7 @@ def main():
     # Detect algorithm
     algo_name = detect_algorithm(str(run_dir))
     algo_class = ALGO_MAP[algo_name]
+    is_mpc_algo = algo_name in {"SAC-MPC", "TD3-MPC"}
     print(f"Detected algorithm: {algo_name}")
 
     # Locate model file
@@ -261,6 +267,7 @@ def main():
         robot=args.robot,
         render_mode=None,
         enable_domain_rand=args.domain_rand,
+        simple_reward=is_mpc_algo,
     )
     # gym.make() wraps in TimeLimit; unwrap to access QuadrupedVelocityTrackingEnv
     env_base = env_wrapped.unwrapped
@@ -319,12 +326,6 @@ def main():
 
             # Update velocity commands from keyboard
             vx, vy, wz = commander.get()
-
-            # Set commands directly for testing purposes
-            #vx = 0.5
-            #vy = 0.0
-            #wz = 0.0
-
             env_base.set_commands(vx=vx, vy=vy, wz=wz)
             obs = refresh_current_obs(vec_env)
 
