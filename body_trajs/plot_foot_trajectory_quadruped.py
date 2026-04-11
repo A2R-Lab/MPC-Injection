@@ -28,8 +28,8 @@ FOOT_COLORS = {
 
 # Edit these to choose which rollout timesteps to visualize.
 # Example: 500, 1000 plots timesteps [500, 1000).
-PLOT_TIMESTEP_START = 1
-PLOT_TIMESTEP_END = 1000
+PLOT_TIMESTEP_START = 250
+PLOT_TIMESTEP_END = 500
 
 
 INTERACTIVE_BACKEND_NAMES = {

@@ -227,6 +227,7 @@ class QuadrupedTrajVisualizer:
         show_foot_trails: bool = True,
         num_ghost_frames: int = 8,
         dual_mode: bool = False,
+        robot2_x_offset: float = 0.0,
         robot2_y_offset: float = -3.0,
     ):
         self.server = viser.ViserServer(port=port)
@@ -262,6 +263,7 @@ class QuadrupedTrajVisualizer:
         self.dt = dt
         self.max_ghost_frames = num_ghost_frames
         self.dual_mode = dual_mode
+        self.robot2_x_offset = robot2_x_offset
         self.robot2_y_offset = robot2_y_offset
         self.source_model_path = source_model_path.resolve()
         self.render_model, self.visual_geom_specs = _build_visual_geom_specs(self.source_model_path)
@@ -275,7 +277,7 @@ class QuadrupedTrajVisualizer:
         self.robot_instance = self._create_robot_mesh_instance("/robot")
         self.robot_instance_2 = self._create_robot_mesh_instance(
             "/robot2",
-            root_position=(0.0, self.robot2_y_offset, 0.0),
+            root_position=(self.robot2_x_offset, self.robot2_y_offset, 0.0),
         ) if self.dual_mode else None
         self._ghost_instances: list[RobotMeshInstance] = [
             self._create_robot_mesh_instance(
@@ -290,7 +292,7 @@ class QuadrupedTrajVisualizer:
         self._ghost_instances_2: list[RobotMeshInstance] = [
             self._create_robot_mesh_instance(
                 f"/ghost2_{ghost_idx}",
-                root_position=(0.0, self.robot2_y_offset, 0.0),
+                root_position=(self.robot2_x_offset, self.robot2_y_offset, 0.0),
                 color_override=tuple(int(x) for x in GHOST_COLOR_2),
                 opacity_override=0.45,
                 cast_shadow=False,
@@ -1092,6 +1094,12 @@ def main():
         help="Maximum number of ghost frames to pre-allocate (default: 8)",
     )
     parser.add_argument(
+        "--robot2-x-offset",
+        type=float,
+        default=0.0,
+        help="X-axis offset for the second robot in dual mode (default: 0.0)",
+    )
+    parser.add_argument(
         "--robot2-y-offset",
         type=float,
         default=-3.0,
@@ -1140,6 +1148,7 @@ def main():
         show_foot_trails=not args.no_foot_trails,
         num_ghost_frames=args.ghost_frames,
         dual_mode=dual_mode,
+        robot2_x_offset=args.robot2_x_offset,
         robot2_y_offset=args.robot2_y_offset,
     )
     viz.load_trajectory(traj1_path, robot_idx=1)
