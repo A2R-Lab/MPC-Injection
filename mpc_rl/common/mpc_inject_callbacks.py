@@ -7,9 +7,16 @@ from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
 import mujoco
 
-from mpc_rl.envs.domain_randomization import (
-    apply_startup_domain_rand_patch,
-    extract_startup_domain_rand_patch,
+from mpc_rl.envs.domain_randomization import extract_startup_domain_rand_patch
+
+_QUADRUPED_DIRECT_TRANSITION_KEYS = (
+    "policy_obs",
+    "next_policy_obs",
+    "privileged_obs",
+    "next_privileged_obs",
+    "actions",
+    "rewards",
+    "terminated_ctrl",
 )
 
 
@@ -20,23 +27,7 @@ def _assert_quadruped_generation_friction(env):
 
 def _restore_quadruped_nominal_model(env):
     """Restore the quadruped temp env's MuJoCo model to its saved nominal plant."""
-    if not hasattr(env, "_nominal_actuator_forcerange"):
-        env._nominal_actuator_forcerange = env.mjModel.actuator_forcerange.copy()
-
-    env.mjModel.geom_friction[:] = env._nominal_friction
-    env.mjModel.body_mass[:] = env._nominal_body_mass
-    env.mjModel.body_ipos[:] = env._nominal_body_ipos
-    env.mjModel.dof_damping[:] = env._nominal_dof_damping
-    env.mjModel.dof_armature[:] = env._nominal_dof_armature
-    env.mjModel.dof_frictionloss[:] = env._nominal_dof_frictionloss
-    env.mjModel.actuator_ctrlrange[:] = env._nominal_torque_limits
-    env.mjModel.actuator_forcerange[:] = env._nominal_actuator_forcerange
-    env.torque_limits = env._nominal_torque_limits.copy()
-    env.kp = env._nominal_kp.copy()
-    env.kd = env._nominal_kd.copy()
-    env._encoder_bias[:] = 0.0
-    env._motor_strength_scale = 1.0
-    mujoco.mj_forward(env.mjModel, env.mjData)
+    env.restore_nominal_startup_domain_rand_state()
 
 
 def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
@@ -44,7 +35,7 @@ def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
     _restore_quadruped_nominal_model(env)
     if dr_patch is None:
         return
-    env.torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
+    env.apply_startup_domain_rand_bundle(dr_patch)
     # Workaround for existing DR data: the generation script sampled the DR
     # patch before env.reset(), so the patch stores friction randomized from
     # the XML default (1.0) instead of the post-reset value (0.7). But reset's
@@ -52,7 +43,13 @@ def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
     # applied, so the trajectory actually ran with ground/foot friction = 0.7.
     # Re-apply [0.7, 0.005, 0.0] to match the generation environment.
     # NOTE: Remove this once data is regenerated with the fixed gen script.
-    env._set_generation_contact_friction()
+    if "dr_encoder_bias" not in dr_patch:
+        env._set_generation_contact_friction()
+
+
+def _quadruped_traj_has_direct_transitions(traj_data) -> bool:
+    """Return True when a quadruped trajectory file stores direct RL transitions."""
+    return all(key in traj_data for key in _QUADRUPED_DIRECT_TRANSITION_KEYS)
 
 
 class FixedMPCInjectCallback(BaseCallback):
@@ -569,6 +566,58 @@ class PercentMPCInjectCallback(BaseCallback):
             }
         )
         return self._flush_quadruped_pending_transitions()
+
+    def _inject_saved_quadruped_transitions(self, traj_data) -> int:
+        """Inject quadruped transitions saved directly from the RL env."""
+        policy_obs = np.asarray(traj_data["policy_obs"], dtype=np.float64)
+        next_policy_obs = np.asarray(traj_data["next_policy_obs"], dtype=np.float64)
+        privileged_obs = np.asarray(traj_data["privileged_obs"], dtype=np.float64)
+        next_privileged_obs = np.asarray(traj_data["next_privileged_obs"], dtype=np.float64)
+        actions = np.asarray(traj_data["actions"], dtype=np.float64)
+        rewards = np.asarray(traj_data["rewards"], dtype=np.float32)
+        terminated_ctrl = np.asarray(traj_data["terminated_ctrl"], dtype=bool)
+        commands_ctrl = (
+            np.asarray(traj_data["commands_ctrl"], dtype=np.float64)
+            if "commands_ctrl" in traj_data
+            else None
+        )
+
+        transitions_added = 0
+        for step in range(policy_obs.shape[0]):
+            info = {}
+            if commands_ctrl is not None:
+                info["commands"] = commands_ctrl[step].copy()
+
+            transitions_committed = self._queue_quadruped_transition(
+                obs={
+                    "policy": policy_obs[step].copy(),
+                    "privileged": privileged_obs[step].copy(),
+                },
+                next_obs={
+                    "policy": next_policy_obs[step].copy(),
+                    "privileged": next_privileged_obs[step].copy(),
+                },
+                action=actions[step].copy(),
+                reward=float(rewards[step]),
+                terminated=bool(terminated_ctrl[step]),
+                info=info,
+            )
+            transitions_added += transitions_committed
+
+            if transitions_committed > 0 and hasattr(self, "target_percentage"):
+                mid_pct = self.model.replay_buffer.get_mpc_percentage()
+                if mid_pct >= self.target_percentage:
+                    if self.verbose > 1:
+                        print(
+                            f"    Mid-trajectory stop: MPC% {mid_pct:.2f}% >= "
+                            f"target {self.target_percentage}%"
+                        )
+                    break
+
+            if terminated_ctrl[step]:
+                break
+
+        return transitions_added
     
     def _replay_quadruped_trajectory(
         self, temp_env, qpos, qvel, tau_applied, commands,
@@ -756,21 +805,7 @@ class PercentMPCInjectCallback(BaseCallback):
         # This avoids corrupting the training environment's state
         # Create a standalone environment (not vectorized)
         if is_quadruped:
-            from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
-            from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
-            # Use default training-env gains (kp=[20,20,40,...], kd=[1,1,2,...],
-            # action_scale=0.5) so that the inverse-PD action formula produces
-            # actions in the same space as the RL policy.  The per-substep direct
-            # torque application makes the gains irrelevant for physics accuracy.
-            # Use simplified reward to match the training environment when using
-            # MPC injection (this callback is only active for SAC-MPC/TD3-MPC).
-            temp_env = QuadrupedVelocityTrackingEnv(
-                robot=getattr(self, 'robot', 'go2'),
-                render_mode=None,
-                domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
-                simple_reward=True,
-            )
-            _assert_quadruped_generation_friction(temp_env)
+            temp_env = None
         elif self.domain == "shadow_hand":
             # For shadow_hand, task is the full gym env name
             temp_env = gym.make(self.task, render_mode=None)
@@ -782,7 +817,7 @@ class PercentMPCInjectCallback(BaseCallback):
             temp_env = FlattenObservation(temp_env)
         
         # Seed the temporary environment for reproducibility
-        if self.seed is not None:
+        if temp_env is not None and self.seed is not None:
             temp_env.reset(seed=self.seed)
         
         # Track transitions added in this injection session
@@ -928,20 +963,30 @@ class PercentMPCInjectCallback(BaseCallback):
                         traj_data = np.load(selected_file, allow_pickle=True)
                         qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
                         qvel = traj_data['qvel']
-                        
+                        quadruped_has_direct_transitions = (
+                            is_quadruped and _quadruped_traj_has_direct_transitions(traj_data)
+                        )
+
                         if is_quadruped:
-                            # Quadruped trajectory format (from gen_traj_data_mpx.py)
-                            traj_tau_applied = traj_data['tau_applied']  # (12, T_sim) - actually applied torques
-                            traj_commands = traj_data['commands']        # (3, T_sim)
-                            traj_episode_length = int(traj_data['episode_length'])
-                            traj_sim_dt = float(traj_data['sim_dt'])
-                            traj_control_dt = float(traj_data['control_dt'])
-                            traj_decimation = int(round(traj_control_dt / traj_sim_dt))
-                            traj_default_joint_pos = traj_data['default_joint_pos']
                             traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)
+                            if not quadruped_has_direct_transitions:
+                                # Legacy quadruped trajectory format (from gen_traj_data_mpx.py)
+                                traj_tau_applied = traj_data['tau_applied']  # (12, T_sim)
+                                traj_commands = traj_data['commands']        # (3, T_sim)
+                                traj_episode_length = int(traj_data['episode_length'])
+                                traj_sim_dt = float(traj_data['sim_dt'])
+                                traj_control_dt = float(traj_data['control_dt'])
+                                traj_decimation = int(round(traj_control_dt / traj_sim_dt))
+                                traj_default_joint_pos = traj_data['default_joint_pos']
                             if self.verbose > 2:
-                                print(f"    Loaded quadruped trajectory: {traj_episode_length} ctrl steps, "
-                                      f"decimation={traj_decimation}")
+                                if quadruped_has_direct_transitions:
+                                    print(
+                                        "    Loaded quadruped direct-transition trajectory: "
+                                        f"{traj_data['policy_obs'].shape[0]} ctrl steps"
+                                    )
+                                else:
+                                    print(f"    Loaded quadruped trajectory: {traj_episode_length} ctrl steps, "
+                                          f"decimation={traj_decimation}")
                                 if traj_domain_rand_patch is not None:
                                     print(
                                         "    Loaded quadruped DR patch: "
@@ -978,11 +1023,27 @@ class PercentMPCInjectCallback(BaseCallback):
             # Quadruped: inverse-PD conversion and Dict obs replay
             # ----------------------------------------------------------------
             if is_quadruped:
-                steps_added_this_traj = self._replay_quadruped_trajectory(
-                    temp_env, qpos, qvel, traj_tau_applied, traj_commands,
-                    traj_episode_length, traj_decimation, traj_default_joint_pos,
-                    traj_domain_rand_patch=traj_domain_rand_patch,
-                )
+                if quadruped_has_direct_transitions:
+                    steps_added_this_traj = self._inject_saved_quadruped_transitions(traj_data)
+                else:
+                    if temp_env is None:
+                        from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+                        from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+
+                        temp_env = QuadrupedVelocityTrackingEnv(
+                            robot=getattr(self, 'robot', 'go2'),
+                            render_mode=None,
+                            domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+                            simple_reward=True,
+                        )
+                        _assert_quadruped_generation_friction(temp_env)
+                        if self.seed is not None:
+                            temp_env.reset(seed=self.seed)
+                    steps_added_this_traj = self._replay_quadruped_trajectory(
+                        temp_env, qpos, qvel, traj_tau_applied, traj_commands,
+                        traj_episode_length, traj_decimation, traj_default_joint_pos,
+                        traj_domain_rand_patch=traj_domain_rand_patch,
+                    )
             else:
                 # ----------------------------------------------------------------
                 # dm_control / shadow_hand: direct action replay
@@ -1064,7 +1125,8 @@ class PercentMPCInjectCallback(BaseCallback):
                     break
         
         # Close temporary environment
-        temp_env.close()
+        if temp_env is not None:
+            temp_env.close()
         
         # Log actual MPC percentage to TensorBoard if using TaggedReplayBuffer
         if hasattr(self.model.replay_buffer, 'get_mpc_percentage'):

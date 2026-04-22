@@ -19,11 +19,24 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "plots" / "body_trajectory_plots"
+FONT_SIZE = 18
 
 # Edit these to choose which rollout timesteps to visualize.
 # Example: 500, 1000 plots timesteps [500, 1000).
 PLOT_TIMESTEP_START = 0
 PLOT_TIMESTEP_END = None
+
+plt.rcParams.update(
+    {
+        "font.size": FONT_SIZE,
+        "axes.labelsize": FONT_SIZE,
+        "axes.titlesize": FONT_SIZE + 2,
+        "figure.titlesize": FONT_SIZE + 2,
+        "xtick.labelsize": FONT_SIZE - 2,
+        "ytick.labelsize": FONT_SIZE - 2,
+        "legend.fontsize": FONT_SIZE,
+    }
+)
 
 
 INTERACTIVE_BACKEND_NAMES = {
@@ -181,7 +194,7 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(13, 7), constrained_layout=True)
     fig.suptitle(
         "Quadruped Average Motor Torque Magnitude",
-        fontsize=14,
+        fontsize=FONT_SIZE + 2,
         fontweight="bold",
     )
 
@@ -199,10 +212,11 @@ def main() -> None:
             label=make_trajectory_label(trajectory_path),
         )
 
-    ax.set_xlabel("Time (s)" if uses_time_axis else "Timestep")
-    ax.set_ylabel("Average Motor Torque Magnitude (Nm)")
+    ax.set_xlabel("Time (s)" if uses_time_axis else "Timestep", fontsize=FONT_SIZE)
+    ax.set_ylabel("Average Motor Torque Magnitude (Nm)", fontsize=FONT_SIZE)
+    ax.tick_params(axis="both", labelsize=FONT_SIZE - 2)
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="best", fontsize=9)
+    ax.legend(loc="best", fontsize=FONT_SIZE)
 
     output_path = resolve_output_path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

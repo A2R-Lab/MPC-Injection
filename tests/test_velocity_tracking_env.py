@@ -11,15 +11,16 @@ Run:
     python -m pytest tests/test_velocity_tracking_env.py -v
 """
 
-import os
 import sys
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import mujoco
+from gymnasium import spaces
 
 # Ensure mpc_rl is importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -28,9 +29,11 @@ import mpc_rl.envs
 import mpx.config.config_go2 as go2_config
 from gym_quadruped.quadruped_env import QuadrupedEnv
 from mpc_rl.common.mpc_inject_callbacks import (
+    PercentMPCInjectCallback,
     _apply_quadruped_trajectory_dr_patch,
     _assert_quadruped_generation_friction,
 )
+from mpc_rl.common.tagged_dict_replay_buffer import TaggedDictReplayBuffer
 from mpc_rl.envs.domain_randomization import (
     DomainRandomizationConfig,
     apply_startup_domain_rand_patch,
@@ -39,8 +42,10 @@ from mpc_rl.envs.domain_randomization import (
     sample_startup_domain_rand_patch,
 )
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
-from mpc_rl.planner.gen_traj_data_mpx import generate_trajectory as generate_nominal_mpx_trajectory
-from mpc_rl.planner.gen_traj_data_mpx_dr import generate_trajectory as generate_dr_mpx_trajectory
+from mpc_rl.planner.gen_traj_data_mpx_dr import (
+    gen_traj_quadruped_dr,
+    generate_trajectory as generate_dr_mpx_trajectory,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -397,6 +402,14 @@ class TestNominalPlantAlignment:
 class TestStartupDomainRandomizationPatch:
     """Tests for portable startup DR patch sampling and replay."""
 
+    def test_default_no_push_matches_expected_rl_dr(self):
+        resolved_type, cfg = resolve_startup_domain_rand_config("default_no_push")
+        assert resolved_type == "default_no_push"
+        assert cfg.added_mass_range == (0.0, 0.0)
+        assert cfg.push_robots is False
+        assert cfg.obs_noise_level > 0.0
+        assert not hasattr(cfg, "controller_delay_range")
+
     def test_patch_sampling_is_deterministic(self):
         env = QuadrupedVelocityTrackingEnv(
             robot="go2",
@@ -413,6 +426,9 @@ class TestStartupDomainRandomizationPatch:
                 dr_config_type=resolved_type,
                 dr_seed=123,
                 base_body_id=base_body_id,
+                nominal_kp=env._nominal_kp,
+                nominal_kd=env._nominal_kd,
+                num_joints=env.num_joints,
             )
             patch_b = sample_startup_domain_rand_patch(
                 env.mjModel,
@@ -421,6 +437,9 @@ class TestStartupDomainRandomizationPatch:
                 dr_config_type=resolved_type,
                 dr_seed=123,
                 base_body_id=base_body_id,
+                nominal_kp=env._nominal_kp,
+                nominal_kd=env._nominal_kd,
+                num_joints=env.num_joints,
             )
             for key in (
                 "dr_patch_geom_friction",
@@ -432,10 +451,17 @@ class TestStartupDomainRandomizationPatch:
                 "dr_patch_actuator_ctrlrange",
                 "dr_patch_actuator_forcerange",
                 "dr_torque_limits",
+                "dr_encoder_bias",
+                "dr_realized_kp",
+                "dr_realized_kd",
             ):
                 np.testing.assert_allclose(patch_a[key], patch_b[key])
             assert patch_a["dr_config_type"] == patch_b["dr_config_type"] == resolved_type
             assert patch_a["dr_seed"] == patch_b["dr_seed"] == 123
+            assert patch_a["dr_motor_strength_scale"] == pytest.approx(
+                patch_b["dr_motor_strength_scale"]
+            )
+            assert patch_a["dr_added_mass_kg"] == pytest.approx(patch_b["dr_added_mass_kg"])
             np.testing.assert_array_equal(
                 patch_a["dr_applied_fields"],
                 patch_b["dr_applied_fields"],
@@ -469,6 +495,9 @@ class TestStartupDomainRandomizationPatch:
                 dr_config_type="custom-test",
                 dr_seed=7,
                 base_body_id=env._base_body_id,
+                nominal_kp=env._nominal_kp,
+                nominal_kd=env._nominal_kd,
+                num_joints=env.num_joints,
             )
 
             nominal_body_mass = env.mjModel.body_mass.copy()
@@ -490,14 +519,7 @@ class TestStartupDomainRandomizationPatch:
         finally:
             env.close()
 
-    def test_disabled_dr_generator_matches_nominal_generator(self):
-        nominal = generate_nominal_mpx_trajectory(
-            seed=5,
-            mpc=FakeQuadrupedMPC(),
-            episode_length=3,
-            verbose=0,
-            render=False,
-        )
+    def test_disabled_dr_generator_uses_new_direct_transition_schema(self):
         dr_disabled = generate_dr_mpx_trajectory(
             seed=5,
             domain_rand_config_type="disabled",
@@ -507,22 +529,18 @@ class TestStartupDomainRandomizationPatch:
             render=False,
         )
 
-        for key in (
-            "qpos",
-            "qvel",
-            "tau_applied",
-            "tau_mpx",
-            "q_des",
-            "time",
-            "commands",
-            "default_joint_pos",
-        ):
-            np.testing.assert_allclose(nominal[key], dr_disabled[key])
-        for key in ("seed", "action_scale", "sim_dt", "control_dt", "episode_length", "fell"):
-            assert nominal[key] == dr_disabled[key]
-
         assert dr_disabled["dr_enabled"] is False
         assert dr_disabled["dr_config_type"] == "disabled"
+        assert int(dr_disabled["controller_delay_steps"]) == 0
+        assert float(dr_disabled["controller_delay_s"]) == pytest.approx(0.0)
+        assert dr_disabled["dr_added_mass_kg"] == pytest.approx(0.0)
+        assert "body_mass" not in dr_disabled["dr_applied_fields"].tolist()
+        assert "policy_obs" in dr_disabled
+        assert "next_policy_obs" in dr_disabled
+        assert "actions" in dr_disabled
+        assert "rewards" in dr_disabled
+        assert dr_disabled["policy_obs"].shape[0] == 3
+        assert dr_disabled["next_policy_obs"].shape[0] == 3
         assert extract_startup_domain_rand_patch(dr_disabled) is not None
 
     def test_dr_replay_matches_saved_rollout_for_short_horizon(self):
@@ -587,6 +605,9 @@ class TestStartupDomainRandomizationPatch:
                 dr_config_type="default_no_push",
                 dr_seed=9,
                 base_body_id=env._base_body_id,
+                nominal_kp=env._nominal_kp,
+                nominal_kd=env._nominal_kd,
+                num_joints=env.num_joints,
             )
             _apply_quadruped_trajectory_dr_patch(env, patch)
             assert not np.allclose(env.mjModel.body_ipos, nominal_body_ipos)
@@ -601,7 +622,163 @@ class TestStartupDomainRandomizationPatch:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4. play_quad.py Utilities
+# 4. RL-Matched DR Generator / Injection Path
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class DummyLogger:
+    def record(self, *args, **kwargs):
+        del args, kwargs
+
+
+class DummyCallbackModel:
+    def __init__(self, replay_buffer, num_envs):
+        self.replay_buffer = replay_buffer
+        self._env = SimpleNamespace(num_envs=num_envs)
+        self.logger = DummyLogger()
+
+    def get_env(self):
+        return self._env
+
+
+class TestRLMatchedDRGenerator:
+    def test_generation_smoke_writes_new_schema_and_manifest(self, tmp_path):
+        gen_traj_quadruped_dr(
+            num_trajectories=1,
+            episode_length=2,
+            start_seed=3,
+            output_dir=tmp_path,
+            max_attempts=5,
+            verbose=0,
+            render=False,
+            domain_rand_config_type="default_no_push",
+            mpc=FakeQuadrupedMPC(),
+        )
+
+        generated_files = sorted(tmp_path.glob("*.npz"))
+        assert len(generated_files) == 1
+        traj = np.load(generated_files[0], allow_pickle=True)
+
+        assert int(traj["controller_delay_steps"]) == 0
+        assert float(traj["controller_delay_s"]) == pytest.approx(0.0)
+        assert float(traj["dr_added_mass_kg"]) == pytest.approx(0.0)
+        assert "body_mass" not in traj["dr_applied_fields"].tolist()
+        assert "dr_encoder_bias" in traj.files
+        assert "policy_obs" in traj.files
+        assert "next_policy_obs" in traj.files
+        assert "actions" in traj.files
+        assert "rewards" in traj.files
+        assert "terminated_ctrl" in traj.files
+        assert traj["policy_obs"].shape == (2, 45)
+        assert traj["next_policy_obs"].shape == (2, 45)
+        assert traj["privileged_obs"].shape == (2, 3)
+        assert traj["next_privileged_obs"].shape == (2, 3)
+
+        manifest_path = tmp_path / "generation_manifest.jsonl"
+        assert manifest_path.exists()
+        manifest_lines = manifest_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(manifest_lines) >= 1
+        manifest_record = json.loads(manifest_lines[-1])
+        assert manifest_record["success"] is True
+        assert manifest_record["controller_delay_steps"] == 0
+        assert manifest_record["dr_summary"]["dr_added_mass_kg"] == pytest.approx(0.0)
+
+    def test_saved_transition_parity(self):
+        traj = generate_dr_mpx_trajectory(
+            seed=13,
+            domain_rand_config_type="default_no_push",
+            mpc=FakeQuadrupedMPC(),
+            episode_length=3,
+            verbose=0,
+            render=False,
+        )
+        np.testing.assert_allclose(traj["policy_obs"][:, 6:9], traj["commands_ctrl"])
+        np.testing.assert_allclose(traj["next_policy_obs"][:-1], traj["policy_obs"][1:])
+
+    def test_old_vs_new_dataset_schema_contrast(self, tmp_path):
+        old_dir = Path("data/quadruped_dr/default_no_push_old")
+        old_files = sorted(old_dir.glob("*.npz")) if old_dir.exists() else []
+        if not old_files:
+            pytest.skip("Legacy default_no_push_old dataset not present")
+
+        gen_traj_quadruped_dr(
+            num_trajectories=1,
+            episode_length=2,
+            start_seed=21,
+            output_dir=tmp_path,
+            max_attempts=5,
+            verbose=0,
+            render=False,
+            domain_rand_config_type="default_no_push",
+            mpc=FakeQuadrupedMPC(),
+        )
+
+        old_traj = np.load(old_files[0], allow_pickle=True)
+        new_traj = np.load(sorted(tmp_path.glob("*.npz"))[0], allow_pickle=True)
+
+        assert "dr_encoder_bias" not in old_traj.files
+        assert "policy_obs" not in old_traj.files
+        assert "next_policy_obs" not in old_traj.files
+        assert "dr_encoder_bias" in new_traj.files
+        assert "policy_obs" in new_traj.files
+        assert "next_policy_obs" in new_traj.files
+
+    def test_direct_transition_injection_path_skips_legacy_replay(self, tmp_path, monkeypatch):
+        gen_traj_quadruped_dr(
+            num_trajectories=1,
+            episode_length=2,
+            start_seed=34,
+            output_dir=tmp_path,
+            max_attempts=5,
+            verbose=0,
+            render=False,
+            domain_rand_config_type="default_no_push",
+            mpc=FakeQuadrupedMPC(),
+        )
+
+        callback = PercentMPCInjectCallback(
+            domain="quadruped",
+            task="velocity_tracking",
+            target_percentage=10,
+            data_dir=str(tmp_path),
+            random_select=False,
+            trajectory_files=[sorted(tmp_path.glob("*.npz"))[0].name],
+            verbose=0,
+        )
+
+        replay_buffer = TaggedDictReplayBuffer(
+            buffer_size=32,
+            observation_space=spaces.Dict(
+                {
+                    "policy": spaces.Box(low=-np.inf, high=np.inf, shape=(45,), dtype=np.float64),
+                    "privileged": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float64),
+                }
+            ),
+            action_space=spaces.Box(low=-1.0, high=1.0, shape=(12,), dtype=np.float64),
+            device="cpu",
+            n_envs=1,
+            optimize_memory_usage=False,
+            handle_timeout_termination=False,
+        )
+        callback.init_callback(DummyCallbackModel(replay_buffer=replay_buffer, num_envs=1))
+
+        def _legacy_replay_should_not_run(*args, **kwargs):
+            raise AssertionError("legacy quadruped replay path should not run for new DR files")
+
+        monkeypatch.setattr(callback, "_replay_quadruped_trajectory", _legacy_replay_should_not_run)
+        callback._inject_mpc_trajectories()
+
+        saved_traj = np.load(sorted(tmp_path.glob("*.npz"))[0], allow_pickle=True)
+        assert replay_buffer.size() == 1
+        assert replay_buffer.get_mpc_percentage() == pytest.approx(100.0)
+        np.testing.assert_allclose(
+            replay_buffer.observations["policy"][0, 0],
+            saved_traj["policy_obs"][0],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. play_quad.py Utilities
 # ═══════════════════════════════════════════════════════════════════════════
 
 

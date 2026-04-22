@@ -642,6 +642,8 @@ def create_model(env, cfg, is_quadruped: bool = False):
             model = SB3_SAC_MPC(
                 AsymmetricSACPolicy,
                 env,
+                # Intentionally widen only quadruped SAC-MPC; all other algorithms keep their current defaults.
+                #policy_kwargs=dict(net_arch=[512, 512]),
                 learning_rate=cfg.learning_rate,
                 buffer_size=cfg.buffer_size,
                 learning_starts=cfg.learning_starts,

@@ -33,6 +33,18 @@ from mpl_toolkits.mplot3d import Axes3D
 
 FONT_SIZE = 20
 
+plt.rcParams.update(
+    {
+        "font.size": FONT_SIZE,
+        "axes.labelsize": FONT_SIZE,
+        "axes.titlesize": FONT_SIZE + 2,
+        "figure.titlesize": FONT_SIZE + 2,
+        "xtick.labelsize": FONT_SIZE - 2,
+        "ytick.labelsize": FONT_SIZE - 2,
+        "legend.fontsize": FONT_SIZE,
+    }
+)
+
 def extract_checkpoint_number(path: str) -> int:
     """Extract checkpoint number from file path (e.g., 'checkpoint_100000' -> 100000)."""
     match = re.search(r'checkpoint_(\d+)', str(path))
@@ -140,7 +152,7 @@ def plot_2d_heatmap(data: dict, title: str = None, output_path: str = None,
     cbar = ax.collections[0].colorbar
     if cbar:
         cbar.set_label('Reward', fontsize=FONT_SIZE)
-        cbar.ax.tick_params(labelsize=FONT_SIZE-4)
+        cbar.ax.tick_params(labelsize=FONT_SIZE-2)
     
     plt.tight_layout()
     
@@ -212,12 +224,12 @@ def plot_3d_surface(data: dict, title: str = None, output_path: str = None,
     ax.plot3D(xline, yline, zline, 'black', zorder=10)
     
     cbar = fig.colorbar(surf, shrink=0.5, aspect=5, pad=0.05)
-    cbar.ax.tick_params(labelsize=FONT_SIZE-4)
+    cbar.ax.tick_params(labelsize=FONT_SIZE-2)
     
     ax.set_xlabel(xlabel, fontsize=FONT_SIZE)
     ax.set_ylabel(ylabel, fontsize=FONT_SIZE)
     ax.set_zlabel(zlabel or data.get('key_name', 'Reward').replace('_', ' ').title(), fontsize=FONT_SIZE)
-    ax.tick_params(axis='both', labelsize=FONT_SIZE-4)
+    ax.tick_params(axis='both', labelsize=FONT_SIZE-2)
     ax.view_init(elev=elev, azim=azim)
     
     if output_path:
@@ -268,14 +280,14 @@ def plot_contour(data: dict, title: str = None, output_path: str = None,
         CS = ax.contourf(X, Y, Z, cmap=cmap, levels=levels)
     else:
         CS = ax.contour(X, Y, Z, cmap=cmap, levels=levels)
-        ax.clabel(CS, inline=1, fontsize=FONT_SIZE-6)
+        ax.clabel(CS, inline=1, fontsize=FONT_SIZE-4)
     
     ax.set_xlabel(xlabel, fontsize=FONT_SIZE)
     ax.set_ylabel(ylabel, fontsize=FONT_SIZE)
     ax.set_title(title, fontsize=FONT_SIZE+2)
-    ax.tick_params(axis='both', labelsize=FONT_SIZE-4)
+    ax.tick_params(axis='both', labelsize=FONT_SIZE-2)
     cbar = plt.colorbar(CS, ax=ax)
-    cbar.ax.tick_params(labelsize=FONT_SIZE-4)
+    cbar.ax.tick_params(labelsize=FONT_SIZE-2)
     
     if output_path:
         fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
@@ -481,4 +493,3 @@ if __name__ == "__main__":
   --compare
     """
     main()
-

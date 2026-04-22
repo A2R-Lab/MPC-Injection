@@ -84,6 +84,8 @@ def detect_algorithm(run_dir: str) -> str:
         with open(config_path) as f:
             cfg = json.load(f)
         algo = cfg.get("algorithm", "").upper()
+        if algo.endswith("-MPC"):
+            algo = algo[:-4]
         if algo in ALGO_MAP:
             return algo
 

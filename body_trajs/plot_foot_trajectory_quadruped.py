@@ -19,6 +19,7 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "plots" / "body_trajectory_plots"
+FONT_SIZE = 18
 FOOT_COLORS = {
     "FL": "#1f77b4",
     "FR": "#ff7f0e",
@@ -30,6 +31,18 @@ FOOT_COLORS = {
 # Example: 500, 1000 plots timesteps [500, 1000).
 PLOT_TIMESTEP_START = 250
 PLOT_TIMESTEP_END = 500
+
+plt.rcParams.update(
+    {
+        "font.size": FONT_SIZE,
+        "axes.labelsize": FONT_SIZE,
+        "axes.titlesize": FONT_SIZE + 2,
+        "figure.titlesize": FONT_SIZE + 2,
+        "xtick.labelsize": FONT_SIZE - 2,
+        "ytick.labelsize": FONT_SIZE - 2,
+        "legend.fontsize": FONT_SIZE,
+    }
+)
 
 
 INTERACTIVE_BACKEND_NAMES = {
@@ -139,9 +152,10 @@ def plot_foot_cycle(
     #    zorder=5,
     #)
 
-    ax.set_title(foot_name, fontweight="bold")
-    ax.set_xlabel("Centered Fore-Aft Position (m)")
-    ax.set_ylabel(y_label)
+    ax.set_title(foot_name, fontsize=FONT_SIZE + 2, fontweight="bold")
+    ax.set_xlabel("Centered Fore-Aft Position (m)", fontsize=FONT_SIZE)
+    ax.set_ylabel(y_label, fontsize=FONT_SIZE)
+    ax.tick_params(axis="both", labelsize=FONT_SIZE - 2)
     ax.grid(True, alpha=0.25)
     x_extent = np.max(np.abs(x))
     if x_extent > 0:
@@ -205,7 +219,7 @@ def main() -> None:
     fig, axes = plt.subplots(2, 2, figsize=(13, 10), constrained_layout=True)
     fig.suptitle(
         f"Quadruped Foot Trajectories ({args.frame}-frame)\n{trajectory_path.name}",
-        fontsize=14,
+        fontsize=FONT_SIZE + 2,
         fontweight="bold",
     )
 
@@ -218,7 +232,7 @@ def main() -> None:
             FOOT_COLORS.get(foot_name, "#444444"),
             args.frame,
         )
-        ax.legend(loc="best", fontsize=9)
+        ax.legend(loc="best", fontsize=FONT_SIZE)
 
     output_path = resolve_output_path(trajectory_path, args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

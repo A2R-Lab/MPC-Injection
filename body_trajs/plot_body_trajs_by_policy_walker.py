@@ -11,6 +11,26 @@ import re
 
 FONT_SIZE = 18
 
+plt.rcParams.update(
+    {
+        'font.size': FONT_SIZE,
+        'axes.labelsize': FONT_SIZE,
+        'axes.titlesize': FONT_SIZE + 2,
+        'figure.titlesize': FONT_SIZE + 2,
+        'xtick.labelsize': FONT_SIZE - 2,
+        'ytick.labelsize': FONT_SIZE - 2,
+        'legend.fontsize': FONT_SIZE,
+    }
+)
+
+
+def apply_axis_font_sizes(ax):
+    """Apply paper-friendly tick label sizes to 2D and 3D axes."""
+    ax.tick_params(axis='x', labelsize=FONT_SIZE - 2)
+    ax.tick_params(axis='y', labelsize=FONT_SIZE - 2)
+    if hasattr(ax, 'zaxis'):
+        ax.tick_params(axis='z', labelsize=FONT_SIZE - 2)
+
 def load_trajectory_data(npz_file: Path, data_type: str = 'observations'):
     """
     Load trajectory data from a file.
@@ -130,13 +150,14 @@ def plot_torso_height(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 150000
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
     # Labels and title
-    ax.set_xlabel('Time (timesteps)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Torso Height (m)', fontsize=12)
-    ax.set_title('Torso Trajectory Evolution: Checkpoints 25k, 100k, 200k', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Time (timesteps)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Torso Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Torso Trajectory Evolution: Checkpoints 25k, 100k, 200k', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     
     # Set view angle for better perspective
@@ -231,6 +252,7 @@ def plot_torso_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 1500
     ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE, labelpad=20)
     ax.set_zlabel('Torso Height (m)', fontsize=FONT_SIZE, labelpad=10)
     ax.set_title('Torso Trajectory: Checkpoints 25k, 100k, 150k, 200k', fontsize=FONT_SIZE+2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     
     # Adjust margins to reduce empty space
@@ -305,12 +327,13 @@ def plot_left_thigh_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000,
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
-    ax.set_xlabel('Left Thigh X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Left Thigh Height (m)', fontsize=12)
-    ax.set_title('Left Thigh 2D Trajectory Evolution (X-Z plane)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Left Thigh X Position (m)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Left Thigh Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Left Thigh 2D Trajectory Evolution (X-Z plane)', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=35, azim=45)
     
@@ -374,12 +397,13 @@ def plot_left_leg_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 1
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
-    ax.set_xlabel('Left Leg X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Left Leg Height (m)', fontsize=12)
-    ax.set_title('Left Leg 2D Trajectory Evolution (X-Z plane)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Left Leg X Position (m)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Left Leg Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Left Leg 2D Trajectory Evolution (X-Z plane)', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=35, azim=45)
     
@@ -443,12 +467,13 @@ def plot_left_foot_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
-    ax.set_xlabel('Left Foot X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Left Foot Height (m)', fontsize=12)
-    ax.set_title('Left Foot 2D Trajectory Evolution (X-Z plane)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Left Foot X Position (m)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Left Foot Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Left Foot 2D Trajectory Evolution (X-Z plane)', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=35, azim=45)
     
@@ -512,12 +537,13 @@ def plot_right_thigh_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
-    ax.set_xlabel('Right Thigh X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Right Thigh Height (m)', fontsize=12)
-    ax.set_title('Right Thigh 2D Trajectory Evolution (X-Z plane)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Right Thigh X Position (m)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Right Thigh Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Right Thigh 2D Trajectory Evolution (X-Z plane)', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=35, azim=45)
     
@@ -581,12 +607,13 @@ def plot_right_leg_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000, 
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
-    ax.set_xlabel('Right Leg X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Right Leg Height (m)', fontsize=12)
-    ax.set_title('Right Leg 2D Trajectory Evolution (X-Z plane)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Right Leg X Position (m)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Right Leg Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Right Leg 2D Trajectory Evolution (X-Z plane)', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=35, azim=45)
     
@@ -650,12 +677,13 @@ def plot_right_foot_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000,
         Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8,
                markeredgecolor='black', markeredgewidth=1.5, linestyle='None', label='Start Point')
     ]
-    ax.legend(handles=legend_elements, fontsize=11, loc='upper left')
+    ax.legend(handles=legend_elements, fontsize=FONT_SIZE, loc='upper left')
     
-    ax.set_xlabel('Right Foot X Position (m)', fontsize=12)
-    ax.set_ylabel('Training Checkpoint', fontsize=12)
-    ax.set_zlabel('Right Foot Height (m)', fontsize=12)
-    ax.set_title('Right Foot 2D Trajectory Evolution (X-Z plane)', fontsize=14, fontweight='bold')
+    ax.set_xlabel('Right Foot X Position (m)', fontsize=FONT_SIZE)
+    ax.set_ylabel('Training Checkpoint', fontsize=FONT_SIZE)
+    ax.set_zlabel('Right Foot Height (m)', fontsize=FONT_SIZE)
+    ax.set_title('Right Foot 2D Trajectory Evolution (X-Z plane)', fontsize=FONT_SIZE + 2, fontweight='bold')
+    apply_axis_font_sizes(ax)
     ax.grid(True, alpha=0.3)
     ax.view_init(elev=35, azim=45)
     

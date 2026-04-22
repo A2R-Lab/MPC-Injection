@@ -40,7 +40,7 @@ Both algorithms share the same observation and action spaces, but their
 
 - **`model.policy.actor.mu`** -- the *entire* network including tanh:
   ```
-  Linear(45 -> 256) -> ReLU -> Linear(256 -> 256) -> ReLU -> Linear(256 -> 12) -> Tanh()
+  Linear(45 -> 400) -> ReLU -> Linear(400 -> 300) -> ReLU -> Linear(300 -> 12) -> Tanh()
   ```
   There is **no** `latent_pi` attribute. The full TD3 inference is:
   `normalise -> mu` (tanh is the last layer inside `mu`)
@@ -96,7 +96,7 @@ For **TD3**:
 ```
 obs (1x45, raw sensors)
   -> normalise: clip((obs - mean) / std, -10, 10)
-  -> mu:        Linear(45->256) -> ReLU -> Linear(256->256) -> ReLU -> Linear(256->12) -> Tanh
+  -> mu:        Linear(45->400) -> ReLU -> Linear(400->300) -> ReLU -> Linear(300->12) -> Tanh
   -> actions (1x12, values in [-1, 1])
 ```
 

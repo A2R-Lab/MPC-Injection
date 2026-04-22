@@ -11,6 +11,20 @@ import math
 import warnings
 from typing import Optional
 
+FONT_SIZE = 18
+
+plt.rcParams.update(
+    {
+        "font.size": FONT_SIZE,
+        "axes.labelsize": FONT_SIZE,
+        "axes.titlesize": FONT_SIZE + 2,
+        "figure.titlesize": FONT_SIZE + 2,
+        "xtick.labelsize": FONT_SIZE - 2,
+        "ytick.labelsize": FONT_SIZE - 2,
+        "legend.fontsize": FONT_SIZE,
+    }
+)
+
 
 def plot_surface(
     csv_path: str,
@@ -97,7 +111,7 @@ def plot_surface(
     if plot_type in ['all', 'mesh']:
         fig = plt.figure(figsize=(12, 9))
         ax = fig.add_subplot(111, projection='3d')
-        fig.suptitle(title)
+        fig.suptitle(title, fontsize=FONT_SIZE + 2, fontweight='bold')
         
         if np.min(Z) < -1e9 and not use_logscale:
             print(f"Warning: Data includes extremely large negative rewards ({np.min(Z):.3E}). "
@@ -150,12 +164,17 @@ def plot_surface(
                     label_str = f"${val:.2f}$"
                 labels.append(label_str)
             cbar.ax.set_yticklabels(labels)
+            cbar.ax.tick_params(labelsize=FONT_SIZE - 2)
         else:
-            fig.colorbar(surf, shrink=0.5, aspect=5, pad=0.05)
+            cbar = fig.colorbar(surf, shrink=0.5, aspect=5, pad=0.05)
+            cbar.ax.tick_params(labelsize=FONT_SIZE - 2)
         
-        ax.set_xlabel('Direction 1')
-        ax.set_ylabel('Direction 2')
-        ax.set_zlabel(key_name.replace('_', ' ').title())
+        ax.set_xlabel('Direction 1', fontsize=FONT_SIZE)
+        ax.set_ylabel('Direction 2', fontsize=FONT_SIZE)
+        ax.set_zlabel(key_name.replace('_', ' ').title(), fontsize=FONT_SIZE)
+        ax.tick_params(axis='x', labelsize=FONT_SIZE - 2)
+        ax.tick_params(axis='y', labelsize=FONT_SIZE - 2)
+        ax.tick_params(axis='z', labelsize=FONT_SIZE - 2)
         
         output_path = f"{output_name}_3dsurface.png"
         fig.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -168,7 +187,15 @@ def plot_surface(
     # Plot 2D heatmap
     # --------------------------------------------------------------------
     if plot_type in ['all', 'heat']:
-        sns.set_theme(font="Serif")
+        sns.set_theme(
+            font="Serif",
+            rc={
+                "axes.labelsize": FONT_SIZE,
+                "axes.titlesize": FONT_SIZE + 2,
+                "xtick.labelsize": FONT_SIZE - 2,
+                "ytick.labelsize": FONT_SIZE - 2,
+            },
+        )
         fig, ax = plt.subplots(figsize=(10, 8))
         
         # Create labels
@@ -180,7 +207,10 @@ def plot_surface(
                               ax=ax)
         sns_plot.invert_yaxis()
         sns_plot.set(xlabel="Direction 1", ylabel="Direction 2")
-        ax.set_title(title)
+        ax.set_title(title, fontsize=FONT_SIZE + 2, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=FONT_SIZE - 2)
+        cbar = sns_plot.collections[0].colorbar
+        cbar.ax.tick_params(labelsize=FONT_SIZE - 2)
         
         output_path = f"{output_name}_2dheat.png"
         fig.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -199,12 +229,14 @@ def plot_surface(
             CS = ax.contourf(X, Y, Z, cmap='summer', levels=20)
         else:
             CS = ax.contour(X, Y, Z, cmap='summer', levels=20)
-            ax.clabel(CS, inline=1, fontsize=8)
+            ax.clabel(CS, inline=1, fontsize=FONT_SIZE - 4)
         
-        ax.set_xlabel('Direction 1')
-        ax.set_ylabel('Direction 2')
-        ax.set_title(title)
-        plt.colorbar(CS, ax=ax)
+        ax.set_xlabel('Direction 1', fontsize=FONT_SIZE)
+        ax.set_ylabel('Direction 2', fontsize=FONT_SIZE)
+        ax.set_title(title, fontsize=FONT_SIZE + 2, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=FONT_SIZE - 2)
+        cbar = plt.colorbar(CS, ax=ax)
+        cbar.ax.tick_params(labelsize=FONT_SIZE - 2)
         
         suffix = '_2dcontourf.png' if plot_type in ['all', 'contourf'] else '_2dcontour.png'
         output_path = f"{output_name}{suffix}"

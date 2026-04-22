@@ -20,6 +20,18 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 FONT_SIZE = 18
 RBG_COLORS = ["#d62728", "#1f77b4", "#2ca02c"]
 
+plt.rcParams.update(
+    {
+        "font.size": FONT_SIZE,
+        "axes.labelsize": FONT_SIZE,
+        "axes.titlesize": FONT_SIZE + 2,
+        "figure.titlesize": FONT_SIZE + 2,
+        "xtick.labelsize": FONT_SIZE - 2,
+        "ytick.labelsize": FONT_SIZE - 2,
+        "legend.fontsize": FONT_SIZE,
+    }
+)
+
 
 def extract_percentage(dirname):
     """Extract the percentage value from directory name."""

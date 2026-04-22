@@ -1,10 +1,10 @@
 import argparse
+import json
 import time
 from pathlib import Path
 from timeit import default_timer as timer
 
 import jax
-import jax.numpy as jnp
 import mujoco
 import numpy as np
 
@@ -17,26 +17,15 @@ jax.config.update(
     "xla_gpu_per_fusion_autotune_cache_dir",
 )
 
-from gym_quadruped.quadruped_env import QuadrupedEnv
-
 import mpx.config.config_go2 as config
 import mpx.utils.mpc_wrapper as mpc_wrapper
 from mpc_rl.envs.domain_randomization import (
     DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
     STARTUP_DOMAIN_RAND_PRESET_NAMES,
-    apply_startup_domain_rand_patch,
     resolve_startup_domain_rand_config,
-    sample_startup_domain_rand_patch,
 )
-from mpc_rl.planner.gen_traj_data_mpx import (
-    COMMAND_THRESHOLD,
-    RL_ACTION_SCALE,
-    RL_COMMAND_RESAMPLE_INTERVAL,
-    RL_CONTROL_DT,
-    _check_fell,
-    randomize_initial_state,
-    sample_commands,
-)
+from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+from mpc_rl.planner.gen_traj_data_mpx import COMMAND_THRESHOLD, sample_commands
 
 
 try:
@@ -46,9 +35,113 @@ except RuntimeError:
 jax.default_device(gpu_device)
 
 
-def _quadruped_base_body_id(mj_model: mujoco.MjModel) -> int:
-    base_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "base")
-    return base_id if base_id >= 0 else 1
+def _configure_mpc_duty_factor(commands: np.ndarray, mpc) -> float:
+    """Match the nominal MPX standing-vs-trotting duty-factor heuristic."""
+    total_command = np.linalg.norm(commands[:2]) + abs(commands[2])
+    if total_command < COMMAND_THRESHOLD:
+        config.duty_factor = 1.0
+        mpc.duty_factor = 1.0
+    else:
+        config.duty_factor = 0.5
+        mpc.duty_factor = 0.5
+    return float(total_command)
+
+
+def _inverse_pd_residual_action(env: QuadrupedVelocityTrackingEnv, tau_applied_first: np.ndarray) -> np.ndarray:
+    """Recover the RL residual action whose PD torques match the first applied torque."""
+    q_current = env.mjData.qpos[7 : 7 + env.num_joints].copy()
+    dq_current = env.mjData.qvel[6 : 6 + env.num_joints].copy()
+    q_target = q_current + (tau_applied_first + env.kd * dq_current) / env.kp
+    action = (q_target - env.default_joint_pos) / env.action_scale
+    return np.clip(action, -1.0, 1.0).astype(np.float64)
+
+
+def _rollout_control_step_with_torques(
+    env: QuadrupedVelocityTrackingEnv,
+    *,
+    action: np.ndarray,
+    tau_mpx: np.ndarray,
+    q_des: np.ndarray,
+    qpos_traj: np.ndarray,
+    qvel_traj: np.ndarray,
+    time_traj: np.ndarray,
+    tau_applied_traj: np.ndarray,
+    tau_mpx_traj: np.ndarray,
+    q_des_traj: np.ndarray,
+    commands_traj: np.ndarray,
+    commands: np.ndarray,
+    sim_idx_start: int,
+    viewer=None,
+):
+    """Mirror env.step() bookkeeping while applying precomputed torques directly."""
+    action = np.clip(action, -1.0, 1.0).astype(np.float64)
+    env._prev_last_action = env._last_action.copy()
+    env._last_action = action.copy()
+
+    viewer_closed = False
+    for substep in range(env.decimation):
+        sim_idx = sim_idx_start + substep
+        q_current = env.mjData.qpos[7 : 7 + env.num_joints].copy()
+        dq_current = env.mjData.qvel[6 : 6 + env.num_joints].copy()
+        tau_feedback = 10.0 * (q_des - q_current) - 2.0 * dq_current
+        total_tau = tau_mpx + tau_feedback
+        clipped_torques = np.clip(
+            np.asarray(total_tau, dtype=np.float64),
+            env.torque_limits[:, 0],
+            env.torque_limits[:, 1],
+        )
+        env._applied_torques = clipped_torques
+        tau_applied_traj[:, sim_idx] = clipped_torques
+        tau_mpx_traj[:, sim_idx] = tau_mpx
+        q_des_traj[:, sim_idx] = q_des
+        commands_traj[:, sim_idx] = commands
+        env.mjData.ctrl[:] = clipped_torques
+        mujoco.mj_step(env.mjModel, env.mjData)
+
+        qpos_traj[:, sim_idx + 1] = env.mjData.qpos.copy()
+        qvel_traj[:, sim_idx + 1] = env.mjData.qvel.copy()
+        time_traj[sim_idx + 1] = env.mjData.time
+
+        if viewer is not None:
+            viewer.sync()
+            time.sleep(env.sim_dt)
+            if not viewer.is_running():
+                viewer_closed = True
+                break
+
+    env._step_count += 1
+    env._steps_since_command_resample += 1
+    env._maybe_push_robot()
+    env._update_feet_air_time()
+
+    joint_vel_current = env.mjData.qvel[6:].copy()
+    env._joint_acc = (joint_vel_current - env._last_joint_vel) / env.control_dt
+    env._last_joint_vel = joint_vel_current
+
+    next_obs = env._get_obs()
+    terminated = env._check_termination()
+    reward = env._compute_reward(action, terminated)
+    info = env._get_info()
+    env._swing_peak *= ~env._current_contacts
+
+    return next_obs, float(reward), bool(terminated), info, viewer_closed
+
+
+def _summarize_dr_bundle(base_body_id: int, dr_bundle: dict) -> dict:
+    """Create a compact JSON-serializable DR summary for the manifest."""
+    encoder_bias = np.asarray(dr_bundle["dr_encoder_bias"], dtype=np.float64)
+    return {
+        "dr_enabled": bool(dr_bundle["dr_enabled"]),
+        "dr_config_type": str(dr_bundle["dr_config_type"]),
+        "dr_seed": int(dr_bundle["dr_seed"]),
+        "dr_applied_fields": [str(field) for field in dr_bundle["dr_applied_fields"].tolist()],
+        "dr_added_mass_kg": float(dr_bundle["dr_added_mass_kg"]),
+        "dr_motor_strength_scale": float(dr_bundle["dr_motor_strength_scale"]),
+        "geom_friction": float(dr_bundle["dr_patch_geom_friction"][0, 0]),
+        "base_ipos": dr_bundle["dr_patch_body_ipos"][base_body_id].tolist(),
+        "encoder_bias_min": float(np.min(encoder_bias)),
+        "encoder_bias_max": float(np.max(encoder_bias)),
+    }
 
 
 def generate_trajectory(
@@ -61,7 +154,7 @@ def generate_trajectory(
     verbose=1,
     render=False,
 ):
-    """Generate one MPX-controlled trajectory on a startup-randomized plant."""
+    """Generate one MPX-controlled trajectory inside the RL quadruped env."""
     rng = np.random.RandomState(seed)
     dr_seed = seed + dr_seed_offset
     dr_rng = np.random.RandomState(dr_seed)
@@ -69,211 +162,249 @@ def generate_trajectory(
         domain_rand_config_type
     )
 
-    n_joints = config.n_joints
-    sim_frequency = 200.0
-    mpc_frequency = config.mpc_frequency
-    sim_steps_per_ctrl = int(sim_frequency / mpc_frequency)
-    total_sim_steps = episode_length * sim_steps_per_ctrl
+    # Keep startup dyanmics DR, but make the observations clean so we have
+    # clean obs -> MPC(clean state) instead of noisy obs -> MPC(noisy state) which would be a different distribution shift
+    domain_rand_cfg.obs_noise_level = 0.0
+    domain_rand_cfg.encoder_bias_range = (0.0, 0.0)
 
-    robot_feet_geom_names = dict(FR="FR", FL="FL", RR="RR", RL="RL")
-    env = QuadrupedEnv(
+    env = QuadrupedVelocityTrackingEnv(
         robot="go2",
         scene="flat",
-        sim_dt=1 / sim_frequency,
-        ref_base_lin_vel=0.0,
-        ground_friction_coeff=0.7,
-        base_vel_command_type="human",
-        state_obs_names=tuple(QuadrupedEnv.ALL_OBS),
+        render_mode="rgb_array" if render else None,
+        domain_rand_cfg=domain_rand_cfg,
+        apply_startup_domain_rand_on_init=False,
+        simple_reward=True,
     )
-
-    # Reset BEFORE DR so the patch samples from the post-reset model state
-    # (ground/foot friction = 0.7). Previously, sampling happened before reset,
-    # so the patch captured XML-default friction (1.0) which was then silently
-    # overwritten by reset's _set_ground_friction(0.7) call.
-    env.reset(random=False)
-
-    dr_patch = sample_startup_domain_rand_patch(
-        env.mjModel,
-        domain_rand_cfg,
-        rng=dr_rng,
-        dr_config_type=resolved_dr_type,
-        dr_seed=dr_seed,
-        base_body_id=_quadruped_base_body_id(env.mjModel),
-    )
-    torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
-
-    default_joint_pos = env.mjModel.key_qpos[0, 7 : 7 + n_joints].copy()
-    randomize_initial_state(env, rng)
 
     own_mpc = mpc is None
-    if own_mpc:
-        mpc = mpc_wrapper.MPCControllerWrapper(config)
-        mpc.robot_height = config.robot_height
-        if verbose > 0:
-            print(f"[Seed {seed}] Pre-compiling JAX MPC kernels...")
-        _jit_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
-        _jit_contact_temp, _ = env.feet_contact_state()
-        _jit_contact = np.array(
-            [_jit_contact_temp[robot_feet_geom_names[leg]] for leg in ["FL", "FR", "RL", "RR"]]
+    try:
+        dr_bundle = env.sample_startup_domain_rand_bundle(
+            rng=dr_rng,
+            dr_config_type=resolved_dr_type,
+            dr_seed=dr_seed,
         )
-        _start_compile = timer()
+        env.apply_startup_domain_rand_bundle(dr_bundle)
+        commands = sample_commands(rng)
+        env.set_commands(
+            vx=float(commands[0]),
+            vy=float(commands[1]),
+            wz=float(commands[2]),
+        )
+        obs, _ = env.reset(seed=seed)
+        dr_bundle = env.export_startup_domain_rand_patch(
+            dr_config_type=resolved_dr_type,
+            dr_seed=dr_seed,
+        )
+
+        n_joints = env.num_joints
+        sim_steps_per_ctrl = env.decimation
+        total_sim_steps = episode_length * sim_steps_per_ctrl
+
+        if own_mpc:
+            mpc = mpc_wrapper.MPCControllerWrapper(config)
+            mpc.robot_height = config.robot_height
+            if verbose > 0:
+                print(f"[Seed {seed}] Pre-compiling JAX MPC kernels...")
+            dummy_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
+            dummy_contact = np.zeros(config.n_contact)
+            compile_start = timer()
+            mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
+            mpc.run(env.mjData.qpos.copy(), env.mjData.qvel.copy(), dummy_input, dummy_contact)
+            if verbose > 0:
+                print(f"[Seed {seed}] JIT compilation done in {timer() - compile_start:.1f}s")
+
         mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
-        mpc.run(env.mjData.qpos.copy(), env.mjData.qvel.copy(), _jit_input, _jit_contact)
+        total_command = _configure_mpc_duty_factor(commands, mpc)
+
+        nq = env.mjModel.nq
+        nv = env.mjModel.nv
+        qpos_traj = np.zeros((nq, total_sim_steps + 1), dtype=np.float64)
+        qvel_traj = np.zeros((nv, total_sim_steps + 1), dtype=np.float64)
+        tau_applied_traj = np.zeros((n_joints, total_sim_steps), dtype=np.float64)
+        tau_mpx_traj = np.zeros((n_joints, total_sim_steps), dtype=np.float64)
+        q_des_traj = np.zeros((n_joints, total_sim_steps), dtype=np.float64)
+        time_traj = np.zeros(total_sim_steps + 1, dtype=np.float64)
+        commands_traj = np.zeros((3, total_sim_steps), dtype=np.float64)
+
+        qpos_traj[:, 0] = env.mjData.qpos.copy()
+        qvel_traj[:, 0] = env.mjData.qvel.copy()
+        time_traj[0] = env.mjData.time
+
+        policy_obs_traj = []
+        next_policy_obs_traj = []
+        privileged_obs_traj = []
+        next_privileged_obs_traj = []
+        actions_traj = []
+        rewards_traj = []
+        terminated_ctrl_traj = []
+        commands_ctrl_traj = []
+
+        steps_since_resample = 0
+
         if verbose > 0:
-            print(f"[Seed {seed}] JIT compilation done in {timer() - _start_compile:.1f}s")
+            print(f"[Seed {seed}] Starting DR trajectory generation")
+            print(f"  DR preset: {resolved_dr_type}")
+            print(f"  DR applied fields: {dr_bundle['dr_applied_fields'].tolist()}")
+            print(
+                "  Episode length: "
+                f"{episode_length} ctrl steps ({total_sim_steps} sim steps)"
+            )
+            print(f"  Init qpos (joints): {env.mjData.qpos[7:7+n_joints]}")
+            print(
+                f"  Init commands: vx={commands[0]:.2f}, "
+                f"vy={commands[1]:.2f}, wz={commands[2]:.2f}"
+            )
+            print(f"  Initial total command: {total_command:.3f}")
 
-    mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
-
-    tau = jnp.zeros(n_joints)
-    q_des = config.q0.copy()
-    dq_des = jnp.zeros(n_joints)
-
-    nq = env.mjModel.nq
-    nv = env.mjModel.nv
-    qpos_traj = np.zeros((nq, total_sim_steps + 1))
-    qvel_traj = np.zeros((nv, total_sim_steps + 1))
-    tau_applied_traj = np.zeros((n_joints, total_sim_steps))
-    tau_mpx_traj = np.zeros((n_joints, total_sim_steps))
-    q_des_traj = np.zeros((n_joints, total_sim_steps))
-    time_traj = np.zeros(total_sim_steps + 1)
-    commands_traj = np.zeros((3, total_sim_steps))
-
-    qpos_traj[:, 0] = env.mjData.qpos.copy()
-    qvel_traj[:, 0] = env.mjData.qvel.copy()
-    time_traj[0] = env.mjData.time
-
-    commands = sample_commands(rng)
-    total_cmd = np.linalg.norm(commands[:2]) + abs(commands[2])
-    print("total command: ", total_cmd)
-    if total_cmd < COMMAND_THRESHOLD:
-        config.duty_factor = 1.0
-        mpc.duty_factor = 1.0
-    else:
-        config.duty_factor = 0.5
-        mpc.duty_factor = 0.5
-
-    steps_since_resample = 0
-
-    if verbose > 0:
-        print(f"[Seed {seed}] Starting DR trajectory generation")
-        print(f"  DR preset: {resolved_dr_type}")
-        print(f"  DR applied fields: {dr_patch['dr_applied_fields'].tolist()}")
-        print(f"  Episode length: {episode_length} ctrl steps ({total_sim_steps} sim steps)")
-        print(f"  Init qpos (joints): {env.mjData.qpos[7:7+n_joints]}")
-        print(
-            f"  Init commands: vx={commands[0]:.2f}, vy={commands[1]:.2f}, wz={commands[2]:.2f}"
-        )
-
-    mpc_solve_times = []
-    fell = False
-
-    if render:
-        import mujoco.viewer as mjviewer
-
-        viewer = mjviewer.launch_passive(env.mjModel, env.mjData)
-    else:
         viewer = None
+        if render:
+            import mujoco.viewer as mjviewer
 
-    torque_limits_active = (
-        "torque_limits" in set(dr_patch["dr_applied_fields"].tolist())
-        if dr_patch["dr_enabled"]
-        else False
-    )
+            viewer = mjviewer.launch_passive(env.mjModel, env.mjData)
 
-    for t in range(total_sim_steps):
-        qpos = env.mjData.qpos.copy()
-        qvel = env.mjData.qvel.copy()
+        mpc_solve_times = []
+        fell = False
+        failure_reason = ""
+        completed_control_steps = 0
 
-        is_mpc_step = t % sim_steps_per_ctrl == 0
-        if is_mpc_step:
-            ctrl_step = t // sim_steps_per_ctrl
-
-            if steps_since_resample >= RL_COMMAND_RESAMPLE_INTERVAL and ctrl_step > 0:
+        for ctrl_step in range(episode_length):
+            if steps_since_resample >= env.command_resample_interval and ctrl_step > 0:
                 commands = sample_commands(rng)
                 steps_since_resample = 0
+                total_command = _configure_mpc_duty_factor(commands, mpc)
+                env.set_commands(
+                    vx=float(commands[0]),
+                    vy=float(commands[1]),
+                    wz=float(commands[2]),
+                )
+                obs = env._get_obs()
                 if verbose > 1:
                     print(
-                        f"  [t={t}] Resampled commands: vx={commands[0]:.2f}, "
-                        f"vy={commands[1]:.2f}, wz={commands[2]:.2f}"
+                        f"  [ctrl={ctrl_step}] Resampled commands: "
+                        f"vx={commands[0]:.2f}, vy={commands[1]:.2f}, wz={commands[2]:.2f} "
+                        f"(total={total_command:.3f})"
                     )
             steps_since_resample += 1
+
+            policy_obs_traj.append(obs["policy"].copy())
+            privileged_obs_traj.append(obs["privileged"].copy())
+            commands_ctrl_traj.append(commands.copy())
 
             mpx_input = np.array(
                 [commands[0], commands[1], 0.0, 0.0, 0.0, commands[2], config.robot_height]
             )
+            contact = env._get_foot_contacts()
 
-            contact_temp, _ = env.feet_contact_state()
-            contact = np.array(
-                [contact_temp[robot_feet_geom_names[leg]] for leg in ["FL", "FR", "RL", "RR"]]
+            solve_start = timer()
+            tau_mpx, q_des, _ = mpc.run(
+                env.mjData.qpos.copy(),
+                env.mjData.qvel.copy(),
+                mpx_input,
+                contact,
+            )
+            mpc_solve_times.append(timer() - solve_start)
+
+            tau_mpx = np.asarray(tau_mpx, dtype=np.float64)
+            q_des = np.asarray(q_des, dtype=np.float64)
+
+            sim_idx_start = ctrl_step * sim_steps_per_ctrl
+            q_current = env.mjData.qpos[7 : 7 + n_joints].copy()
+            dq_current = env.mjData.qvel[6 : 6 + n_joints].copy()
+            tau_feedback_first = 10.0 * (q_des - q_current) - 2.0 * dq_current
+            tau_applied_first = np.clip(
+                tau_mpx + tau_feedback_first,
+                env.torque_limits[:, 0],
+                env.torque_limits[:, 1],
+            )
+            action = _inverse_pd_residual_action(env, tau_applied_first)
+            actions_traj.append(action.copy())
+
+            next_obs, reward, terminated, _, viewer_closed = _rollout_control_step_with_torques(
+                env,
+                action=action,
+                tau_mpx=tau_mpx,
+                q_des=q_des,
+                qpos_traj=qpos_traj,
+                qvel_traj=qvel_traj,
+                time_traj=time_traj,
+                tau_applied_traj=tau_applied_traj,
+                tau_mpx_traj=tau_mpx_traj,
+                q_des_traj=q_des_traj,
+                commands_traj=commands_traj,
+                commands=commands,
+                sim_idx_start=sim_idx_start,
+                viewer=viewer,
             )
 
-            start_t = timer()
-            tau, q_des, dq_des = mpc.run(qpos, qvel, mpx_input, contact)
-            solve_time = timer() - start_t
-            mpc_solve_times.append(solve_time)
+            next_policy_obs_traj.append(next_obs["policy"].copy())
+            next_privileged_obs_traj.append(next_obs["privileged"].copy())
+            rewards_traj.append(reward)
+            terminated_ctrl_traj.append(terminated)
+            obs = next_obs
+            completed_control_steps = ctrl_step + 1
 
-        tau_f64 = np.asarray(tau, dtype=np.float64)
-        q_des_f64 = np.asarray(q_des, dtype=np.float64)
-
-        tau_fb = 10 * (q_des_f64 - qpos[7 : 7 + n_joints]) - 2 * qvel[6 : 6 + n_joints]
-        total_tau = tau_f64 + tau_fb
-        if torque_limits_active:
-            total_tau = np.clip(total_tau, torque_limits[:, 0], torque_limits[:, 1])
-
-        commands_traj[:, t] = mpx_input[[0, 1, 5]]
-        tau_applied_traj[:, t] = total_tau
-        tau_mpx_traj[:, t] = tau_f64
-        q_des_traj[:, t] = q_des_f64
-
-        env.step(action=total_tau)
-
-        qpos_traj[:, t + 1] = env.mjData.qpos.copy()
-        qvel_traj[:, t + 1] = env.mjData.qvel.copy()
-        time_traj[t + 1] = env.mjData.time
-
-        if viewer is not None:
-            viewer.sync()
-            time.sleep(1.0 / sim_frequency)
-            if not viewer.is_running():
-                if verbose > 0:
-                    print(f"  [Seed {seed}] Viewer closed by user - ending trajectory")
+            if viewer_closed:
+                failure_reason = "viewer_closed"
                 break
 
-        if (t + 1) % sim_steps_per_ctrl == 0 and _check_fell(env.mjData):
-            fell = True
-            if verbose > 1:
-                ctrl_step_done = (t + 1) // sim_steps_per_ctrl
-                print(f"  [Seed {seed}] Robot fell at ctrl step {ctrl_step_done} - aborting")
-            break
+            if terminated:
+                fell = True
+                failure_reason = "terminated"
+                if verbose > 1:
+                    print(
+                        f"  [Seed {seed}] Robot fell at ctrl step "
+                        f"{completed_control_steps} - aborting"
+                    )
+                break
 
-        if verbose > 0 and (t + 1) % 1000 == 0:
-            print(f"  [Seed {seed}] Sim step {t+1}/{total_sim_steps}")
+        if viewer is not None:
+            viewer.close()
 
-    if viewer is not None:
-        viewer.close()
+        if verbose > 0:
+            avg_solve = np.mean(mpc_solve_times) if mpc_solve_times else 0.0
+            status = "FELL" if fell else ("INCOMPLETE" if completed_control_steps < episode_length else "OK")
+            print(f"  [Seed {seed}] Done [{status}]. Avg MPC solve: {avg_solve*1000:.1f}ms")
 
-    if verbose > 0:
-        avg_solve = np.mean(mpc_solve_times) if mpc_solve_times else 0
-        status = "FELL" if fell else "OK"
-        print(f"  [Seed {seed}] Done [{status}]. Avg MPC solve: {avg_solve*1000:.1f}ms")
+        return {
+            "qpos": qpos_traj,
+            "qvel": qvel_traj,
+            "tau_applied": tau_applied_traj,
+            "tau_mpx": tau_mpx_traj,
+            "q_des": q_des_traj,
+            "time": time_traj,
+            "commands": commands_traj,
+            "policy_obs": np.asarray(policy_obs_traj, dtype=np.float64),
+            "next_policy_obs": np.asarray(next_policy_obs_traj, dtype=np.float64),
+            "privileged_obs": np.asarray(privileged_obs_traj, dtype=np.float64),
+            "next_privileged_obs": np.asarray(next_privileged_obs_traj, dtype=np.float64),
+            "actions": np.asarray(actions_traj, dtype=np.float64),
+            "rewards": np.asarray(rewards_traj, dtype=np.float32),
+            "terminated_ctrl": np.asarray(terminated_ctrl_traj, dtype=bool),
+            "commands_ctrl": np.asarray(commands_ctrl_traj, dtype=np.float64),
+            "seed": seed,
+            "dr_seed": dr_seed,
+            "base_body_id": int(env._base_body_id),
+            "default_joint_pos": env.default_joint_pos.copy(),
+            "action_scale": float(env.action_scale),
+            "sim_dt": float(env.sim_dt),
+            "control_dt": float(env.control_dt),
+            "episode_length": int(episode_length),
+            "completed_control_steps": int(completed_control_steps),
+            "completed_sim_steps": int(completed_control_steps * sim_steps_per_ctrl),
+            "fell": bool(fell),
+            "failure_reason": failure_reason,
+            "controller_delay_steps": 0,
+            "controller_delay_s": 0.0,
+            **dr_bundle,
+        }
+    finally:
+        env.close()
 
-    return {
-        "qpos": qpos_traj,
-        "qvel": qvel_traj,
-        "tau_applied": tau_applied_traj,
-        "tau_mpx": tau_mpx_traj,
-        "q_des": q_des_traj,
-        "time": time_traj,
-        "commands": commands_traj,
-        "seed": seed,
-        "default_joint_pos": default_joint_pos,
-        "action_scale": RL_ACTION_SCALE,
-        "sim_dt": 1 / sim_frequency,
-        "control_dt": RL_CONTROL_DT,
-        "episode_length": episode_length,
-        "fell": fell,
-        **dr_patch,
-    }
+
+def _append_manifest_record(manifest_path: Path, record: dict):
+    """Append one generation attempt record to the JSONL manifest."""
+    with manifest_path.open("a", encoding="utf-8") as manifest_file:
+        manifest_file.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def gen_traj_quadruped_dr(
@@ -287,8 +418,10 @@ def gen_traj_quadruped_dr(
     render=False,
     domain_rand_config_type=DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
     dr_seed_offset=1_000_000,
+    manifest_filename="generation_manifest.jsonl",
+    mpc=None,
 ):
-    """Generate quadruped MPC trajectories on startup-randomized plants."""
+    """Generate quadruped MPC trajectories with startup DR matched to the RL env."""
     resolved_dr_type, _ = resolve_startup_domain_rand_config(domain_rand_config_type)
 
     if output_dir is None:
@@ -298,6 +431,7 @@ def gen_traj_quadruped_dr(
     else:
         output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_dir / manifest_filename
 
     if verbose > 0:
         print(f"Generating {num_trajectories} valid DR quadruped trajectories")
@@ -307,24 +441,27 @@ def gen_traj_quadruped_dr(
         print(f"  DR seed offset: {dr_seed_offset}")
         print(f"  Max attempts: {'unlimited' if max_attempts is None else max_attempts}")
         print(f"  Output: {output_dir}")
+        print(f"  Manifest: {manifest_path}")
         print()
 
-    if verbose > 0:
-        print("Pre-compiling JAX MPC kernels (once for all trajectories)...")
-    shared_mpc = mpc_wrapper.MPCControllerWrapper(config)
-    shared_mpc.robot_height = config.robot_height
-    _dummy_qpos = np.concatenate(
-        [np.array(config.p0), np.array(config.quat0), np.array(config.q0)]
-    )
-    _dummy_qvel = np.zeros(config.n_joints + 6)
-    _dummy_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
-    _dummy_contact = np.zeros(config.n_contact)
-    shared_mpc.reset(_dummy_qpos, _dummy_qvel)
-    _t0 = timer()
-    shared_mpc.run(_dummy_qpos, _dummy_qvel, _dummy_input, _dummy_contact)
-    if verbose > 0:
-        print(f"JIT compilation done in {timer() - _t0:.1f}s")
-        print()
+    shared_mpc = mpc
+    if shared_mpc is None:
+        if verbose > 0:
+            print("Pre-compiling JAX MPC kernels (once for all trajectories)...")
+        shared_mpc = mpc_wrapper.MPCControllerWrapper(config)
+        shared_mpc.robot_height = config.robot_height
+        dummy_qpos = np.concatenate(
+            [np.array(config.p0), np.array(config.quat0), np.array(config.q0)]
+        )
+        dummy_qvel = np.zeros(config.n_joints + 6)
+        dummy_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
+        dummy_contact = np.zeros(config.n_contact)
+        shared_mpc.reset(dummy_qpos, dummy_qvel)
+        compile_start = timer()
+        shared_mpc.run(dummy_qpos, dummy_qvel, dummy_input, dummy_contact)
+        if verbose > 0:
+            print(f"JIT compilation done in {timer() - compile_start:.1f}s")
+            print()
 
     saved = 0
     attempt = 0
@@ -352,9 +489,32 @@ def gen_traj_quadruped_dr(
             render=render,
         )
 
-        if traj_data["fell"]:
+        manifest_record = {
+            "seed": int(seed),
+            "dr_seed": int(traj_data["dr_seed"]),
+            "success": bool(
+                (not traj_data["fell"])
+                and (traj_data["completed_control_steps"] == episode_length)
+            ),
+            "fell": bool(traj_data["fell"]),
+            "failure_reason": str(traj_data["failure_reason"]),
+            "completed_control_steps": int(traj_data["completed_control_steps"]),
+            "completed_sim_steps": int(traj_data["completed_sim_steps"]),
+            "controller_delay_steps": int(traj_data["controller_delay_steps"]),
+            "controller_delay_s": float(traj_data["controller_delay_s"]),
+            "dr_summary": _summarize_dr_bundle(
+                int(traj_data["base_body_id"]),
+                extract_dr_bundle_from_traj(traj_data),
+            ),
+        }
+        _append_manifest_record(manifest_path, manifest_record)
+
+        if traj_data["fell"] or traj_data["completed_control_steps"] != episode_length:
             if verbose > 0:
-                print(f"  [Seed {seed}] Robot fell - discarding trajectory, trying next seed")
+                print(
+                    f"  [Seed {seed}] Attempt rejected for training data "
+                    f"(reason={traj_data['failure_reason'] or 'incomplete'})"
+                )
                 print()
             continue
 
@@ -370,13 +530,22 @@ def gen_traj_quadruped_dr(
     if verbose > 0:
         print(
             f"Done! Saved {saved} valid DR trajectories in {output_dir} "
-            f"({attempt - saved} discarded due to falls)"
+            f"({attempt - saved} rejected attempts logged to manifest)"
         )
+
+
+def extract_dr_bundle_from_traj(traj_data: dict) -> dict:
+    """Return only the saved DR bundle fields from a trajectory dict."""
+    return {
+        key: traj_data[key]
+        for key in traj_data
+        if key.startswith("dr_")
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate MPX quadruped trajectories with startup domain randomization"
+        description="Generate MPX quadruped trajectories with RL-matched startup domain randomization"
     )
     parser.add_argument(
         "--num-trajectories",
@@ -435,6 +604,13 @@ def main():
         default=1_000_000,
         help="Offset added to the rollout seed for the independent DR RNG stream",
     )
+    parser.add_argument(
+        "--manifest-filename",
+        type=str,
+        default="generation_manifest.jsonl",
+        help="Per-process manifest filename inside the output directory",
+    )
+    
     args = parser.parse_args()
 
     gen_traj_quadruped_dr(
@@ -447,6 +623,7 @@ def main():
         render=args.render,
         domain_rand_config_type=args.domain_rand_config_type,
         dr_seed_offset=args.dr_seed_offset,
+        manifest_filename=args.manifest_filename,
     )
 
 

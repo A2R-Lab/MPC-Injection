@@ -68,15 +68,23 @@ STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS = (
     "dr_patch_actuator_forcerange",
     "dr_torque_limits",
 )
+STARTUP_DOMAIN_RAND_RUNTIME_ARRAY_KEYS = (
+    "dr_encoder_bias",
+    "dr_realized_kp",
+    "dr_realized_kd",
+)
 STARTUP_DOMAIN_RAND_PATCH_META_KEYS = (
     "dr_enabled",
     "dr_config_type",
     "dr_seed",
     "dr_applied_fields",
+    "dr_motor_strength_scale",
+    "dr_added_mass_kg",
 )
 STARTUP_DOMAIN_RAND_PATCH_KEYS = (
     *STARTUP_DOMAIN_RAND_PATCH_META_KEYS,
     *STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS,
+    *STARTUP_DOMAIN_RAND_RUNTIME_ARRAY_KEYS,
 )
 
 
@@ -317,12 +325,14 @@ def extract_startup_domain_rand_patch(source) -> dict | None:
         if key not in source:
             continue
         value = source[key]
-        if key in STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS:
+        if key in STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS or key in STARTUP_DOMAIN_RAND_RUNTIME_ARRAY_KEYS:
             patch[key] = np.array(value, copy=True)
         elif key == "dr_enabled":
             patch[key] = bool(np.array(value).item())
         elif key == "dr_seed":
             patch[key] = int(np.array(value).item())
+        elif key in {"dr_motor_strength_scale", "dr_added_mass_kg"}:
+            patch[key] = float(np.array(value).item())
         elif key == "dr_config_type":
             patch[key] = str(np.array(value).item())
         elif key == "dr_applied_fields":
@@ -341,18 +351,34 @@ def sample_startup_domain_rand_patch(
     dr_config_type: str,
     dr_seed: int,
     base_body_id: int,
+    nominal_kp: np.ndarray | None = None,
+    nominal_kd: np.ndarray | None = None,
+    num_joints: int | None = None,
 ) -> dict:
     """Sample one portable startup DR patch for a MuJoCo model.
 
     This covers only the subset that maps directly onto the MuJoCo plant and
-    torque limits. Wrapper-level terms such as encoder bias, observation noise,
-    pushes, and PD-gain randomization are intentionally excluded.
+    torque limits plus the startup wrapper terms that affect the policy-facing
+    observation and control channels. Per-step observation noise and pushes are
+    still runtime env behavior and are intentionally excluded.
     """
+    joint_count = int(num_joints if num_joints is not None else mj_model.nu)
+    if nominal_kp is None:
+        nominal_kp = np.ones(joint_count, dtype=np.float64)
+    else:
+        nominal_kp = np.array(nominal_kp, copy=True, dtype=np.float64)
+    if nominal_kd is None:
+        nominal_kd = np.ones(joint_count, dtype=np.float64)
+    else:
+        nominal_kd = np.array(nominal_kd, copy=True, dtype=np.float64)
+
     patch = {
         "dr_enabled": bool(domain_rand_cfg.enable),
         "dr_config_type": str(dr_config_type),
         "dr_seed": int(dr_seed),
         "dr_applied_fields": np.array([], dtype="<U32"),
+        "dr_motor_strength_scale": 1.0,
+        "dr_added_mass_kg": 0.0,
         "dr_patch_geom_friction": mj_model.geom_friction.copy(),
         "dr_patch_body_mass": mj_model.body_mass.copy(),
         "dr_patch_body_ipos": mj_model.body_ipos.copy(),
@@ -362,6 +388,9 @@ def sample_startup_domain_rand_patch(
         "dr_patch_actuator_ctrlrange": mj_model.actuator_ctrlrange.copy(),
         "dr_patch_actuator_forcerange": mj_model.actuator_forcerange.copy(),
         "dr_torque_limits": mj_model.actuator_ctrlrange.copy(),
+        "dr_encoder_bias": np.zeros(joint_count, dtype=np.float64),
+        "dr_realized_kp": nominal_kp.copy(),
+        "dr_realized_kd": nominal_kd.copy(),
     }
 
     if not domain_rand_cfg.enable:
@@ -379,6 +408,7 @@ def sample_startup_domain_rand_patch(
     if lo != hi:
         added_mass = rng.uniform(lo, hi)
         patch["dr_patch_body_mass"][base_body_id] += added_mass
+        patch["dr_added_mass_kg"] = float(added_mass)
         applied_fields.append("body_mass")
 
     lo, hi = domain_rand_cfg.com_displacement_range
@@ -406,12 +436,30 @@ def sample_startup_domain_rand_patch(
         )
         applied_fields.append("dof_frictionloss")
 
+    lo, hi = domain_rand_cfg.encoder_bias_range
+    if lo != hi:
+        patch["dr_encoder_bias"] = rng.uniform(lo, hi, size=joint_count)
+        applied_fields.append("encoder_bias")
+
+    lo, hi = domain_rand_cfg.kp_scale_range
+    if lo != hi:
+        kp_scale = rng.uniform(lo, hi)
+        patch["dr_realized_kp"] = nominal_kp * kp_scale
+        applied_fields.append("kp")
+
+    lo, hi = domain_rand_cfg.kd_scale_range
+    if lo != hi:
+        kd_scale = rng.uniform(lo, hi)
+        patch["dr_realized_kd"] = nominal_kd * kd_scale
+        applied_fields.append("kd")
+
     lo, hi = domain_rand_cfg.motor_strength_range
     if lo != hi:
         motor_scale = rng.uniform(lo, hi)
         patch["dr_patch_actuator_ctrlrange"] *= motor_scale
         patch["dr_patch_actuator_forcerange"] *= motor_scale
         patch["dr_torque_limits"] = patch["dr_patch_actuator_ctrlrange"].copy()
+        patch["dr_motor_strength_scale"] = float(motor_scale)
         applied_fields.append("torque_limits")
 
     patch["dr_applied_fields"] = np.array(applied_fields, dtype="<U32")

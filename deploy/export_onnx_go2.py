@@ -29,8 +29,8 @@ SAC and TD3 use different actor structures in SB3:
       Inference: normalise(obs) -> latent_pi -> mu -> tanh()  -> actions
 
   TD3 actor:
-      actor.mu         - full network: Linear(45->256)->ReLU->Linear(256->256)
-                                       ->ReLU->Linear(256->12)->Tanh()
+      actor.mu         - full network: Linear(45->400)->ReLU->Linear(400->300)
+                                       ->ReLU->Linear(300->12)->Tanh()
                          (tanh is the last layer, already inside mu)
       Inference: normalise(obs) -> mu  -> actions   [tanh already applied]
 
@@ -137,8 +137,8 @@ class TD3ActorOnnxExporter(_BaseActorOnnxExporter):
     """Exports a SB3 TD3 actor to ONNX.
 
     TD3 actor structure (different from SAC!):
-        actor.mu  -  full network: Linear(45->256)->ReLU->Linear(256->256)
-                                   ->ReLU->Linear(256->12)->Tanh()
+        actor.mu  -  full network: Linear(45->400)->ReLU->Linear(400->300)
+                                   ->ReLU->Linear(300->12)->Tanh()
         There is NO latent_pi attribute; tanh is the last layer inside mu itself.
 
     Inference pipeline baked into ONNX:

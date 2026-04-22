@@ -46,7 +46,11 @@ from scipy.spatial.transform import Rotation
 from gym_quadruped.robot_cfgs import RobotConfig, get_robot_config
 from gym_quadruped.utils.mujoco.terrain import generate_terrain
 
-from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.domain_randomization import (
+    DomainRandomizationConfig,
+    apply_startup_domain_rand_patch as apply_startup_domain_rand_patch_to_model,
+    sample_startup_domain_rand_patch,
+)
 
 log = logging.getLogger(__name__)
 
@@ -100,6 +104,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         command_resample_interval: int = 250, # og 500
         # Domain randomization
         domain_rand_cfg: DomainRandomizationConfig | None = None,
+        apply_startup_domain_rand_on_init: bool = True,
         # Simplified reward mode (for MPC-injection training)
         simple_reward: bool = False,
     ):
@@ -158,6 +163,12 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Domain randomization configuration
         self.domain_rand_cfg = domain_rand_cfg or DomainRandomizationConfig()
+        self._apply_startup_domain_rand_on_init = apply_startup_domain_rand_on_init
+        self._startup_domain_rand_config_type = (
+            "custom" if self.domain_rand_cfg.enable else "disabled"
+        )
+        self._startup_domain_rand_seed = -1
+        self._startup_domain_rand_patch: dict | None = None
 
         # Simplified reward mode
         self.simple_reward = simple_reward
@@ -231,6 +242,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._nominal_dof_damping = self.mjModel.dof_damping.copy()
         self._nominal_dof_armature = self.mjModel.dof_armature.copy()
         self._nominal_dof_frictionloss = self.mjModel.dof_frictionloss.copy()
+        self._nominal_actuator_forcerange = self.mjModel.actuator_forcerange.copy()
         # Store base body ID for mass/CoM randomization
         # Go2 XML uses "base" as the root body; fall back to body ID 1 (first
         # non-world body) if lookup fails.
@@ -258,7 +270,13 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # episodes. Each parallel env gets different values. This matches
         # MjLab's "startup" event mode and is essential for SAC's replay
         # buffer consistency.
-        self._apply_startup_randomization()
+        if self._apply_startup_domain_rand_on_init:
+            self._apply_startup_randomization()
+        else:
+            self._startup_domain_rand_patch = self.export_startup_domain_rand_patch(
+                dr_config_type=self._startup_domain_rand_config_type,
+                dr_seed=self._startup_domain_rand_seed,
+            )
 
         # --- Define observation space (Dict: asymmetric actor-critic) -----
         # "policy" (actor): real-hardware-available sensors
@@ -1402,6 +1420,141 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     # Domain Randomization
     # =====================================================================
 
+    def restore_nominal_startup_domain_rand_state(self):
+        """Restore the saved nominal startup-randomization state."""
+        self.mjModel.geom_friction[:] = self._nominal_friction
+        self.mjModel.body_mass[:] = self._nominal_body_mass
+        self.mjModel.body_ipos[:] = self._nominal_body_ipos
+        self.mjModel.dof_damping[:] = self._nominal_dof_damping
+        self.mjModel.dof_armature[:] = self._nominal_dof_armature
+        self.mjModel.dof_frictionloss[:] = self._nominal_dof_frictionloss
+        self.mjModel.actuator_ctrlrange[:] = self._nominal_torque_limits
+        self.mjModel.actuator_forcerange[:] = self._nominal_actuator_forcerange
+        self.torque_limits = self._nominal_torque_limits.copy()
+        self.kp = self._nominal_kp.copy()
+        self.kd = self._nominal_kd.copy()
+        self._encoder_bias[:] = 0.0
+        self._motor_strength_scale = 1.0
+        mujoco.mj_forward(self.mjModel, self.mjData)
+
+    def sample_startup_domain_rand_bundle(
+        self,
+        *,
+        rng: np.random.RandomState,
+        dr_config_type: str,
+        dr_seed: int,
+    ) -> dict:
+        """Sample one deterministic startup-DR bundle from the env nominal state."""
+        self.restore_nominal_startup_domain_rand_state()
+        return sample_startup_domain_rand_patch(
+            self.mjModel,
+            self.domain_rand_cfg,
+            rng=rng,
+            dr_config_type=dr_config_type,
+            dr_seed=dr_seed,
+            base_body_id=self._base_body_id,
+            nominal_kp=self._nominal_kp,
+            nominal_kd=self._nominal_kd,
+            num_joints=self.num_joints,
+        )
+
+    def apply_startup_domain_rand_bundle(self, patch: dict | None):
+        """Apply a sampled startup-DR bundle, including wrapper-side terms."""
+        self.restore_nominal_startup_domain_rand_state()
+        if patch is None:
+            self._startup_domain_rand_config_type = "disabled"
+            self._startup_domain_rand_seed = -1
+            self._startup_domain_rand_patch = self.export_startup_domain_rand_patch(
+                dr_config_type=self._startup_domain_rand_config_type,
+                dr_seed=self._startup_domain_rand_seed,
+            )
+            return
+
+        self.torque_limits = apply_startup_domain_rand_patch_to_model(
+            self.mjModel,
+            self.mjData,
+            patch,
+        )
+        if "dr_encoder_bias" in patch:
+            self._encoder_bias = np.array(patch["dr_encoder_bias"], copy=True, dtype=np.float64)
+        if "dr_realized_kp" in patch:
+            self.kp = np.array(patch["dr_realized_kp"], copy=True, dtype=np.float64)
+        if "dr_realized_kd" in patch:
+            self.kd = np.array(patch["dr_realized_kd"], copy=True, dtype=np.float64)
+        if "dr_motor_strength_scale" in patch:
+            self._motor_strength_scale = float(np.array(patch["dr_motor_strength_scale"]).item())
+
+        mujoco.mj_forward(self.mjModel, self.mjData)
+        self._startup_domain_rand_config_type = str(
+            patch.get("dr_config_type", self._startup_domain_rand_config_type)
+        )
+        self._startup_domain_rand_seed = int(
+            np.array(patch.get("dr_seed", self._startup_domain_rand_seed)).item()
+        )
+        self._startup_domain_rand_patch = self.export_startup_domain_rand_patch(
+            dr_config_type=self._startup_domain_rand_config_type,
+            dr_seed=self._startup_domain_rand_seed,
+        )
+
+    def export_startup_domain_rand_patch(
+        self,
+        *,
+        dr_config_type: str | None = None,
+        dr_seed: int | None = None,
+    ) -> dict:
+        """Export the realized startup-DR bundle from the live env."""
+        applied_fields: list[str] = []
+
+        def _mark_if_changed(field_name: str, current: np.ndarray, nominal: np.ndarray):
+            if not np.allclose(current, nominal):
+                applied_fields.append(field_name)
+
+        _mark_if_changed("geom_friction", self.mjModel.geom_friction, self._nominal_friction)
+        _mark_if_changed("body_mass", self.mjModel.body_mass, self._nominal_body_mass)
+        _mark_if_changed("body_ipos", self.mjModel.body_ipos, self._nominal_body_ipos)
+        _mark_if_changed("dof_damping", self.mjModel.dof_damping, self._nominal_dof_damping)
+        _mark_if_changed("dof_armature", self.mjModel.dof_armature, self._nominal_dof_armature)
+        _mark_if_changed(
+            "dof_frictionloss",
+            self.mjModel.dof_frictionloss,
+            self._nominal_dof_frictionloss,
+        )
+        _mark_if_changed("torque_limits", self.torque_limits, self._nominal_torque_limits)
+        _mark_if_changed("kp", self.kp, self._nominal_kp)
+        _mark_if_changed("kd", self.kd, self._nominal_kd)
+        if not np.allclose(self._encoder_bias, 0.0):
+            applied_fields.append("encoder_bias")
+
+        added_mass_kg = float(
+            self.mjModel.body_mass[self._base_body_id]
+            - self._nominal_body_mass[self._base_body_id]
+        )
+        if dr_config_type is None:
+            dr_config_type = self._startup_domain_rand_config_type
+        if dr_seed is None:
+            dr_seed = self._startup_domain_rand_seed
+
+        return {
+            "dr_enabled": bool(self.domain_rand_cfg.enable),
+            "dr_config_type": str(dr_config_type),
+            "dr_seed": int(dr_seed),
+            "dr_applied_fields": np.array(applied_fields, dtype="<U32"),
+            "dr_motor_strength_scale": float(self._motor_strength_scale),
+            "dr_added_mass_kg": added_mass_kg,
+            "dr_patch_geom_friction": self.mjModel.geom_friction.copy(),
+            "dr_patch_body_mass": self.mjModel.body_mass.copy(),
+            "dr_patch_body_ipos": self.mjModel.body_ipos.copy(),
+            "dr_patch_dof_damping": self.mjModel.dof_damping.copy(),
+            "dr_patch_dof_armature": self.mjModel.dof_armature.copy(),
+            "dr_patch_dof_frictionloss": self.mjModel.dof_frictionloss.copy(),
+            "dr_patch_actuator_ctrlrange": self.mjModel.actuator_ctrlrange.copy(),
+            "dr_patch_actuator_forcerange": self.mjModel.actuator_forcerange.copy(),
+            "dr_torque_limits": self.torque_limits.copy(),
+            "dr_encoder_bias": self._encoder_bias.copy(),
+            "dr_realized_kp": self.kp.copy(),
+            "dr_realized_kd": self.kd.copy(),
+        }
+
     def _apply_startup_randomization(self):
         """Apply persistent physics randomization once at env creation.
 
@@ -1426,79 +1579,20 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         """
         dr = self.domain_rand_cfg
         if not dr.enable:
+            self._startup_domain_rand_config_type = "disabled"
+            self._startup_domain_rand_seed = -1
+            self._startup_domain_rand_patch = self.export_startup_domain_rand_patch(
+                dr_config_type=self._startup_domain_rand_config_type,
+                dr_seed=self._startup_domain_rand_seed,
+            )
             return
 
-        rng = self.np_random
-
-        # -- Friction randomization (absolute, MjLab operation="abs") ----
-        # Set tangential friction (column 0) to a random absolute value.
-        # Only column 0 is randomized, matching MjLab's default_axes=[0]
-        # for geom_friction.
-        lo, hi = dr.friction_range
-        if lo != hi:
-            friction_val = rng.uniform(lo, hi)
-            self.mjModel.geom_friction[:, 0] = friction_val
-
-        # -- Base mass randomization (payload variation) -----------------
-        lo, hi = dr.added_mass_range
-        if lo != hi:
-            added_mass = rng.uniform(lo, hi)
-            self.mjModel.body_mass[self._base_body_id] = (
-                self._nominal_body_mass[self._base_body_id] + added_mass
-            )
-
-        # -- Center-of-mass displacement (additive, per-axis) ------------
-        lo, hi = dr.com_displacement_range
-        if lo != hi:
-            com_disp = rng.uniform(lo, hi, size=3)
-            self.mjModel.body_ipos[self._base_body_id] = (
-                self._nominal_body_ipos[self._base_body_id] + com_disp
-            )
-
-        # -- Encoder bias (persistent calibration error) -----------------
-        lo, hi = dr.encoder_bias_range
-        if lo != hi:
-            self._encoder_bias = rng.uniform(lo, hi, size=self.num_joints)
-
-        # -- Joint damping randomization (multiplicative) ----------------
-        lo, hi = dr.joint_damping_scale_range
-        if lo != hi:
-            damping_scale = rng.uniform(lo, hi)
-            self.mjModel.dof_damping[:] = self._nominal_dof_damping * damping_scale
-
-        # -- Joint armature randomization (multiplicative) ---------------
-        lo, hi = dr.joint_armature_scale_range
-        if lo != hi:
-            armature_scale = rng.uniform(lo, hi)
-            self.mjModel.dof_armature[:] = self._nominal_dof_armature * armature_scale
-
-        # -- Joint Coulomb friction (absolute) ---------------------------
-        lo, hi = dr.joint_friction_range
-        if lo != hi:
-            joint_friction = rng.uniform(
-                lo, hi, size=self.mjModel.dof_frictionloss.shape
-            )
-            self.mjModel.dof_frictionloss[:] = joint_friction
-
-        # -- PD gain randomization (multiplicative) ----------------------
-        kp_lo, kp_hi = dr.kp_scale_range
-        kd_lo, kd_hi = dr.kd_scale_range
-        if kp_lo != kp_hi:
-            self.kp = self._nominal_kp * rng.uniform(kp_lo, kp_hi)
-        if kd_lo != kd_hi:
-            self.kd = self._nominal_kd * rng.uniform(kd_lo, kd_hi)
-
-        # -- Motor strength (torque limit, multiplicative) ---------------
-        lo, hi = dr.motor_strength_range
-        if lo != hi:
-            self._motor_strength_scale = rng.uniform(lo, hi)
-            self.torque_limits = (
-                self._nominal_torque_limits * self._motor_strength_scale
-            )
-
-        # Recompute derived quantities (center of mass, inertia, bias
-        # forces, etc.) after modifying model parameters.
-        mujoco.mj_forward(self.mjModel, self.mjData)
+        patch = self.sample_startup_domain_rand_bundle(
+            rng=self.np_random,
+            dr_config_type=self._startup_domain_rand_config_type,
+            dr_seed=self._startup_domain_rand_seed,
+        )
+        self.apply_startup_domain_rand_bundle(patch)
 
         log.info(
             "Startup DR applied: friction=%.3f, com_disp=%s, "
