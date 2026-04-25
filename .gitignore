@@ -234,3 +234,6 @@ deploy/robots/go2/build/
 
 # Ignore OpenAI Codex file
 .codex
+# Local/generated
+/.github/instructions/
+/data/quadruped_dr/
