@@ -325,7 +325,7 @@ class TestNominalPlantAlignment:
         assert geom_id >= 0, f"Geom '{geom_name}' not found"
         return model.geom_friction[geom_id].copy()
 
-    def test_no_dr_matches_generation_plant(self):
+    def test_no_dr_matches_generation_contact_plant(self):
         rl_env = QuadrupedVelocityTrackingEnv(
             robot="go2",
             scene="flat",
@@ -353,10 +353,13 @@ class TestNominalPlantAlignment:
                     self._geom_friction(mpc_env.mjModel, geom_name),
                 )
 
-            np.testing.assert_allclose(rl_env.mjModel.dof_damping, mpc_env.mjModel.dof_damping)
-            np.testing.assert_allclose(rl_env.mjModel.dof_armature, mpc_env.mjModel.dof_armature)
-            np.testing.assert_allclose(
-                rl_env.mjModel.dof_frictionloss, mpc_env.mjModel.dof_frictionloss
+            # The RL env now applies Go2 sysID joint dynamics at load time, so
+            # only the contact plant should match the nominal QuadrupedEnv.
+            assert not np.allclose(rl_env.mjModel.dof_damping, mpc_env.mjModel.dof_damping)
+            assert not np.allclose(rl_env.mjModel.dof_armature, mpc_env.mjModel.dof_armature)
+            assert not np.allclose(
+                rl_env.mjModel.dof_frictionloss,
+                mpc_env.mjModel.dof_frictionloss,
             )
             np.testing.assert_allclose(rl_env.mjModel.body_mass, mpc_env.mjModel.body_mass)
             np.testing.assert_allclose(rl_env.mjModel.geom_size, mpc_env.mjModel.geom_size)

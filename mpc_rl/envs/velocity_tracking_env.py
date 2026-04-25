@@ -51,6 +51,7 @@ from mpc_rl.envs.domain_randomization import (
     apply_startup_domain_rand_patch as apply_startup_domain_rand_patch_to_model,
     sample_startup_domain_rand_patch,
 )
+from mpc_rl.envs.go2_sysid import apply_go2_sysid_joint_dynamics
 
 log = logging.getLogger(__name__)
 
@@ -749,6 +750,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         scene_env.write(combined_scene_path)
 
         self.mjModel = mujoco.MjModel.from_xml_path(str(combined_scene_path.absolute()))
+        if self.robot_name.lower() == "go2":
+            apply_go2_sysid_joint_dynamics(self.mjModel)
         self.mjData = mujoco.MjData(self.mjModel)
 
         # Set simulation timestep

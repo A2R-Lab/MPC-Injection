@@ -201,6 +201,11 @@ export is numerically correct.
 Before touching the real robot, verify the ONNX policy drives the simulated
 Go2 correctly using the same MuJoCo environment it was trained in:
 
+`test_onnx_policy.py` uses the same Go2 simulator path as training/evaluation,
+including the runtime-applied sysID joint dynamics from `deploy/sys_id/report.html`.
+Domain randomization is disabled by default so this replay matches deterministic
+policy evaluation semantics.
+
 ```bash
 python deploy/test_onnx_policy.py \
     --onnx deploy/robots/go2/config/policy/velocity/v0/exported/policy.onnx

@@ -87,6 +87,7 @@ from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 # Register custom quadruped velocity tracking environment
 import mpc_rl.envs
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -219,7 +220,16 @@ _DOMAIN_RAND = flags.DEFINE_boolean(
 )
 _DOMAIN_RAND_CONFIG_TYPE = flags.DEFINE_enum(
     "domain_rand_config_type", "custom",
-    ["custom", "default", "default_no_push", "half_no_push", "quarter_no_push", "disabled"],
+    [
+        "custom",
+        "default",
+        "default_no_push",
+        "half_no_push",
+        "quarter_no_push",
+        "sysid_floor_only_no_push",
+        "sysid_floor_sensing_no_push",
+        "disabled",
+    ],
     "Named quadruped domain-randomization preset. "
     "'custom' preserves the legacy flag-driven behavior where only "
     "--domain_rand_obs_noise overrides the default config."
@@ -484,6 +494,8 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         "QuadrupedVelocityTracking-v0",
         **kwargs,
     )
+    if robot.lower() == "go2":
+        assert_go2_sysid_joint_dynamics(gym_env.unwrapped.mjModel)
     return gym_env
 
 

@@ -2,6 +2,7 @@
 #include "unitree_articulation.h"
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
+#include "velocity_command_source.h"
 
 State_RLBase::State_RLBase(int state_mode, std::string state_string)
 : FSMState(state_mode, state_string) 
@@ -14,6 +15,11 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
         std::make_shared<unitree::BaseArticulation<LowState_t::SharedPtr>>(FSMState::lowstate)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
+    const auto velocity_ranges = env->cfg["commands"]["base_velocity"]["ranges"];
+    VelocityCommandSource::instance().set_keyboard_limits(
+        velocity_ranges["lin_vel_x"][0].as<float>(),
+        velocity_ranges["lin_vel_x"][1].as<float>()
+    );
 
     this->registered_checks.emplace_back(
         std::make_pair(

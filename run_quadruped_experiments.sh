@@ -22,21 +22,23 @@ SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="True"
 DOMAIN_RAND="False"
 DOMAIN_RAND_OBS_NOISE=0.0
-DATA_DIR="data/quadruped/"
+#DATA_DIR="data/quadruped/"
+DATA_DIR="data/quadruped_dr/sysid_nominal/" # Misleading dir placement, doesn't have DR, just sys ID data
 BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4
 POLICY_DELAY=2
-BATCH_SIZE=256
+BATCH_SIZE=256 # 256 for sim, 512 for sim2real
 #LOG_DIR="logs/TD3-MPC-quadruped_x_vel_only_runs_min_rwrd/"
-LOG_DIR="logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_tiles_256/"
+#LOG_DIR="logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_tiles_256/"
+LOG_DIR="logs/SAC-MPC-quadruped_sysid_nominal/"
 
 # MPC percentage sweep values
 #PERCENTAGES=(0 25 50)
 PERCENTAGES=(25)
 
 # Seeds to sweep over
-#SEEDS=(100 150 200)
-SEEDS=(150)
+#SEEDS=(1 50)
+SEEDS=(100 150)
 
 # Additional checkpoint video evaluations to record during each run.
 # Bash arrays are space-separated; the script converts them to the

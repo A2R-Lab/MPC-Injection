@@ -18,6 +18,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.train import AllConfig, create_model, make_quadruped_env
 
 FLAGS = flags.FLAGS
@@ -103,3 +104,15 @@ def test_quadruped_td3_mpc_keeps_existing_architecture(quadruped_vec_env):
     actor_layers = _linear_layers(model.policy.actor.mu)
     assert [layer.in_features for layer in actor_layers] == [45, 400, 300]
     assert [layer.out_features for layer in actor_layers] == [400, 300, 12]
+
+
+def test_make_quadruped_env_go2_uses_sysid_joint_dynamics():
+    env = make_quadruped_env(
+        robot="go2",
+        domain_rand_cfg=DomainRandomizationConfig.disabled(),
+        simple_reward=False,
+    )
+    try:
+        assert_go2_sysid_joint_dynamics(env.unwrapped.mjModel)
+    finally:
+        env.close()

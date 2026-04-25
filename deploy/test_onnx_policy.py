@@ -58,6 +58,7 @@ import onnxruntime as ort
 import mpc_rl.envs  # register QuadrupedVelocityTracking-v0
 from stable_baselines3.common.vec_env import DummyVecEnv
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 
 # =============================================================================
 # GLFW key codes (identical to play_quad.py)
@@ -141,7 +142,12 @@ def load_sb3_model(model_zip: Path, vecnorm_pkl: Path):
     algo_cls = SAC if algo == "SAC" else TD3
 
     # Need a dummy env to load VecNormalize; we only use it for obs_rms stats
-    dummy_env = gym.make("QuadrupedVelocityTracking-v0", robot="go2")
+    dummy_env = gym.make(
+        "QuadrupedVelocityTracking-v0",
+        robot="go2",
+        domain_rand_cfg=DomainRandomizationConfig.disabled(),
+    )
+    assert_go2_sysid_joint_dynamics(dummy_env.unwrapped.mjModel)
     dummy_vec = DummyVecEnv([lambda: dummy_env])
     vec_norm = VecNormalize.load(str(vecnorm_pkl), dummy_vec)
     vec_norm.training = False
@@ -239,6 +245,9 @@ def main():
         domain_rand_cfg=domain_rand_cfg,
     )
     env_base = env_wrapped.unwrapped
+    if args.robot.lower() == "go2":
+        assert_go2_sysid_joint_dynamics(env_base.mjModel)
+        print("Verified Go2 sysID joint dynamics in the ONNX simulation environment.")
     vec_env = DummyVecEnv([lambda: env_wrapped])
     print(
         "Domain randomization during ONNX replay: "

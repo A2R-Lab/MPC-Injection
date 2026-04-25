@@ -55,8 +55,11 @@ STARTUP_DOMAIN_RAND_PRESET_NAMES = (
     "default_no_push",
     "half_no_push",
     "quarter_no_push",
+    "sysid_floor_only_no_push",
+    "sysid_floor_sensing_no_push",
     "disabled",
 )
+FLOOR_FRICTION_TARGET_GEOM_NAMES = ("ground", "floor", "hfield", "terrain")
 STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS = (
     "dr_patch_geom_friction",
     "dr_patch_body_mass",
@@ -110,6 +113,10 @@ class DomainRandomizationConfig:
         friction_range: (min, max) absolute range for geom_friction[:, 0]
             (tangential friction). Matches MjLab operation="abs".
             (0.0, 0.0) disables.
+        friction_target_geom_names: Optional tuple of geom names whose
+            tangential friction should be randomized. ``None`` means apply to
+            every geom for backward compatibility. The sysID-aware presets use
+            this to randomize floor/contact-surface geoms only.
         added_mass_range: (min, max) kg added to the base body mass.
             Simulates payload variation. (0.0, 0.0) disables.
         com_displacement_range: (min, max) meters displacement added to
@@ -161,6 +168,7 @@ class DomainRandomizationConfig:
     # Default ranges match MjLab Go2: friction + COM + encoder bias enabled;
     # mass, damping, armature, joint friction, gains, motor strength disabled.
     friction_range: tuple[float, float] = (0.3, 1.2)
+    friction_target_geom_names: tuple[str, ...] | None = None
     added_mass_range: tuple[float, float] = (0.0, 0.0)
     com_displacement_range: tuple[float, float] = (-0.05, 0.05)
     encoder_bias_range: tuple[float, float] = (-0.015, 0.015)
@@ -203,6 +211,52 @@ class DomainRandomizationConfig:
     def default_no_push(cls) -> DomainRandomizationConfig:
         """Create the default config with external perturbations disabled."""
         return cls(push_robots=False)
+
+    @classmethod
+    def sysid_floor_only_no_push(cls) -> DomainRandomizationConfig:
+        """Randomize floor friction only, leaving sysID'd dynamics untouched."""
+        default_cfg = cls.default_no_push()
+        return cls(
+            friction_range=default_cfg.friction_range,
+            friction_target_geom_names=FLOOR_FRICTION_TARGET_GEOM_NAMES,
+            added_mass_range=(0.0, 0.0),
+            com_displacement_range=(0.0, 0.0),
+            encoder_bias_range=(0.0, 0.0),
+            kp_scale_range=default_cfg.kp_scale_range,
+            kd_scale_range=default_cfg.kd_scale_range,
+            joint_damping_scale_range=default_cfg.joint_damping_scale_range,
+            joint_armature_scale_range=default_cfg.joint_armature_scale_range,
+            joint_friction_range=default_cfg.joint_friction_range,
+            motor_strength_range=default_cfg.motor_strength_range,
+            obs_noise_level=0.0,
+            obs_noise_scales=default_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=default_cfg.push_interval_range_s,
+            push_velocity_ranges=default_cfg.push_velocity_ranges.copy(),
+        )
+
+    @classmethod
+    def sysid_floor_sensing_no_push(cls) -> DomainRandomizationConfig:
+        """Randomize floor friction and sensing, leaving sysID'd dynamics fixed."""
+        default_cfg = cls.default_no_push()
+        return cls(
+            friction_range=default_cfg.friction_range,
+            friction_target_geom_names=FLOOR_FRICTION_TARGET_GEOM_NAMES,
+            added_mass_range=(0.0, 0.0),
+            com_displacement_range=(0.0, 0.0),
+            encoder_bias_range=default_cfg.encoder_bias_range,
+            kp_scale_range=default_cfg.kp_scale_range,
+            kd_scale_range=default_cfg.kd_scale_range,
+            joint_damping_scale_range=default_cfg.joint_damping_scale_range,
+            joint_armature_scale_range=default_cfg.joint_armature_scale_range,
+            joint_friction_range=default_cfg.joint_friction_range,
+            motor_strength_range=default_cfg.motor_strength_range,
+            obs_noise_level=default_cfg.obs_noise_level,
+            obs_noise_scales=default_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=default_cfg.push_interval_range_s,
+            push_velocity_ranges=default_cfg.push_velocity_ranges.copy(),
+        )
 
     @staticmethod
     def _scaled_range(
@@ -280,6 +334,8 @@ class DomainRandomizationConfig:
             "default_no_push": cls.default_no_push,
             "half_no_push": cls.half_no_push,
             "quarter_no_push": cls.quarter_no_push,
+            "sysid_floor_only_no_push": cls.sysid_floor_only_no_push,
+            "sysid_floor_sensing_no_push": cls.sysid_floor_sensing_no_push,
             "disabled": cls.disabled,
         }
         try:
@@ -298,6 +354,9 @@ class DomainRandomizationConfig:
     @classmethod
     def from_dict(cls, d: dict) -> DomainRandomizationConfig:
         """Deserialize from dict."""
+        if "friction_target_geom_names" in d and d["friction_target_geom_names"] is not None:
+            d = dict(d)
+            d["friction_target_geom_names"] = tuple(d["friction_target_geom_names"])
         return cls(**d)
 
 
@@ -341,6 +400,31 @@ def extract_startup_domain_rand_patch(source) -> dict | None:
     if not patch:
         return None
     return patch
+
+
+def _resolve_friction_target_geom_ids(
+    mj_model: mujoco.MjModel,
+    target_geom_names: tuple[str, ...] | None,
+) -> np.ndarray:
+    """Resolve the geom IDs whose friction should be randomized."""
+    if target_geom_names is None:
+        return np.arange(mj_model.ngeom, dtype=np.int32)
+
+    normalized_targets = {name.lower() for name in target_geom_names}
+    target_geom_ids = []
+    for geom_id in range(mj_model.ngeom):
+        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+        if geom_name and geom_name.lower() in normalized_targets:
+            target_geom_ids.append(geom_id)
+
+    if not target_geom_ids:
+        targets = ", ".join(sorted(normalized_targets))
+        raise ValueError(
+            "Could not resolve any target geoms for friction randomization. "
+            f"Requested names: {targets}"
+        )
+
+    return np.asarray(target_geom_ids, dtype=np.int32)
 
 
 def sample_startup_domain_rand_patch(
@@ -400,8 +484,12 @@ def sample_startup_domain_rand_patch(
 
     lo, hi = domain_rand_cfg.friction_range
     if lo != hi:
+        friction_geom_ids = _resolve_friction_target_geom_ids(
+            mj_model,
+            domain_rand_cfg.friction_target_geom_names,
+        )
         friction_val = rng.uniform(lo, hi)
-        patch["dr_patch_geom_friction"][:, 0] = friction_val
+        patch["dr_patch_geom_friction"][friction_geom_ids, 0] = friction_val
         applied_fields.append("geom_friction")
 
     lo, hi = domain_rand_cfg.added_mass_range

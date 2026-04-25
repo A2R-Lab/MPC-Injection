@@ -5,6 +5,7 @@
 #include "FSM/BaseState.h"
 #include "isaaclab/devices/keyboard/keyboard.h"
 #include "unitree_joystick_dsl.hpp"
+#include "velocity_command_source.h"
 
 class FSMState : public BaseState
 {
@@ -56,7 +57,10 @@ public:
     void pre_run()
     {
         lowstate->update();
-        if(keyboard) keyboard->update();
+        if(keyboard) {
+            keyboard->update();
+            VelocityCommandSource::instance().update_from_keyboard(*keyboard);
+        }
     }
 
     void post_run()

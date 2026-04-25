@@ -20,7 +20,6 @@ jax.config.update(
 import mpx.config.config_go2 as config
 import mpx.utils.mpc_wrapper as mpc_wrapper
 from mpc_rl.envs.domain_randomization import (
-    DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
     STARTUP_DOMAIN_RAND_PRESET_NAMES,
     resolve_startup_domain_rand_config,
 )
@@ -33,6 +32,9 @@ try:
 except RuntimeError:
     gpu_device = jax.devices("cpu")[0]
 jax.default_device(gpu_device)
+
+
+DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET = "sysid_floor_only_no_push"
 
 
 def _configure_mpc_duty_factor(commands: np.ndarray, mpc) -> float:
@@ -127,7 +129,30 @@ def _rollout_control_step_with_torques(
     return next_obs, float(reward), bool(terminated), info, viewer_closed
 
 
-def _summarize_dr_bundle(base_body_id: int, dr_bundle: dict) -> dict:
+def _select_summary_geom_friction(
+    mj_model: mujoco.MjModel,
+    geom_friction: np.ndarray,
+    target_geom_names: tuple[str, ...] | None,
+) -> float:
+    """Pick the friction value that best represents startup friction DR."""
+    if target_geom_names is None:
+        return float(geom_friction[0, 0])
+
+    normalized_targets = {name.lower() for name in target_geom_names}
+    for geom_id in range(mj_model.ngeom):
+        geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+        if geom_name and geom_name.lower() in normalized_targets:
+            return float(geom_friction[geom_id, 0])
+
+    return float(geom_friction[0, 0])
+
+
+def _summarize_dr_bundle(
+    base_body_id: int,
+    dr_bundle: dict,
+    *,
+    summary_geom_friction: float,
+) -> dict:
     """Create a compact JSON-serializable DR summary for the manifest."""
     encoder_bias = np.asarray(dr_bundle["dr_encoder_bias"], dtype=np.float64)
     return {
@@ -137,7 +162,7 @@ def _summarize_dr_bundle(base_body_id: int, dr_bundle: dict) -> dict:
         "dr_applied_fields": [str(field) for field in dr_bundle["dr_applied_fields"].tolist()],
         "dr_added_mass_kg": float(dr_bundle["dr_added_mass_kg"]),
         "dr_motor_strength_scale": float(dr_bundle["dr_motor_strength_scale"]),
-        "geom_friction": float(dr_bundle["dr_patch_geom_friction"][0, 0]),
+        "geom_friction": float(summary_geom_friction),
         "base_ipos": dr_bundle["dr_patch_body_ipos"][base_body_id].tolist(),
         "encoder_bias_min": float(np.min(encoder_bias)),
         "encoder_bias_max": float(np.max(encoder_bias)),
@@ -147,7 +172,7 @@ def _summarize_dr_bundle(base_body_id: int, dr_bundle: dict) -> dict:
 def generate_trajectory(
     seed,
     *,
-    domain_rand_config_type=DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
+    domain_rand_config_type=DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET,
     dr_seed_offset=1_000_000,
     mpc=None,
     episode_length=1000,
@@ -365,6 +390,12 @@ def generate_trajectory(
             status = "FELL" if fell else ("INCOMPLETE" if completed_control_steps < episode_length else "OK")
             print(f"  [Seed {seed}] Done [{status}]. Avg MPC solve: {avg_solve*1000:.1f}ms")
 
+        dr_summary_geom_friction = _select_summary_geom_friction(
+            env.mjModel,
+            np.asarray(dr_bundle["dr_patch_geom_friction"], dtype=np.float64),
+            env.domain_rand_cfg.friction_target_geom_names,
+        )
+
         return {
             "qpos": qpos_traj,
             "qvel": qvel_traj,
@@ -384,6 +415,7 @@ def generate_trajectory(
             "seed": seed,
             "dr_seed": dr_seed,
             "base_body_id": int(env._base_body_id),
+            "dr_summary_geom_friction": float(dr_summary_geom_friction),
             "default_joint_pos": env.default_joint_pos.copy(),
             "action_scale": float(env.action_scale),
             "sim_dt": float(env.sim_dt),
@@ -416,7 +448,7 @@ def gen_traj_quadruped_dr(
     max_attempts=None,
     verbose=1,
     render=False,
-    domain_rand_config_type=DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
+    domain_rand_config_type=DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET,
     dr_seed_offset=1_000_000,
     manifest_filename="generation_manifest.jsonl",
     mpc=None,
@@ -505,6 +537,7 @@ def gen_traj_quadruped_dr(
             "dr_summary": _summarize_dr_bundle(
                 int(traj_data["base_body_id"]),
                 extract_dr_bundle_from_traj(traj_data),
+                summary_geom_friction=float(traj_data["dr_summary_geom_friction"]),
             ),
         }
         _append_manifest_record(manifest_path, manifest_record)
@@ -594,7 +627,7 @@ def main():
     parser.add_argument(
         "--domain-rand-config-type",
         type=str,
-        default=DEFAULT_STARTUP_DOMAIN_RAND_PRESET,
+        default=DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET,
         choices=STARTUP_DOMAIN_RAND_PRESET_NAMES,
         help="Startup domain-randomization preset to apply to each trajectory",
     )
