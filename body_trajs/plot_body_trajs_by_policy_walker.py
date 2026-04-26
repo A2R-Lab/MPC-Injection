@@ -700,7 +700,7 @@ def plot_right_foot_position(dir1: Path, dir2: Path, checkpoints=[25000, 100000,
 
 if __name__ == "__main__":
     # Define directories for trajectory data
-    base_dir = Path(__file__).parent / "model_traj_data"
+    base_dir = Path(__file__).parent / "model_traj_data_walker"
     dir1 = base_dir / "walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
     dir2 = base_dir / "walker-walk-SAC-MPC-20260107-112659-percentage-25pct"
     

@@ -218,7 +218,8 @@ def main() -> None:
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 10), constrained_layout=True)
     fig.suptitle(
-        f"Quadruped Foot Trajectories ({args.frame}-frame)\n{trajectory_path.name}",
+        #f"Quadruped Foot Trajectories ({args.frame}-frame)\n{trajectory_path.name}",
+        "Quadruped Foot Trajectories",
         fontsize=FONT_SIZE + 2,
         fontweight="bold",
     )

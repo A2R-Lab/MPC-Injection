@@ -256,6 +256,8 @@ MPC-RL/
 │   ├── plot_torque_trajs_quadruped.py
 │   ├── plot_tsne_state_distr_by_policy_walker.py
 │   ├── plot_umap_state_distr_by_policy_walker.py
+│   ├── plot_box_body_trajs_by_policy_walker.py
+│   ├── plot_torque_cdf_quadruped.py
 │   ├── record_body_trajs_by_policy_quadruped.py
 │   └── record_body_trajs_by_policy_walker.py
 ├── data/                            # MPC trajectory datasets consumed by SAC-MPC / TD3-MPC runs
@@ -324,6 +326,7 @@ MPC-RL/
     ├── cnvrt_mjcf_to_urdf.py
     ├── plot_footsteps_n_rewards_quadruped.py
     ├── plot_footsteps_n_rewards_walker.py
+    ├── plot_footsteps_walker.py
     ├── viser_figs/                  # Saved visualization figures
     ├── viser_quadruped_viz_trajs.py
     ├── viser_tutorials.py
@@ -338,10 +341,13 @@ Plotting entry points currently used in this repo:
   - `body_trajs/plot_body_trajs_by_policy_walker.py`
   - `body_trajs/plot_tsne_state_distr_by_policy_walker.py`
   - `body_trajs/plot_umap_state_distr_by_policy_walker.py`
+  - `body_trajs/plot_box_body_trajs_by_policy_walker.py`
+  - `body_trajs/plot_torque_cdf_quadruped.py`
   - `utils/plot_train_pct_comparisons_quadruped.py`
   - `utils/plot_train_pct_comparisons_walker.py`
   - `viser/plot_footsteps_n_rewards_quadruped.py`
   - `viser/plot_footsteps_n_rewards_walker.py`
+  - `viser/plot_footsteps_walker.py`
   - `reward_surfaces/scripts/plot_plane.py`
   - `reward_surfaces/scripts/replot_from_data.py`
 - Bash plotting pipelines:

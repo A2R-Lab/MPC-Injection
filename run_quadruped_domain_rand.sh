@@ -22,26 +22,21 @@ ALGORITHM="SAC-MPC"
 TOTAL_TIMESTEPS=1000000
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
-SAVE_REPLAY_BUFFER_FINAL="True"
+SAVE_REPLAY_BUFFER_FINAL="False"
 DOMAIN_RAND="True"
-DOMAIN_RAND_CONFIG_TYPE="sysid_floor_sensing_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
+DOMAIN_RAND_CONFIG_TYPE="default_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
-DATA_DIR="data/quadruped_dr/sysid_floor_sensing_no_push/"
+DATA_DIR="data/quadruped_dr/default_no_push/"
 BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4
 POLICY_DELAY=2
 BATCH_SIZE=512 # Increasing batch size cuz of DR from 256, doesn't really change much
-LOG_DIR="logs/quadruped_domain_rand_mpc_sys_id/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+LOG_DIR="logs/quadruped_domain_rand_mpc_sys_id/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-enable_penalties/"
 
 # Sweep dimensions
-#NUM_ENVS_SWEEP=(4 8 16 32 64 128 256)
-#NUM_ENVS_SWEEP=(256 128 64 32 16 8 4)
-#NUM_ENVS_SWEEP=(256 512)
-NUM_ENVS_SWEEP=(32)
-#PERCENTAGES=(25)
+NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(25)
-#SEEDS=(1 50)
 SEEDS=(100 150 200)
 
 # Optional checkpoint videos during training
