@@ -218,9 +218,9 @@ def main() -> None:
         if not trajectory_path.exists():
             raise FileNotFoundError(f"Trajectory file not found: {trajectory_path}")
 
-    fig, ax = plt.subplots(figsize=(13, 7), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(6.6, 4.6), constrained_layout=True)
     fig.suptitle(
-        "Quadruped Average Motor Torque Magnitude CDF",
+        "Quadruped Average Motor Torque\nMagnitude CDF",
         fontweight="bold",
     )
 
@@ -233,7 +233,7 @@ def main() -> None:
         ax.plot(
             x_axis,
             cdf,
-            linewidth=2.4,
+            linewidth=2.0,
             alpha=0.95,
             label=label,
             color=make_trajectory_color(trajectory_path),
@@ -243,6 +243,7 @@ def main() -> None:
     ax.set_xlabel("Average Motor Torque Magnitude (Nm)")
     ax.set_ylabel("Empirical CDF")
     ax.set_ylim(0.0, 1.01)
+    ax.margins(x=0.01, y=0.02)
     ax.tick_params(axis="both")
     ax.grid(True, alpha=0.25)
     ax.legend(loc="lower right")

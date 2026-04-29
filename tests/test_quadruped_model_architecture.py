@@ -47,6 +47,7 @@ def _build_cfg(algorithm: str) -> AllConfig:
         num_traj=10,
         random_select=True,
         data_dir="",
+        use_go2_sysid=True,
     )
 
 
@@ -114,5 +115,19 @@ def test_make_quadruped_env_go2_uses_sysid_joint_dynamics():
     )
     try:
         assert_go2_sysid_joint_dynamics(env.unwrapped.mjModel)
+    finally:
+        env.close()
+
+
+def test_make_quadruped_env_go2_can_disable_sysid_joint_dynamics():
+    env = make_quadruped_env(
+        robot="go2",
+        domain_rand_cfg=DomainRandomizationConfig.disabled(),
+        simple_reward=False,
+        use_go2_sysid=False,
+    )
+    try:
+        with pytest.raises(AssertionError, match="Go2 sysID joint dynamics"):
+            assert_go2_sysid_joint_dynamics(env.unwrapped.mjModel)
     finally:
         env.close()

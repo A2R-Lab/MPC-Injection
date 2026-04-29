@@ -1,8 +1,8 @@
 """Shared Go2 system-identification utilities.
 
-This module stores the authoritative per-joint dynamics identified in
-``deploy/sys_id/report.html`` and exposes helpers to apply them to any MuJoCo
-Go2 model at runtime.
+This module stores the authoritative per-joint Go2 dynamics used at runtime.
+``deploy/sys_id/report.html`` can still be parsed for diagnostics/comparison,
+but the in-code table below is the source of truth applied to MuJoCo models.
 """
 
 from __future__ import annotations
@@ -16,64 +16,64 @@ import numpy as np
 
 GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS: dict[str, dict[str, float]] = {
     "FL_calf_joint": {
-        "armature": 0.0424,
-        "damping": 0.3302,
-        "frictionloss": 0.7393,
+        "armature": 0.05503,
+        "damping": 0.25566,
+        "frictionloss": 0.75721,
     },
     "FL_hip_joint": {
-        "armature": 0.0114,
-        "damping": 0.1791,
-        "frictionloss": 0.1788,
+        "armature": 0.02185,
+        "damping": 0.18725,
+        "frictionloss": 0.16357,
     },
     "FL_thigh_joint": {
-        "armature": 0.0168,
-        "damping": 0.1223,
-        "frictionloss": 0.2243,
+        "armature": 0.02054,
+        "damping": 0.14233,
+        "frictionloss": 0.19852,
     },
     "FR_calf_joint": {
-        "armature": 0.0429,
-        "damping": 0.3372,
-        "frictionloss": 0.5988,
+        "armature": 0.05187,
+        "damping": 0.38696,
+        "frictionloss": 0.47081,
     },
     "FR_hip_joint": {
-        "armature": 0.0120,
-        "damping": 0.1755,
-        "frictionloss": 0.2014,
+        "armature": 0.01492,
+        "damping": 0.19892,
+        "frictionloss": 0.17732,
     },
     "FR_thigh_joint": {
-        "armature": 0.0173,
-        "damping": 0.1377,
-        "frictionloss": 0.1609,
+        "armature": 0.01977,
+        "damping": 0.19244,
+        "frictionloss": 0.11119,
     },
     "RL_calf_joint": {
-        "armature": 0.0438,
-        "damping": 0.3472,
-        "frictionloss": 0.6733,
+        "armature": 0.04868,
+        "damping": 0.38571,
+        "frictionloss": 0.49355,
     },
     "RL_hip_joint": {
-        "armature": 0.0139,
-        "damping": 0.1400,
-        "frictionloss": 0.2245,
+        "armature": 0.01868,
+        "damping": 0.16277,
+        "frictionloss": 0.20571,
     },
     "RL_thigh_joint": {
-        "armature": 0.0163,
-        "damping": 0.1450,
-        "frictionloss": 0.2036,
+        "armature": 0.01846,
+        "damping": 0.20079,
+        "frictionloss": 0.16541,
     },
     "RR_calf_joint": {
-        "armature": 0.0441,
-        "damping": 0.3226,
-        "frictionloss": 0.7133,
+        "armature": 0.05814,
+        "damping": 0.32402,
+        "frictionloss": 0.56960,
     },
     "RR_hip_joint": {
-        "armature": 0.0094,
-        "damping": 0.1578,
-        "frictionloss": 0.2662,
+        "armature": 0.01441,
+        "damping": 0.19973,
+        "frictionloss": 0.23245,
     },
     "RR_thigh_joint": {
-        "armature": 0.0171,
-        "damping": 0.1469,
-        "frictionloss": 0.1628,
+        "armature": 0.02045,
+        "damping": 0.19029,
+        "frictionloss": 0.12384,
     },
 }
 
@@ -96,7 +96,7 @@ def get_go2_sysid_report_path() -> Path:
 def parse_go2_sysid_report(
     report_path: str | Path | None = None,
 ) -> dict[str, dict[str, float]]:
-    """Parse the authoritative Go2 joint-dynamics table from ``report.html``."""
+    """Parse the Go2 joint-dynamics table from ``report.html``."""
     path = Path(report_path) if report_path is not None else get_go2_sysid_report_path()
     rows = _GO2_SYSID_REPORT_PATTERN.findall(path.read_text(encoding="utf-8"))
     joint_dynamics: dict[str, dict[str, float]] = {}

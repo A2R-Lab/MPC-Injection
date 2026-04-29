@@ -17,7 +17,7 @@ import numpy as np
 from scipy.interpolate import interp1d
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-FONT_SIZE = 18
+FONT_SIZE = 24
 RBG_COLORS = ["#d62728", "#1f77b4", "#2ca02c"]
 
 plt.rcParams.update(
@@ -415,7 +415,7 @@ def plot_multiple_experiments(
     plt.xlabel("Training Steps", fontsize=FONT_SIZE)
     plt.ylabel("Episode Reward Mean", fontsize=FONT_SIZE)
 
-    title_text = f"Training Performance - {title_suffix}"
+    title_text = f"{title_suffix}"
     title_text += f" (±{std_scale}σ)" if std_scale != 1.0 else " (±1σ)"
     plt.title(title_text, fontsize=FONT_SIZE + 2, fontweight="bold")
     plt.legend(loc="best", fontsize=FONT_SIZE - 4, ncol=2)

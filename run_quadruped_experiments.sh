@@ -22,6 +22,7 @@ SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="True"
 DOMAIN_RAND="False"
 DOMAIN_RAND_OBS_NOISE=0.0
+USE_GO2_SYSID="True"
 #DATA_DIR="data/quadruped/"
 DATA_DIR="data/quadruped_dr/sysid_nominal/" # Misleading dir placement, doesn't have DR, just sys ID data
 BUFFER_SIZE=5000000
@@ -58,6 +59,7 @@ echo "Save replay buffer checkpoints: ${SAVE_REPLAY_BUFFER_CHECKPOINTS}"
 echo "Save replay buffer final: ${SAVE_REPLAY_BUFFER_FINAL}"
 echo "Domain randomization: ${DOMAIN_RAND}"
 echo "Domain randomization obs noise: ${DOMAIN_RAND_OBS_NOISE}"
+echo "Go2 sysID joint dynamics: ${USE_GO2_SYSID}"
 echo "Data directory: ${DATA_DIR}"
 echo "Buffer size: ${BUFFER_SIZE}"
 echo "Learning rate: ${LEARNING_RATE}"
@@ -93,6 +95,7 @@ for seed in "${SEEDS[@]}"; do
             --save_replay_buffer_final="${SAVE_REPLAY_BUFFER_FINAL}" \
             --domain_rand="${DOMAIN_RAND}" \
             --domain_rand_obs_noise="${DOMAIN_RAND_OBS_NOISE}" \
+            --use_go2_sysid="${USE_GO2_SYSID}" \
             --data_dir="${DATA_DIR}" \
             --buffer_size="${BUFFER_SIZE}" \
             --learning_rate="${LEARNING_RATE}" \

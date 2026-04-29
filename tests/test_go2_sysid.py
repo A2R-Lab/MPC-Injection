@@ -122,6 +122,19 @@ class TestGo2SysIdIntegration:
         finally:
             env.close()
 
+    def test_velocity_tracking_env_can_disable_identified_nominal_dynamics(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig.disabled(),
+            use_go2_sysid=False,
+        )
+        try:
+            with pytest.raises(AssertionError, match="Go2 sysID joint dynamics"):
+                assert_go2_sysid_joint_dynamics(env.mjModel)
+        finally:
+            env.close()
+
     def test_mpx_wrapper_uses_identified_joint_dynamics(self):
         controller = MPCControllerWrapper(go2_config)
 
@@ -129,6 +142,16 @@ class TestGo2SysIdIntegration:
         for joint_name in representative_joints:
             assert _joint_dynamics(controller.model, joint_name) == pytest.approx(
                 GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS[joint_name]
+            )
+
+    def test_mpx_wrapper_can_disable_identified_joint_dynamics(self):
+        raw_model = mujoco.MjModel.from_xml_path(str(go2_config.model_path))
+        controller = MPCControllerWrapper(go2_config, use_go2_sysid=False)
+
+        representative_joints = ("FL_hip_joint", "FR_thigh_joint", "RR_calf_joint")
+        for joint_name in representative_joints:
+            assert _joint_dynamics(controller.model, joint_name) == pytest.approx(
+                _joint_dynamics(raw_model, joint_name)
             )
 
 

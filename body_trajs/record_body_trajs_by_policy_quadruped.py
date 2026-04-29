@@ -108,7 +108,14 @@ def detect_algorithm(run_dir: Path, config: dict) -> str:
     raise ValueError(f"Could not detect algorithm for run: {run_dir}")
 
 
-def build_quadruped_env(*, robot: str, simple_reward: bool):
+def resolve_use_go2_sysid(config: dict, cli_override: bool | None) -> bool:
+    """Resolve the saved Go2 sysID setting, defaulting to the current behavior."""
+    if cli_override is not None:
+        return cli_override
+    return bool(config.get("use_go2_sysid", True))
+
+
+def build_quadruped_env(*, robot: str, simple_reward: bool, use_go2_sysid: bool):
     """Create the nominal non-domain-randomized quadruped env."""
     return gym.make(
         "QuadrupedVelocityTracking-v0",
@@ -116,13 +123,20 @@ def build_quadruped_env(*, robot: str, simple_reward: bool):
         render_mode=None,
         domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
         simple_reward=simple_reward,
+        use_go2_sysid=use_go2_sysid,
     )
 
 
-def make_model_env(*, robot: str, simple_reward: bool):
+def make_model_env(*, robot: str, simple_reward: bool, use_go2_sysid: bool):
     """Create the VecEnv used only for model loading / observation normalization."""
     return DummyVecEnv(
-        [lambda: build_quadruped_env(robot=robot, simple_reward=simple_reward)]
+        [
+            lambda: build_quadruped_env(
+                robot=robot,
+                simple_reward=simple_reward,
+                use_go2_sysid=use_go2_sysid,
+            )
+        ]
     )
 
 
@@ -132,10 +146,15 @@ def load_model_and_vecnormalize(
     *,
     algorithm: str,
     robot: str,
+    use_go2_sysid: bool,
 ):
     """Load a saved quadruped policy checkpoint plus VecNormalize stats."""
     simple_reward = algorithm in {"SAC-MPC", "TD3-MPC"}
-    vec_env = make_model_env(robot=robot, simple_reward=simple_reward)
+    vec_env = make_model_env(
+        robot=robot,
+        simple_reward=simple_reward,
+        use_go2_sysid=use_go2_sysid,
+    )
 
     vecnormalize_path = run_dir / "checkpoints" / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
     model_path = run_dir / "checkpoints" / f"model_{checkpoint_step}_steps.zip"
@@ -229,10 +248,15 @@ def rollout_one_policy_episode(
     command_vx: float,
     command_vy: float,
     command_wz: float,
+    use_go2_sysid: bool,
 ) -> dict:
     """Run one rollout with exact manual stepping and rich trajectory capture."""
     simple_reward = algorithm in {"SAC-MPC", "TD3-MPC"}
-    rollout_env = build_quadruped_env(robot=robot, simple_reward=simple_reward).unwrapped
+    rollout_env = build_quadruped_env(
+        robot=robot,
+        simple_reward=simple_reward,
+        use_go2_sysid=use_go2_sysid,
+    ).unwrapped
     rollout_env.reset(seed=seed)
     rollout_env.set_commands(vx=command_vx, vy=command_vy, wz=command_wz)
     rollout_env.assert_generation_contact_friction_matches()
@@ -528,6 +552,19 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_COMMAND_WZ,
         help=f"Fixed commanded yaw rate in rad/s. Default: {DEFAULT_COMMAND_WZ}",
     )
+    parser.add_argument(
+        "--use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_true",
+        default=None,
+        help="Force-enable the Go2 sysID joint-dynamics patch for rollout replay.",
+    )
+    parser.add_argument(
+        "--no_use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_false",
+        help="Force-disable the Go2 sysID joint-dynamics patch for rollout replay.",
+    )
     return parser.parse_args()
 
 
@@ -536,6 +573,7 @@ def main():
     run_dir = resolve_run_dir(args.run_dir)
     config = load_config(run_dir)
     algorithm = detect_algorithm(run_dir, config)
+    use_go2_sysid = resolve_use_go2_sysid(config, args.use_go2_sysid)
     checkpoints = list(
         range(args.start_checkpoint, args.end_checkpoint + 1, args.checkpoint_step)
     )
@@ -550,6 +588,7 @@ def main():
     )
     print(f"Algorithm: {algorithm}")
     print(f"Robot: {args.robot}")
+    print(f"Go2 sysID joint dynamics: {'ENABLED' if use_go2_sysid else 'DISABLED'}")
     print(f"Nominal domain randomization: disabled")
     print(f"Checkpoints: {checkpoints[0]} -> {checkpoints[-1]} (step {args.checkpoint_step})")
     print(f"Max control steps: {args.max_control_steps}")
@@ -568,6 +607,7 @@ def main():
                 checkpoint_step,
                 algorithm=algorithm,
                 robot=args.robot,
+                use_go2_sysid=use_go2_sysid,
             )
 
             trajectory_data = rollout_one_policy_episode(
@@ -580,6 +620,7 @@ def main():
                 command_vx=args.command_vx,
                 command_vy=args.command_vy,
                 command_wz=args.command_wz,
+                use_go2_sysid=use_go2_sysid,
             )
             saved_path = save_trajectory_data(
                 trajectory_data,

@@ -30,7 +30,8 @@ class MPXPlanner():
     """
 
     def __init__(self,
-               episode_length: int = 1000 # Default same as the gymnasium environment QuadrupedVelocityTrackingEnv
+               episode_length: int = 1000, # Default same as the gymnasium environment QuadrupedVelocityTrackingEnv
+               use_go2_sysid: bool = True,
         ) -> None:
         """
         Args:
@@ -68,7 +69,10 @@ class MPXPlanner():
 
         # Define the MPC wrapper
         self.mpc_frequency = config.mpc_frequency
-        self.mpc = mpc_wrapper.MPCControllerWrapper(config)
+        self.mpc = mpc_wrapper.MPCControllerWrapper(
+            config,
+            use_go2_sysid=use_go2_sysid,
+        )
         self.env.mjData.qpos = jnp.concatenate([config.p0, config.quat0, config.q0])
         self.env.render()
         self.tau = jnp.zeros(config.n_joints)

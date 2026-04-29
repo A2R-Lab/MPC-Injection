@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-FONT_SIZE = 18
+# Global plot font size. Increase or decrease this single value to scale
+# labels, ticks, legends, and titles across the generated plots.
+FONT_SIZE = 24
 
 plt.rcParams.update(
     {
@@ -23,7 +25,7 @@ plt.rcParams.update(
         'figure.titlesize': FONT_SIZE + 2,
         'xtick.labelsize': FONT_SIZE - 2,
         'ytick.labelsize': FONT_SIZE - 2,
-        'legend.fontsize': FONT_SIZE,
+        'legend.fontsize': FONT_SIZE - 1,
     }
 )
 
@@ -354,11 +356,11 @@ def plot_training_time(base_dir, output_file='training_time_comparison.png', per
             print(f"  Single run - no uncertainty band")
             print(f"  Final time: {mean_values[-1]:.2f} hours")
     
-    plt.xlabel('Training Steps', fontsize=FONT_SIZE)
-    plt.ylabel('Training Time (hours)', fontsize=FONT_SIZE)
+    plt.xlabel('Training Steps')
+    plt.ylabel('Training Time (hours)')
     
     # Add std_scale info to title if not default
-    title_text = f'Training - {title_suffix}'
+    title_text = f'{title_suffix}'
     if time_source == 'fps':
         title_text += ' (Estimated from FPS'
         if std_scale != 1.0:
@@ -371,9 +373,10 @@ def plot_training_time(base_dir, output_file='training_time_comparison.png', per
         else:
             title_text += ' (±1σ)'
     
-    plt.title(title_text, fontsize=FONT_SIZE+2, fontweight='bold')
-    plt.legend(loc='best', fontsize=FONT_SIZE-2, ncol=2)
+    plt.title(title_text, fontweight='bold')
+    plt.legend(loc='best', ncol=2)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both')
     plt.tight_layout()
     
     # Save the plot
@@ -547,19 +550,20 @@ def plot_multiple_experiments(base_dir, output_file='experiment_comparison.png',
             print(f"  Single run - no uncertainty band")
             print(f"  Reward range: [{mean_values.min():.2f}, {mean_values.max():.2f}]")
     
-    plt.xlabel('Training Steps', fontsize=FONT_SIZE)
-    plt.ylabel('Episode Reward Mean', fontsize=FONT_SIZE)
+    plt.xlabel('Training Steps')
+    plt.ylabel('Episode Reward Mean')
     
     # Add std_scale info to title if not default
-    title_text = f'Training Performance - {title_suffix}'
+    title_text = f'{title_suffix}'
     if std_scale != 1.0:
         title_text += f' (±{std_scale}σ)'
     else:
         title_text += ' (±1σ)'
     
-    plt.title(title_text, fontsize=FONT_SIZE+2, fontweight='bold')
-    plt.legend(loc='best', fontsize=FONT_SIZE-2, ncol=2)
+    plt.title(title_text, fontweight='bold')
+    plt.legend(loc='best', ncol=2)
     plt.grid(True, alpha=0.3)
+    plt.tick_params(axis='both')
     plt.tight_layout()
     
     # Save the plot
@@ -581,8 +585,8 @@ def main():
     # Uncomment the one you want to use:
     #base_dir = '../logs/SAC-MPC-walker-runs/'
     #base_dir = '../logs/TD3-MPC-walker-runs/'
-    base_dir = '../logs/SAC-MPC-walker-velocity_only_reward/'
-    #base_dir = '../logs/TD3-MPC-walker-velocity_only_reward/'
+    #base_dir = '../logs/SAC-MPC-walker-velocity_only_reward/'
+    base_dir = '../logs/TD3-MPC-walker-velocity_only_reward/'
     
     # Select environment to plot
     # Option 1: Cartpole
@@ -593,7 +597,7 @@ def main():
     
     # Option 2: Walker (uncomment these 4 lines and comment out the cartpole lines above)
     env_pattern = 'walker-walk'
-    title_suffix = 'Walker Walk - Velocity Only Reward'
+    title_suffix = 'Walker - Velocity Only Reward'
     reward_output_file = 'walker_experiment_comparison_ribbon.png'
     time_output_file = 'walker_training_time_comparison_ribbon.png'
     

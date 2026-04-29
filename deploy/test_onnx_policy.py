@@ -57,7 +57,10 @@ import onnxruntime as ort
 
 import mpc_rl.envs  # register QuadrupedVelocityTracking-v0
 from stable_baselines3.common.vec_env import DummyVecEnv
-from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.domain_randomization import (
+    DomainRandomizationConfig,
+    STARTUP_DOMAIN_RAND_PRESET_NAMES,
+)
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 
 # =============================================================================
@@ -105,7 +108,7 @@ class VelocityCommander:
 # Optional side-by-side SB3 comparison
 # =============================================================================
 
-def load_sb3_model(model_zip: Path, vecnorm_pkl: Path):
+def load_sb3_model(model_zip: Path, vecnorm_pkl: Path, *, use_go2_sysid: bool):
     """Load original SB3 SAC or TD3 model + VecNormalize for action comparison.
 
     The algorithm is auto-detected from the directory name (same logic as
@@ -146,8 +149,10 @@ def load_sb3_model(model_zip: Path, vecnorm_pkl: Path):
         "QuadrupedVelocityTracking-v0",
         robot="go2",
         domain_rand_cfg=DomainRandomizationConfig.disabled(),
+        use_go2_sysid=use_go2_sysid,
     )
-    assert_go2_sysid_joint_dynamics(dummy_env.unwrapped.mjModel)
+    if use_go2_sysid:
+        assert_go2_sysid_joint_dynamics(dummy_env.unwrapped.mjModel)
     dummy_vec = DummyVecEnv([lambda: dummy_env])
     vec_norm = VecNormalize.load(str(vecnorm_pkl), dummy_vec)
     vec_norm.training = False
@@ -206,7 +211,33 @@ def main():
     )
     parser.add_argument(
         "--domain_rand", action="store_true",
-        help="Enable domain randomization during ONNX replay (default: disabled to match eval/deployment)",
+        help=(
+            "Backward-compatible shorthand for "
+            "--domain_rand_config_type=default_no_push"
+        ),
+    )
+    parser.add_argument(
+        "--domain_rand_config_type",
+        type=str,
+        default=None,
+        choices=STARTUP_DOMAIN_RAND_PRESET_NAMES,
+        help=(
+            "Named startup DR preset for ONNX replay. "
+            "Overrides --domain_rand when provided."
+        ),
+    )
+    parser.add_argument(
+        "--use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_true",
+        default=True,
+        help="Enable the Go2 sysID joint-dynamics patch in the simulator (default: enabled).",
+    )
+    parser.add_argument(
+        "--no_use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_false",
+        help="Disable the Go2 sysID joint-dynamics patch in the simulator.",
     )
     args = parser.parse_args()
 
@@ -231,27 +262,48 @@ def main():
     sb3_vec_norm = None
     if args.compare:
         print(f"\nLoading SB3 model for comparison: {args.compare}")
-        sb3_model, sb3_vec_norm = load_sb3_model(args.compare, args.vecnorm)
+        sb3_model, sb3_vec_norm = load_sb3_model(
+            args.compare,
+            args.vecnorm,
+            use_go2_sysid=args.use_go2_sysid,
+        )
         print("  SB3 model loaded successfully.")
 
     # -- Create gymnasium environment ------------------------------------------
     print(f"\nCreating quadruped environment (robot={args.robot})...")
-    domain_rand_cfg = None if args.domain_rand else DomainRandomizationConfig.disabled()
+    if args.domain_rand_config_type is not None:
+        resolved_dr_config_type = args.domain_rand_config_type
+    elif args.domain_rand:
+        resolved_dr_config_type = "default_no_push"
+        print(
+            "Warning: --domain_rand is deprecated; prefer "
+            "--domain_rand_config_type=default_no_push"
+        )
+    else:
+        resolved_dr_config_type = "disabled"
+
+    domain_rand_cfg = DomainRandomizationConfig.from_preset(resolved_dr_config_type)
     env_wrapped = gym.make(
         "QuadrupedVelocityTracking-v0",
         robot=args.robot,
         render_mode=None,
         max_episode_steps=5000,
         domain_rand_cfg=domain_rand_cfg,
+        use_go2_sysid=args.use_go2_sysid,
     )
     env_base = env_wrapped.unwrapped
-    if args.robot.lower() == "go2":
+    if args.robot.lower() == "go2" and args.use_go2_sysid:
         assert_go2_sysid_joint_dynamics(env_base.mjModel)
         print("Verified Go2 sysID joint dynamics in the ONNX simulation environment.")
     vec_env = DummyVecEnv([lambda: env_wrapped])
     print(
         "Domain randomization during ONNX replay: "
         f"{'ENABLED' if env_base.domain_rand_cfg.enable else 'DISABLED'}"
+    )
+    print(f"Domain randomization preset: {resolved_dr_config_type}")
+    print(
+        "Go2 sysID joint dynamics during ONNX replay: "
+        f"{'ENABLED' if args.use_go2_sysid else 'DISABLED'}"
     )
     # NOTE: No VecNormalize here -- the ONNX has normalization baked in,
     # so we pass raw observations directly to the ONNX session.

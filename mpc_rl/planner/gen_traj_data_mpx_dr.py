@@ -178,6 +178,7 @@ def generate_trajectory(
     episode_length=1000,
     verbose=1,
     render=False,
+    use_go2_sysid=True,
 ):
     """Generate one MPX-controlled trajectory inside the RL quadruped env."""
     rng = np.random.RandomState(seed)
@@ -199,6 +200,7 @@ def generate_trajectory(
         domain_rand_cfg=domain_rand_cfg,
         apply_startup_domain_rand_on_init=False,
         simple_reward=True,
+        use_go2_sysid=use_go2_sysid,
     )
 
     own_mpc = mpc is None
@@ -226,7 +228,10 @@ def generate_trajectory(
         total_sim_steps = episode_length * sim_steps_per_ctrl
 
         if own_mpc:
-            mpc = mpc_wrapper.MPCControllerWrapper(config)
+            mpc = mpc_wrapper.MPCControllerWrapper(
+                config,
+                use_go2_sysid=use_go2_sysid,
+            )
             mpc.robot_height = config.robot_height
             if verbose > 0:
                 print(f"[Seed {seed}] Pre-compiling JAX MPC kernels...")
@@ -452,6 +457,7 @@ def gen_traj_quadruped_dr(
     dr_seed_offset=1_000_000,
     manifest_filename="generation_manifest.jsonl",
     mpc=None,
+    use_go2_sysid=True,
 ):
     """Generate quadruped MPC trajectories with startup DR matched to the RL env."""
     resolved_dr_type, _ = resolve_startup_domain_rand_config(domain_rand_config_type)
@@ -480,7 +486,10 @@ def gen_traj_quadruped_dr(
     if shared_mpc is None:
         if verbose > 0:
             print("Pre-compiling JAX MPC kernels (once for all trajectories)...")
-        shared_mpc = mpc_wrapper.MPCControllerWrapper(config)
+        shared_mpc = mpc_wrapper.MPCControllerWrapper(
+            config,
+            use_go2_sysid=use_go2_sysid,
+        )
         shared_mpc.robot_height = config.robot_height
         dummy_qpos = np.concatenate(
             [np.array(config.p0), np.array(config.quat0), np.array(config.q0)]
@@ -519,6 +528,7 @@ def gen_traj_quadruped_dr(
             episode_length=episode_length,
             verbose=verbose,
             render=render,
+            use_go2_sysid=use_go2_sysid,
         )
 
         manifest_record = {
@@ -643,6 +653,19 @@ def main():
         default="generation_manifest.jsonl",
         help="Per-process manifest filename inside the output directory",
     )
+    parser.add_argument(
+        "--use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_true",
+        default=True,
+        help="Enable the Go2 sysID joint-dynamics patch in the RL env and MPX controller (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_false",
+        help="Disable the Go2 sysID joint-dynamics patch in the RL env and MPX controller",
+    )
     
     args = parser.parse_args()
 
@@ -657,6 +680,7 @@ def main():
         domain_rand_config_type=args.domain_rand_config_type,
         dr_seed_offset=args.dr_seed_offset,
         manifest_filename=args.manifest_filename,
+        use_go2_sysid=args.use_go2_sysid,
     )
 
 

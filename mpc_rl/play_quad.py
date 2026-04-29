@@ -22,6 +22,7 @@ window must have focus for keypresses to register (no pynput needed).
 
 import argparse
 import glob
+import json
 import os
 import sys
 import time
@@ -45,6 +46,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.sac_mpc.sb3_sac_mpc import SB3_SAC_MPC
 from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 
@@ -119,6 +121,20 @@ def resolve_model_path(model_arg: str) -> Path:
     return Path(matches[0])
 
 
+def resolve_use_go2_sysid(run_dir: Path, cli_override: bool | None) -> bool:
+    """Resolve the Go2 sysID toggle from CLI or the saved run config."""
+    if cli_override is not None:
+        return cli_override
+
+    config_path = run_dir / "config.json"
+    if config_path.exists():
+        with open(config_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        return bool(cfg.get("use_go2_sysid", True))
+
+    return True
+
+
 # ========================================================================
 # Keyboard controller (via MuJoCo viewer GLFW key_callback)
 # ========================================================================
@@ -191,6 +207,7 @@ def make_quadruped_env(
     render_mode: str | None = None,
     enable_domain_rand: bool = False,
     simple_reward: bool = False,
+    use_go2_sysid: bool = True,
 ):
     """Create a quadruped velocity tracking gymnasium environment.
 
@@ -198,14 +215,18 @@ def make_quadruped_env(
     train.py --play_only evaluation and the nominal deployment plant.
     """
     domain_rand_cfg = None if enable_domain_rand else DomainRandomizationConfig.disabled()
-    return gym.make(
+    env = gym.make(
         "QuadrupedVelocityTracking-v0",
         robot=robot,
         render_mode=render_mode,
         max_episode_steps=5000,
         domain_rand_cfg=domain_rand_cfg,
         simple_reward=simple_reward,
+        use_go2_sysid=use_go2_sysid,
     )
+    if robot.lower() == "go2" and use_go2_sysid:
+        assert_go2_sysid_joint_dynamics(env.unwrapped.mjModel)
+    return env
 
 
 def refresh_current_obs(vec_env):
@@ -237,6 +258,19 @@ def main():
         "--domain_rand", action="store_true",
         help="Enable domain randomization during replay (default: disabled to match eval/deployment)",
     )
+    parser.add_argument(
+        "--use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_true",
+        default=None,
+        help="Force-enable the Go2 sysID joint-dynamics patch for replay.",
+    )
+    parser.add_argument(
+        "--no_use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_false",
+        help="Force-disable the Go2 sysID joint-dynamics patch for replay.",
+    )
     args = parser.parse_args()
 
     # Resolve model directory
@@ -247,7 +281,9 @@ def main():
     algo_name = detect_algorithm(str(run_dir))
     algo_class = ALGO_MAP[algo_name]
     is_mpc_algo = algo_name in {"SAC-MPC", "TD3-MPC"}
+    use_go2_sysid = resolve_use_go2_sysid(run_dir, args.use_go2_sysid)
     print(f"Detected algorithm: {algo_name}")
+    print(f"Go2 sysID joint dynamics: {'ENABLED' if use_go2_sysid else 'DISABLED'}")
 
     # Locate model file
     model_path = run_dir / "final_model"
@@ -270,6 +306,7 @@ def main():
         render_mode=None,
         enable_domain_rand=args.domain_rand,
         simple_reward=is_mpc_algo,
+        use_go2_sysid=use_go2_sysid,
     )
     # gym.make() wraps in TimeLimit; unwrap to access QuadrupedVelocityTrackingEnv
     env_base = env_wrapped.unwrapped

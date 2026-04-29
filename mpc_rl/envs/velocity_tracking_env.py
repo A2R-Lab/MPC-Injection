@@ -74,6 +74,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         robot: str = "go2",
         scene: str = "flat",
         render_mode: str | None = None,
+        use_go2_sysid: bool = True,
         # Simulation parameters
         # Physics at 200 Hz (sim_dt=0.005), control at 50 Hz (decimation=4)
         # to match the real Go2 robot's 50 Hz control loop.
@@ -115,6 +116,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             robot: Robot model name (go2, go1, mini_cheetah, aliengo, etc.).
             scene: Terrain type (flat, perlin, random_boxes, etc.).
             render_mode: Gymnasium render mode ("human", "rgb_array", or None).
+            use_go2_sysid: When True, patch the Go2 MuJoCo joint dynamics with
+                the identified sysID parameters. Ignored for non-Go2 robots.
             sim_dt: MuJoCo physics timestep in seconds. Default 0.005 (200 Hz)
                 for stable contact dynamics.
             decimation: Number of physics steps per control step.
@@ -140,6 +143,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Store configuration
         self.robot_name = robot
+        self.use_go2_sysid = bool(use_go2_sysid)
         self.robot_cfg: RobotConfig = get_robot_config(robot_name=robot)
         self.render_mode = render_mode
         self.sim_dt = sim_dt
@@ -750,7 +754,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         scene_env.write(combined_scene_path)
 
         self.mjModel = mujoco.MjModel.from_xml_path(str(combined_scene_path.absolute()))
-        if self.robot_name.lower() == "go2":
+        if self.robot_name.lower() == "go2" and self.use_go2_sysid:
             apply_go2_sysid_joint_dynamics(self.mjModel)
         self.mjData = mujoco.MjData(self.mjModel)
 

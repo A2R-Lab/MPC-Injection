@@ -420,6 +420,8 @@ class PercentMPCInjectCallback(BaseCallback):
         trajectory_files: list=None,          # List of specific filenames to load (used when random_select=False)
         seed: int=None,                       # Random seed for trajectory selection (for reproducibility)
         robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
+        use_go2_sysid: bool=True,             # Whether quadruped temp envs should apply the Go2 sysID patch
+        expected_dr_config_type: str | None = None,  # Expected DR preset for loaded quadruped demos
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
@@ -427,6 +429,9 @@ class PercentMPCInjectCallback(BaseCallback):
         self.task = task
         self.target_percentage = target_percentage
         self.robot = robot
+        self.use_go2_sysid = use_go2_sysid
+        self.expected_dr_config_type = expected_dr_config_type
+        self._warned_dr_mismatch = False
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
         # ReplayBuffer.add() always writes a full row of n_envs transitions.
         # For quadruped percentage injection, accumulate unique MPC transitions
@@ -473,6 +478,27 @@ class PercentMPCInjectCallback(BaseCallback):
             print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}")
         print(f"  Note: Injection triggered by SAC_MPC when MPC% falls below target\n")
+
+    def _maybe_warn_dr_mismatch(self, traj_domain_rand_patch: dict | None):
+        """Print a one-time warning when loaded DR demos mismatch run DR preset."""
+        if self._warned_dr_mismatch:
+            return
+        if self.expected_dr_config_type is None:
+            return
+        if traj_domain_rand_patch is None:
+            return
+
+        traj_config_type = str(
+            traj_domain_rand_patch.get("dr_config_type", "unknown")
+        )
+        if traj_config_type != self.expected_dr_config_type:
+            print(
+                "Warning: Loaded quadruped DR demo preset does not match training "
+                f"preset. demo={traj_config_type}, "
+                f"training={self.expected_dr_config_type}. "
+                "Injection will continue, but this may introduce distribution mismatch."
+            )
+            self._warned_dr_mismatch = True
     
     def _select_trajectory_file(self):
         """
@@ -969,6 +995,7 @@ class PercentMPCInjectCallback(BaseCallback):
 
                         if is_quadruped:
                             traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)
+                            self._maybe_warn_dr_mismatch(traj_domain_rand_patch)
                             if not quadruped_has_direct_transitions:
                                 # Legacy quadruped trajectory format (from gen_traj_data_mpx.py)
                                 traj_tau_applied = traj_data['tau_applied']  # (12, T_sim)
@@ -1035,6 +1062,7 @@ class PercentMPCInjectCallback(BaseCallback):
                             render_mode=None,
                             domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
                             simple_reward=True,
+                            use_go2_sysid=self.use_go2_sysid,
                         )
                         _assert_quadruped_generation_friction(temp_env)
                         if self.seed is not None:

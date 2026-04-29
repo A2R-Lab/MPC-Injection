@@ -55,6 +55,8 @@ STARTUP_DOMAIN_RAND_PRESET_NAMES = (
     "default_no_push",
     "half_no_push",
     "quarter_no_push",
+    "sysid_dyn10_default_no_push",
+    "sysid_dyn10_half_no_push",
     "sysid_floor_only_no_push",
     "sysid_floor_sensing_no_push",
     "disabled",
@@ -136,6 +138,9 @@ class DomainRandomizationConfig:
             disables.
         joint_friction_range: (min, max) absolute range for dof_frictionloss
             (Coulomb friction at joints). (0.0, 0.0) disables.
+        joint_friction_scale_range: (min, max) multiplicative scale for
+            dof_frictionloss. (1.0, 1.0) disables. When enabled, this takes
+            precedence over joint_friction_range.
         motor_strength_range: (min, max) multiplicative scale for torque
             limits. (1.0, 1.0) disables.
 
@@ -177,6 +182,7 @@ class DomainRandomizationConfig:
     joint_damping_scale_range: tuple[float, float] = (1.0, 1.0)
     joint_armature_scale_range: tuple[float, float] = (1.0, 1.0)
     joint_friction_range: tuple[float, float] = (0.0, 0.0)
+    joint_friction_scale_range: tuple[float, float] = (1.0, 1.0)
     motor_strength_range: tuple[float, float] = (1.0, 1.0)
 
     # -- Observation noise -----------------------------------------------
@@ -227,6 +233,7 @@ class DomainRandomizationConfig:
             joint_damping_scale_range=default_cfg.joint_damping_scale_range,
             joint_armature_scale_range=default_cfg.joint_armature_scale_range,
             joint_friction_range=default_cfg.joint_friction_range,
+            joint_friction_scale_range=default_cfg.joint_friction_scale_range,
             motor_strength_range=default_cfg.motor_strength_range,
             obs_noise_level=0.0,
             obs_noise_scales=default_cfg.obs_noise_scales.copy(),
@@ -250,6 +257,7 @@ class DomainRandomizationConfig:
             joint_damping_scale_range=default_cfg.joint_damping_scale_range,
             joint_armature_scale_range=default_cfg.joint_armature_scale_range,
             joint_friction_range=default_cfg.joint_friction_range,
+            joint_friction_scale_range=default_cfg.joint_friction_scale_range,
             motor_strength_range=default_cfg.motor_strength_range,
             obs_noise_level=default_cfg.obs_noise_level,
             obs_noise_scales=default_cfg.obs_noise_scales.copy(),
@@ -290,6 +298,7 @@ class DomainRandomizationConfig:
             joint_damping_scale_range=cls._scaled_range(default_cfg.joint_damping_scale_range, width_scale=0.5),
             joint_armature_scale_range=cls._scaled_range(default_cfg.joint_armature_scale_range, width_scale=0.5),
             joint_friction_range=cls._scaled_range(default_cfg.joint_friction_range, width_scale=0.5),
+            joint_friction_scale_range=cls._scaled_range(default_cfg.joint_friction_scale_range, width_scale=0.5),
             motor_strength_range=cls._scaled_range(default_cfg.motor_strength_range, width_scale=0.5),
             obs_noise_level=0.5 * default_cfg.obs_noise_level,
             obs_noise_scales=default_cfg.obs_noise_scales.copy(),
@@ -315,6 +324,7 @@ class DomainRandomizationConfig:
             joint_damping_scale_range=cls._scaled_range(default_cfg.joint_damping_scale_range, width_scale=0.25),
             joint_armature_scale_range=cls._scaled_range(default_cfg.joint_armature_scale_range, width_scale=0.25),
             joint_friction_range=cls._scaled_range(default_cfg.joint_friction_range, width_scale=0.25),
+            joint_friction_scale_range=cls._scaled_range(default_cfg.joint_friction_scale_range, width_scale=0.25),
             motor_strength_range=cls._scaled_range(default_cfg.motor_strength_range, width_scale=0.25),
             obs_noise_level=0.25 * default_cfg.obs_noise_level,
             obs_noise_scales=default_cfg.obs_noise_scales.copy(),
@@ -327,6 +337,54 @@ class DomainRandomizationConfig:
         )
 
     @classmethod
+    def sysid_dyn10_default_no_push(cls) -> DomainRandomizationConfig:
+        """Default-no-push DR plus per-joint ±10% dynamics around nominal."""
+        base_cfg = cls.default_no_push()
+        return cls(
+            friction_range=base_cfg.friction_range,
+            friction_target_geom_names=base_cfg.friction_target_geom_names,
+            added_mass_range=base_cfg.added_mass_range,
+            com_displacement_range=base_cfg.com_displacement_range,
+            encoder_bias_range=base_cfg.encoder_bias_range,
+            kp_scale_range=base_cfg.kp_scale_range,
+            kd_scale_range=base_cfg.kd_scale_range,
+            joint_damping_scale_range=(0.9, 1.1),
+            joint_armature_scale_range=(0.9, 1.1),
+            joint_friction_range=base_cfg.joint_friction_range,
+            joint_friction_scale_range=(0.9, 1.1),
+            motor_strength_range=base_cfg.motor_strength_range,
+            obs_noise_level=base_cfg.obs_noise_level,
+            obs_noise_scales=base_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=base_cfg.push_interval_range_s,
+            push_velocity_ranges=base_cfg.push_velocity_ranges.copy(),
+        )
+
+    @classmethod
+    def sysid_dyn10_half_no_push(cls) -> DomainRandomizationConfig:
+        """Half-no-push DR plus per-joint ±10% dynamics around nominal."""
+        base_cfg = cls.half_no_push()
+        return cls(
+            friction_range=base_cfg.friction_range,
+            friction_target_geom_names=base_cfg.friction_target_geom_names,
+            added_mass_range=base_cfg.added_mass_range,
+            com_displacement_range=base_cfg.com_displacement_range,
+            encoder_bias_range=base_cfg.encoder_bias_range,
+            kp_scale_range=base_cfg.kp_scale_range,
+            kd_scale_range=base_cfg.kd_scale_range,
+            joint_damping_scale_range=(0.9, 1.1),
+            joint_armature_scale_range=(0.9, 1.1),
+            joint_friction_range=base_cfg.joint_friction_range,
+            joint_friction_scale_range=(0.9, 1.1),
+            motor_strength_range=base_cfg.motor_strength_range,
+            obs_noise_level=base_cfg.obs_noise_level,
+            obs_noise_scales=base_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=base_cfg.push_interval_range_s,
+            push_velocity_ranges=base_cfg.push_velocity_ranges.copy(),
+        )
+
+    @classmethod
     def from_preset(cls, preset: str) -> DomainRandomizationConfig:
         """Create a config from a named preset."""
         preset_factories = {
@@ -334,6 +392,8 @@ class DomainRandomizationConfig:
             "default_no_push": cls.default_no_push,
             "half_no_push": cls.half_no_push,
             "quarter_no_push": cls.quarter_no_push,
+            "sysid_dyn10_default_no_push": cls.sysid_dyn10_default_no_push,
+            "sysid_dyn10_half_no_push": cls.sysid_dyn10_half_no_push,
             "sysid_floor_only_no_push": cls.sysid_floor_only_no_push,
             "sysid_floor_sensing_no_push": cls.sysid_floor_sensing_no_push,
             "disabled": cls.disabled,
@@ -507,22 +567,30 @@ def sample_startup_domain_rand_patch(
 
     lo, hi = domain_rand_cfg.joint_damping_scale_range
     if lo != hi:
-        damping_scale = rng.uniform(lo, hi)
+        damping_scale = rng.uniform(lo, hi, size=mj_model.dof_damping.shape)
         patch["dr_patch_dof_damping"] *= damping_scale
         applied_fields.append("dof_damping")
 
     lo, hi = domain_rand_cfg.joint_armature_scale_range
     if lo != hi:
-        armature_scale = rng.uniform(lo, hi)
+        armature_scale = rng.uniform(lo, hi, size=mj_model.dof_armature.shape)
         patch["dr_patch_dof_armature"] *= armature_scale
         applied_fields.append("dof_armature")
 
-    lo, hi = domain_rand_cfg.joint_friction_range
-    if lo != hi:
-        patch["dr_patch_dof_frictionloss"] = rng.uniform(
-            lo, hi, size=mj_model.dof_frictionloss.shape
+    lo_scale, hi_scale = domain_rand_cfg.joint_friction_scale_range
+    if lo_scale != hi_scale:
+        friction_scale = rng.uniform(
+            lo_scale, hi_scale, size=mj_model.dof_frictionloss.shape
         )
+        patch["dr_patch_dof_frictionloss"] *= friction_scale
         applied_fields.append("dof_frictionloss")
+    else:
+        lo, hi = domain_rand_cfg.joint_friction_range
+        if lo != hi:
+            patch["dr_patch_dof_frictionloss"] = rng.uniform(
+                lo, hi, size=mj_model.dof_frictionloss.shape
+            )
+            applied_fields.append("dof_frictionloss")
 
     lo, hi = domain_rand_cfg.encoder_bias_range
     if lo != hi:

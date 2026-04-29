@@ -19,7 +19,12 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "plots" / "body_trajectory_plots"
-FONT_SIZE = 18
+BASE_FONT_SIZE = 24
+TITLE_FONT_SIZE = BASE_FONT_SIZE + 8
+SUBPLOT_TITLE_FONT_SIZE = BASE_FONT_SIZE + 6
+AXIS_LABEL_FONT_SIZE = BASE_FONT_SIZE + 2
+TICK_LABEL_FONT_SIZE = BASE_FONT_SIZE - 2
+LEGEND_FONT_SIZE = BASE_FONT_SIZE
 FOOT_COLORS = {
     "FL": "#1f77b4",
     "FR": "#ff7f0e",
@@ -32,15 +37,19 @@ FOOT_COLORS = {
 PLOT_TIMESTEP_START = 250
 PLOT_TIMESTEP_END = 500
 
+X_AXIS_LABEL = "X (m)"
+BASE_FRAME_Y_AXIS_LABEL = "Height (m)"
+WORLD_FRAME_Y_AXIS_LABEL = "Z (m)"
+
 plt.rcParams.update(
     {
-        "font.size": FONT_SIZE,
-        "axes.labelsize": FONT_SIZE,
-        "axes.titlesize": FONT_SIZE + 2,
-        "figure.titlesize": FONT_SIZE + 2,
-        "xtick.labelsize": FONT_SIZE - 2,
-        "ytick.labelsize": FONT_SIZE - 2,
-        "legend.fontsize": FONT_SIZE,
+        "font.size": BASE_FONT_SIZE,
+        "axes.labelsize": AXIS_LABEL_FONT_SIZE,
+        "axes.titlesize": SUBPLOT_TITLE_FONT_SIZE,
+        "figure.titlesize": TITLE_FONT_SIZE,
+        "xtick.labelsize": TICK_LABEL_FONT_SIZE,
+        "ytick.labelsize": TICK_LABEL_FONT_SIZE,
+        "legend.fontsize": LEGEND_FONT_SIZE,
     }
 )
 
@@ -136,10 +145,10 @@ def plot_foot_cycle(
 
     if frame == "base":
         y_axis = -z
-        y_label = "Foot Height Above Base (m)"
+        y_label = BASE_FRAME_Y_AXIS_LABEL
     else:
         y_axis = z
-        y_label = "World Z (m)"
+        y_label = WORLD_FRAME_Y_AXIS_LABEL
 
     ax.plot(x, y_axis, color=color, linewidth=2.2, alpha=0.95, zorder=2)
     #ax.scatter(
@@ -152,10 +161,10 @@ def plot_foot_cycle(
     #    zorder=5,
     #)
 
-    ax.set_title(foot_name, fontsize=FONT_SIZE + 2, fontweight="bold")
-    ax.set_xlabel("Centered Fore-Aft Position (m)", fontsize=FONT_SIZE)
-    ax.set_ylabel(y_label, fontsize=FONT_SIZE)
-    ax.tick_params(axis="both", labelsize=FONT_SIZE - 2)
+    ax.set_title(foot_name, fontsize=SUBPLOT_TITLE_FONT_SIZE, fontweight="bold")
+    ax.set_xlabel(X_AXIS_LABEL, fontsize=AXIS_LABEL_FONT_SIZE)
+    ax.set_ylabel(y_label, fontsize=AXIS_LABEL_FONT_SIZE)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
     ax.grid(True, alpha=0.25)
     x_extent = np.max(np.abs(x))
     if x_extent > 0:
@@ -220,7 +229,7 @@ def main() -> None:
     fig.suptitle(
         #f"Quadruped Foot Trajectories ({args.frame}-frame)\n{trajectory_path.name}",
         "Quadruped Foot Trajectories",
-        fontsize=FONT_SIZE + 2,
+        fontsize=TITLE_FONT_SIZE,
         fontweight="bold",
     )
 
@@ -233,7 +242,7 @@ def main() -> None:
             FOOT_COLORS.get(foot_name, "#444444"),
             args.frame,
         )
-        ax.legend(loc="best", fontsize=FONT_SIZE)
+        ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
 
     output_path = resolve_output_path(trajectory_path, args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

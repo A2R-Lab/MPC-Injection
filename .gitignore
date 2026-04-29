@@ -237,3 +237,6 @@ deploy/robots/go2/build/
 # Local/generated
 /.github/instructions/
 /data/quadruped_dr/
+
+# Ignore serena
+.serena/

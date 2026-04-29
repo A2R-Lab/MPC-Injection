@@ -24,20 +24,23 @@ LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
 DOMAIN_RAND="True"
-DOMAIN_RAND_CONFIG_TYPE="default_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
+DOMAIN_RAND_CONFIG_TYPE="half_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
-DATA_DIR="data/quadruped_dr/default_no_push/"
+USE_GO2_SYSID="True"
+DATA_DIR="data/quadruped_dr/half_no_push_sysid_10k/"
 BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4
 POLICY_DELAY=2
-BATCH_SIZE=512 # Increasing batch size cuz of DR from 256, doesn't really change much
-LOG_DIR="logs/quadruped_domain_rand_mpc_sys_id/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-enable_penalties/"
+BATCH_SIZE=512 # Increasing batch size cuz of DR from 256, anything above 512 leans more towards RL than MPC behavior
+#LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
+#LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
+LOG_DIR="logs/quadruped_domain_rand_mpc_dr_half_no_push_sysid_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(25)
-SEEDS=(100 150 200)
+SEEDS=(100 150)
 
 # Optional checkpoint videos during training
 CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)
@@ -54,6 +57,7 @@ echo "Save replay buffer final: ${SAVE_REPLAY_BUFFER_FINAL}"
 echo "Domain randomization flag: ${DOMAIN_RAND}"
 echo "Domain randomization config type: ${DOMAIN_RAND_CONFIG_TYPE}"
 echo "Domain randomization obs noise override: ${DOMAIN_RAND_OBS_NOISE}"
+echo "Go2 sysID joint dynamics: ${USE_GO2_SYSID}"
 echo "Data directory: ${DATA_DIR}"
 echo "Buffer size: ${BUFFER_SIZE}"
 echo "Learning rate: ${LEARNING_RATE}"
@@ -94,6 +98,7 @@ for seed in "${SEEDS[@]}"; do
                 --domain_rand="${DOMAIN_RAND}" \
                 --domain_rand_config_type="${DOMAIN_RAND_CONFIG_TYPE}" \
                 --domain_rand_obs_noise="${DOMAIN_RAND_OBS_NOISE}" \
+                --use_go2_sysid="${USE_GO2_SYSID}" \
                 --data_dir="${DATA_DIR}" \
                 --buffer_size="${BUFFER_SIZE}" \
                 --learning_rate="${LEARNING_RATE}" \

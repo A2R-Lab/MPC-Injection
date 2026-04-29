@@ -195,7 +195,7 @@ def plot_torso_height_boxplots(
             f"below {DRAG_THRESHOLD_METERS:.2f} m={pct_dragging:.1f}%"
         )
 
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(9.6, 6.2))
     draw_grouped_boxplots(ax, pure_rl_data, mpc_data, common_checkpoints)
 
     # ax.axhline(
@@ -218,7 +218,7 @@ def plot_torso_height_boxplots(
     ax.set_xlabel('Training Checkpoint')
     ax.set_ylabel('Torso Height (m)')
     ax.set_title(
-        'Walker Torso Height by Checkpoint: Pure RL vs MPC-Injection',
+        'Walker Torso Height by Checkpoint:\nPure RL vs MPC-Injection',
         fontweight='bold',
     )
     ax.grid(axis='y', alpha=0.3)

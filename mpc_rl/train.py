@@ -114,6 +114,11 @@ _ROBOT = flags.DEFINE_string(
     "robot", "go2",
     "Quadruped robot model name (go2, go1, mini_cheetah, aliengo). Only used when env_name starts with 'quadruped-'",
 )
+_USE_GO2_SYSID = flags.DEFINE_boolean(
+    "use_go2_sysid", True,
+    "Apply the identified Go2 joint-dynamics patch to quadruped envs and MPX "
+    "controllers. Disable this to match pre-sysID data and training runs."
+)
 _MAX_EPISODE_STEPS = flags.DEFINE_integer(
     "max_episode_steps", 1000, "Maximum number of steps per episode"
 )
@@ -226,6 +231,8 @@ _DOMAIN_RAND_CONFIG_TYPE = flags.DEFINE_enum(
         "default_no_push",
         "half_no_push",
         "quarter_no_push",
+        "sysid_dyn10_default_no_push",
+        "sysid_dyn10_half_no_push",
         "sysid_floor_only_no_push",
         "sysid_floor_sensing_no_push",
         "disabled",
@@ -259,6 +266,7 @@ class AllConfig:
     num_traj: int
     random_select: bool
     data_dir: str
+    use_go2_sysid: bool
 
 
 def parse_env_name(env_name: str) -> tuple[str, str]:
@@ -460,7 +468,8 @@ def is_quadruped_env(env_name: str) -> bool:
 
 
 def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None,
-                       simple_reward: bool = False):
+                       simple_reward: bool = False,
+                       use_go2_sysid: bool = True):
     """
     Create a quadruped velocity tracking gymnasium environment.
     
@@ -477,6 +486,8 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         domain_rand_cfg: Domain randomization config. None uses defaults.
         simple_reward: If True, use simplified reward (velocity tracking + termination only).
             Used when training with MPC injection (SAC-MPC/TD3-MPC).
+        use_go2_sysid: If True, apply the identified Go2 joint dynamics.
+            Ignored for non-Go2 robots.
     
     Returns:
         QuadrupedVelocityTracking gymnasium environment with Dict obs space
@@ -485,6 +496,7 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         robot=robot,
         render_mode=render_mode,
         max_episode_steps=_MAX_EPISODE_STEPS.value,
+        use_go2_sysid=use_go2_sysid,
     )
     if domain_rand_cfg is not None:
         kwargs["domain_rand_cfg"] = domain_rand_cfg
@@ -494,7 +506,7 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         "QuadrupedVelocityTracking-v0",
         **kwargs,
     )
-    if robot.lower() == "go2":
+    if robot.lower() == "go2" and use_go2_sysid:
         assert_go2_sysid_joint_dynamics(gym_env.unwrapped.mjModel)
     return gym_env
 
@@ -545,7 +557,8 @@ def save_config(logdir: Path, config: dict):
 def make_single_env_for_model_loading(domain: str, task: str,
                                       is_quadruped: bool = False,
                                       robot: str = "go2",
-                                      simple_reward: bool = False):
+                                      simple_reward: bool = False,
+                                      use_go2_sysid: bool = True):
     """Create a single-env VecEnv for loading a saved model."""
     is_shadow_hand = (domain == "shadow_hand")
 
@@ -555,6 +568,7 @@ def make_single_env_for_model_loading(domain: str, task: str,
                 robot=robot,
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
+                use_go2_sysid=use_go2_sysid,
             )
         ])
     if is_shadow_hand:
@@ -567,7 +581,8 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
                                     domain: str, task: str,
                                     is_quadruped: bool = False,
                                     robot: str = "go2",
-                                    simple_reward: bool = False):
+                                    simple_reward: bool = False,
+                                    use_go2_sysid: bool = True):
     """Load a saved model plus its VecNormalize stats for video evaluation."""
     model_env = make_single_env_for_model_loading(
         domain=domain,
@@ -575,6 +590,7 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
         is_quadruped=is_quadruped,
         robot=robot,
         simple_reward=simple_reward,
+        use_go2_sysid=use_go2_sysid,
     )
 
     if vecnormalize_path is not None and vecnormalize_path.exists():
@@ -776,7 +792,9 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                      checkpoint_freq: int, eval_freq: int, num_envs: int,
                      is_quadruped: bool = False, robot: str = "go2",
                      save_replay_buffer_checkpoints: bool = False,
-                     simple_reward: bool = False):
+                     simple_reward: bool = False,
+                     use_go2_sysid: bool = True,
+                     domain_rand_config_type: str = "disabled"):
     """
     Factory function to create all callbacks based on configuration.
     
@@ -832,7 +850,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             _sr_eval = simple_reward  # capture for lambda closure
             eval_env = make_vec_env(
                 lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval,
-                                          simple_reward=_sr_eval),
+                                          simple_reward=_sr_eval,
+                                          use_go2_sysid=use_go2_sysid),
                 n_envs=1,
                 seed=seed+1000,
             )
@@ -896,6 +915,10 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 random_select=cfg.random_select,
                 seed=seed,  # Pass seed for reproducible trajectory selection
                 robot=robot if is_quadruped else "go2",
+                use_go2_sysid=use_go2_sysid,
+                expected_dr_config_type=(
+                    domain_rand_config_type if is_quadruped else None
+                ),
                 verbose=1,
             )
         callbacks.append(inject_callback)
@@ -909,7 +932,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
 def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
                         num_videos: int, video_dir: Path, normalize_env=None, seed: int = None,
                         is_quadruped: bool = False, robot: str = "go2",
-                        simple_reward: bool = False):
+                        simple_reward: bool = False,
+                        use_go2_sysid: bool = True):
     """
     Evaluate model and record videos.
     
@@ -945,6 +969,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                 robot=robot, render_mode="rgb_array",
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
+                use_go2_sysid=use_go2_sysid,
             )
         elif is_shadow_hand:
             eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
@@ -1092,7 +1117,8 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                                algorithm: str, domain: str, task: str,
                                num_episodes: int, num_videos: int, seed: int,
                                is_quadruped: bool = False, robot: str = "go2",
-                               simple_reward: bool = False):
+                               simple_reward: bool = False,
+                               use_go2_sysid: bool = True):
     """Load requested checkpoints and record videos for each one."""
     checkpoint_dir = logdir / "checkpoints"
 
@@ -1130,6 +1156,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
             is_quadruped=is_quadruped,
             robot=robot,
             simple_reward=simple_reward,
+            use_go2_sysid=use_go2_sysid,
         )
 
         try:
@@ -1145,6 +1172,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                 is_quadruped=is_quadruped,
                 robot=robot,
                 simple_reward=simple_reward,
+                use_go2_sysid=use_go2_sysid,
             )
         finally:
             checkpoint_env.close()
@@ -1256,11 +1284,16 @@ def main(argv):
         num_traj=_NUM_TRAJ.value,
         random_select=_RANDOM_SELECT.value,
         data_dir=_DATA_DIR.value,
+        use_go2_sysid=_USE_GO2_SYSID.value,
     )
     
     # ── Domain randomization setup (quadruped only) ──────────────────────
     dr_cfg = None
     if is_quadruped:
+        print(
+            "Go2 sysID joint dynamics: "
+            f"{'ENABLED' if _USE_GO2_SYSID.value else 'DISABLED'}"
+        )
         dr_cfg = build_quadruped_domain_rand_config()
         if dr_cfg.enable:
             print(
@@ -1290,6 +1323,7 @@ def main(argv):
             "checkpoint_evals": checkpoint_eval_steps,
             "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
+            "use_go2_sysid": _USE_GO2_SYSID.value,
         })
         if is_quadruped:
             config_dict["domain_randomization"] = {
@@ -1314,7 +1348,8 @@ def main(argv):
         _sr = use_simple_reward  # capture for lambda closure
         vec_env = make_vec_env(
             lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr,
-                                      simple_reward=_sr),
+                                      simple_reward=_sr,
+                                      use_go2_sysid=_USE_GO2_SYSID.value),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )
@@ -1389,6 +1424,10 @@ def main(argv):
             robot=_ROBOT.value,
             save_replay_buffer_checkpoints=_SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             simple_reward=use_simple_reward,
+            use_go2_sysid=_USE_GO2_SYSID.value,
+            domain_rand_config_type=(
+                _DOMAIN_RAND_CONFIG_TYPE.value if is_quadruped else "disabled"
+            ),
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
@@ -1442,6 +1481,7 @@ def main(argv):
                 is_quadruped=is_quadruped,
                 robot=_ROBOT.value,
                 simple_reward=use_simple_reward,
+                use_go2_sysid=_USE_GO2_SYSID.value,
             )
 
         print(f"\nEvaluating model for {_NUM_EVAL_EPISODES.value} episodes...")
@@ -1457,6 +1497,7 @@ def main(argv):
             is_quadruped=is_quadruped,
             robot=_ROBOT.value,
             simple_reward=use_simple_reward,
+            use_go2_sysid=_USE_GO2_SYSID.value,
         )
     
     vec_env.close()

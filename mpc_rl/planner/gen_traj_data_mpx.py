@@ -123,7 +123,14 @@ def _check_fell(mjdata):
     return False
 
 
-def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=False):
+def generate_trajectory(
+    seed,
+    mpc=None,
+    episode_length=1000,
+    verbose=1,
+    render=False,
+    use_go2_sysid=True,
+):
     """Generate a single MPX-controlled quadruped trajectory with random init and commands.
 
     The simulation runs at 200 Hz. The MPX controller updates at 50 Hz (every 4 sim steps).
@@ -181,7 +188,10 @@ def generate_trajectory(seed, mpc=None, episode_length=1000, verbose=1, render=F
     # passed in so that JIT compilation only occurs once for all trajectories.
     own_mpc = mpc is None
     if own_mpc:
-        mpc = mpc_wrapper.MPCControllerWrapper(config)
+        mpc = mpc_wrapper.MPCControllerWrapper(
+            config,
+            use_go2_sysid=use_go2_sysid,
+        )
         mpc.robot_height = config.robot_height
         # Trigger JIT compilation before opening the viewer or recording data.
         if verbose > 0:
@@ -381,6 +391,7 @@ def gen_traj_quadruped(
     max_attempts=None,
     verbose=1,
     render=False,
+    use_go2_sysid=True,
 ):
     """Generate N quadruped trajectories where the robot does not fall.
 
@@ -420,7 +431,10 @@ def gen_traj_quadruped(
     # to reinitialise the warm-start.
     if verbose > 0:
         print("Pre-compiling JAX MPC kernels (once for all trajectories)...")
-    shared_mpc = mpc_wrapper.MPCControllerWrapper(config)
+    shared_mpc = mpc_wrapper.MPCControllerWrapper(
+        config,
+        use_go2_sysid=use_go2_sysid,
+    )
     shared_mpc.robot_height = config.robot_height
     _dummy_qpos = np.concatenate([np.array(config.p0), np.array(config.quat0), np.array(config.q0)])
     _dummy_qvel = np.zeros(config.n_joints + 6)
@@ -456,6 +470,7 @@ def gen_traj_quadruped(
             episode_length=episode_length,
             verbose=verbose,
             render=render,
+            use_go2_sysid=use_go2_sysid,
         )
 
         if traj_data["fell"]:
@@ -513,6 +528,19 @@ def main():
         "--render", action="store_true",
         help="Open a MuJoCo viewer window to display each trajectory attempt in real time"
     )
+    parser.add_argument(
+        "--use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_true",
+        default=True,
+        help="Enable the Go2 sysID joint-dynamics patch in the MPX controller (default: enabled)",
+    )
+    parser.add_argument(
+        "--no_use_go2_sysid",
+        dest="use_go2_sysid",
+        action="store_false",
+        help="Disable the Go2 sysID joint-dynamics patch in the MPX controller",
+    )
 
     args = parser.parse_args()
 
@@ -524,6 +552,7 @@ def main():
         max_attempts=args.max_attempts,
         verbose=args.verbose,
         render=args.render,
+        use_go2_sysid=args.use_go2_sysid,
     )
 
 
