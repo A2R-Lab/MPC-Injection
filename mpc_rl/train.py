@@ -507,7 +507,19 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
         **kwargs,
     )
     if robot.lower() == "go2" and use_go2_sysid:
-        assert_go2_sysid_joint_dynamics(gym_env.unwrapped.mjModel)
+        dr_cfg = gym_env.unwrapped.domain_rand_cfg
+        dynamics_dr_enabled = bool(
+            dr_cfg.enable and (
+                dr_cfg.joint_damping_scale_range[0] != dr_cfg.joint_damping_scale_range[1]
+                or dr_cfg.joint_armature_scale_range[0] != dr_cfg.joint_armature_scale_range[1]
+                or dr_cfg.joint_friction_scale_range[0] != dr_cfg.joint_friction_scale_range[1]
+                or dr_cfg.joint_friction_range[0] != dr_cfg.joint_friction_range[1]
+            )
+        )
+        # With dynamics DR presets (for example sysid_dyn10_*), exact equality
+        # to the canonical sysID table is intentionally broken at startup.
+        if not dynamics_dr_enabled:
+            assert_go2_sysid_joint_dynamics(gym_env.unwrapped.mjModel)
     return gym_env
 
 

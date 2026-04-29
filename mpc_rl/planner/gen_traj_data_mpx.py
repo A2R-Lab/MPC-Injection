@@ -19,6 +19,7 @@ from gym_quadruped.quadruped_env import QuadrupedEnv
 
 import mpx.utils.mpc_wrapper as mpc_wrapper
 import mpx.config.config_go2 as config
+from mpc_rl.envs.go2_sysid import GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS
 
 # Select device (GPU if available, else CPU)
 try:
@@ -45,6 +46,21 @@ RL_MAX_ROLL = 0.5          # radians
 RL_MAX_PITCH = 0.5         # radians
 RL_MIN_BASE_HEIGHT = 0.1   # meters
 COMMAND_THRESHOLD = 0.05   # m/s threshold to go from standing to walking
+
+
+def _go2_sysid_signature_vector() -> np.ndarray:
+    """Return a deterministic vector snapshot of the canonical Go2 sysID table."""
+    values = []
+    for joint_name in sorted(GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS):
+        dynamics = GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS[joint_name]
+        values.extend(
+            [
+                float(dynamics["armature"]),
+                float(dynamics["damping"]),
+                float(dynamics["frictionloss"]),
+            ]
+        )
+    return np.asarray(values, dtype=np.float64)
 
 
 def sample_commands(rng):
@@ -380,6 +396,8 @@ def generate_trajectory(
         "control_dt": RL_CONTROL_DT,
         "episode_length": episode_length,
         "fell": fell,
+        "go2_sysid_expected_vector": _go2_sysid_signature_vector(),
+        "go2_sysid_enabled": bool(use_go2_sysid),
     }
 
 

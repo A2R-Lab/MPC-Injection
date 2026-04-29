@@ -8,6 +8,7 @@ set -euo pipefail
 #   - disabled        : disables DR entirely
 #   - sysid_floor_only_no_push    : floor/contact-surface friction only
 #   - sysid_floor_sensing_no_push : floor friction plus RL sensing noise/bias
+#   - sysid_dyn10_default_no_push : default-no-push DR plus per-joint +/-10% dynamics
 #   - default_no_push : default DR values from domain_randomization.py, but no pushes
 #   - half_no_push    : reduced-strength DR, no pushes
 #   - quarter_no_push : quarter-strength DR, no pushes
@@ -24,18 +25,18 @@ LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
 DOMAIN_RAND="True"
-DOMAIN_RAND_CONFIG_TYPE="half_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
+DOMAIN_RAND_CONFIG_TYPE="sysid_dyn10_default_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
 USE_GO2_SYSID="True"
-DATA_DIR="data/quadruped_dr/half_no_push_sysid_10k/"
+DATA_DIR="data/quadruped_dr/sysid_dyn10_default_no_push_10k/"
 BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4
 POLICY_DELAY=2
 BATCH_SIZE=512 # Increasing batch size cuz of DR from 256, anything above 512 leans more towards RL than MPC behavior
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
-LOG_DIR="logs/quadruped_domain_rand_mpc_dr_half_no_push_sysid_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn10_default_no_push_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)

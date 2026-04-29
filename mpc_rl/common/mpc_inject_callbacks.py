@@ -8,6 +8,7 @@ import gymnasium as gym
 import mujoco
 
 from mpc_rl.envs.domain_randomization import extract_startup_domain_rand_patch
+from mpc_rl.envs.go2_sysid import GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS
 
 _QUADRUPED_DIRECT_TRANSITION_KEYS = (
     "policy_obs",
@@ -18,6 +19,21 @@ _QUADRUPED_DIRECT_TRANSITION_KEYS = (
     "rewards",
     "terminated_ctrl",
 )
+
+
+def _go2_sysid_signature_vector() -> np.ndarray:
+    """Return a deterministic vector snapshot of the canonical Go2 sysID table."""
+    values = []
+    for joint_name in sorted(GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS):
+        dynamics = GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS[joint_name]
+        values.extend(
+            [
+                float(dynamics["armature"]),
+                float(dynamics["damping"]),
+                float(dynamics["frictionloss"]),
+            ]
+        )
+    return np.asarray(values, dtype=np.float64)
 
 
 def _assert_quadruped_generation_friction(env):
@@ -432,6 +448,7 @@ class PercentMPCInjectCallback(BaseCallback):
         self.use_go2_sysid = use_go2_sysid
         self.expected_dr_config_type = expected_dr_config_type
         self._warned_dr_mismatch = False
+        self._warned_sysid_mismatch = False
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
         # ReplayBuffer.add() always writes a full row of n_envs transitions.
         # For quadruped percentage injection, accumulate unique MPC transitions
@@ -499,6 +516,37 @@ class PercentMPCInjectCallback(BaseCallback):
                 "Injection will continue, but this may introduce distribution mismatch."
             )
             self._warned_dr_mismatch = True
+
+    def _maybe_warn_sysid_mismatch(self, traj_data):
+        """Warn once if demo files were generated with a different sysID baseline."""
+        if self._warned_sysid_mismatch:
+            return
+
+        if "go2_sysid_expected_vector" not in traj_data:
+            return
+        if "go2_sysid_enabled" not in traj_data:
+            return
+
+        traj_sysid_enabled = bool(np.array(traj_data["go2_sysid_enabled"]).item())
+        if traj_sysid_enabled != bool(self.use_go2_sysid):
+            print(
+                "Warning: Quadruped demo sysID toggle differs from current training "
+                f"setting. demo_use_go2_sysid={traj_sysid_enabled}, "
+                f"train_use_go2_sysid={self.use_go2_sysid}. "
+                "Injection will continue but may mismatch dynamics."
+            )
+            self._warned_sysid_mismatch = True
+            return
+
+        expected = _go2_sysid_signature_vector()
+        got = np.asarray(traj_data["go2_sysid_expected_vector"], dtype=np.float64).ravel()
+        if got.shape != expected.shape or not np.allclose(got, expected, atol=1e-9, rtol=0.0):
+            print(
+                "Warning: Quadruped demo files were generated against a different "
+                "Go2 sysID baseline than the current code. Injection will continue "
+                "but may mismatch nominal joint dynamics."
+            )
+            self._warned_sysid_mismatch = True
     
     def _select_trajectory_file(self):
         """
@@ -987,6 +1035,8 @@ class PercentMPCInjectCallback(BaseCallback):
                         
                         # Load the MPC trajectory data
                         traj_data = np.load(selected_file, allow_pickle=True)
+                        if is_quadruped:
+                            self._maybe_warn_sysid_mismatch(traj_data)
                         qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
                         qvel = traj_data['qvel']
                         quadruped_has_direct_transitions = (

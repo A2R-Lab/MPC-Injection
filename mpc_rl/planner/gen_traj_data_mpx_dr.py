@@ -23,6 +23,7 @@ from mpc_rl.envs.domain_randomization import (
     STARTUP_DOMAIN_RAND_PRESET_NAMES,
     resolve_startup_domain_rand_config,
 )
+from mpc_rl.envs.go2_sysid import GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
 from mpc_rl.planner.gen_traj_data_mpx import COMMAND_THRESHOLD, sample_commands
 
@@ -35,6 +36,21 @@ jax.default_device(gpu_device)
 
 
 DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET = "sysid_floor_only_no_push"
+
+
+def _go2_sysid_signature_vector() -> np.ndarray:
+    """Return a deterministic vector snapshot of the canonical Go2 sysID table."""
+    values = []
+    for joint_name in sorted(GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS):
+        dynamics = GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS[joint_name]
+        values.extend(
+            [
+                float(dynamics["armature"]),
+                float(dynamics["damping"]),
+                float(dynamics["frictionloss"]),
+            ]
+        )
+    return np.asarray(values, dtype=np.float64)
 
 
 def _configure_mpc_duty_factor(commands: np.ndarray, mpc) -> float:
@@ -432,6 +448,8 @@ def generate_trajectory(
             "failure_reason": failure_reason,
             "controller_delay_steps": 0,
             "controller_delay_s": 0.0,
+            "go2_sysid_expected_vector": _go2_sysid_signature_vector(),
+            "go2_sysid_enabled": bool(use_go2_sysid),
             **dr_bundle,
         }
     finally:
