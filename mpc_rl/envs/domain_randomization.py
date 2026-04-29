@@ -55,6 +55,7 @@ STARTUP_DOMAIN_RAND_PRESET_NAMES = (
     "default_no_push",
     "half_no_push",
     "quarter_no_push",
+    "sysid_dyn10_default",
     "sysid_dyn10_default_no_push",
     "sysid_dyn10_half_no_push",
     "sysid_floor_only_no_push",
@@ -361,6 +362,30 @@ class DomainRandomizationConfig:
         )
 
     @classmethod
+    def sysid_dyn10_default(cls) -> DomainRandomizationConfig:
+        """Default DR plus per-joint ±10% dynamics around nominal."""
+        base_cfg = cls()
+        return cls(
+            friction_range=base_cfg.friction_range,
+            friction_target_geom_names=base_cfg.friction_target_geom_names,
+            added_mass_range=base_cfg.added_mass_range,
+            com_displacement_range=base_cfg.com_displacement_range,
+            encoder_bias_range=base_cfg.encoder_bias_range,
+            kp_scale_range=base_cfg.kp_scale_range,
+            kd_scale_range=base_cfg.kd_scale_range,
+            joint_damping_scale_range=(0.9, 1.1),
+            joint_armature_scale_range=(0.9, 1.1),
+            joint_friction_range=base_cfg.joint_friction_range,
+            joint_friction_scale_range=(0.9, 1.1),
+            motor_strength_range=base_cfg.motor_strength_range,
+            obs_noise_level=base_cfg.obs_noise_level,
+            obs_noise_scales=base_cfg.obs_noise_scales.copy(),
+            push_robots=base_cfg.push_robots,
+            push_interval_range_s=base_cfg.push_interval_range_s,
+            push_velocity_ranges=base_cfg.push_velocity_ranges.copy(),
+        )
+
+    @classmethod
     def sysid_dyn10_half_no_push(cls) -> DomainRandomizationConfig:
         """Half-no-push DR plus per-joint ±10% dynamics around nominal."""
         base_cfg = cls.half_no_push()
@@ -392,6 +417,7 @@ class DomainRandomizationConfig:
             "default_no_push": cls.default_no_push,
             "half_no_push": cls.half_no_push,
             "quarter_no_push": cls.quarter_no_push,
+            "sysid_dyn10_default": cls.sysid_dyn10_default,
             "sysid_dyn10_default_no_push": cls.sysid_dyn10_default_no_push,
             "sysid_dyn10_half_no_push": cls.sysid_dyn10_half_no_push,
             "sysid_floor_only_no_push": cls.sysid_floor_only_no_push,
