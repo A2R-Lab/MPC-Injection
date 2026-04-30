@@ -132,18 +132,19 @@ algorithm: one input named `"obs"`, one output named `"actions"`.  The
 | `[21:33]` | `joint_vel_rel`   | Encoder velocities | 12 |
 | `[33:45]` | `last_action`     | Previous policy output | 12 |
 
-### Joint ordering
+### Joint Ordering
 
-The policy uses joints in the order **FR -> FL -> RR -> RL** (front-right,
-front-left, rear-right, rear-left), each with hip -> thigh -> calf.
+The exported MPC-RL policy uses the same joint order as the MuJoCo training
+environment: **FL -> FR -> RL -> RR** (front-left, front-right, rear-left,
+rear-right), each with hip -> thigh -> calf.
 
-The Unitree SDK2 numbers motor indices differently (0-2 = FL, 3-5 = FR,
-6-8 = RL, 9-11 = RR).  The mapping in `deploy.yaml` is:
+Unitree's Go2 SDK motor order is **FR -> FL -> RR -> RL**. The mapping in
+`deploy.yaml` converts SDK motor order into the policy/training order:
 
 ```yaml
 joint_ids_map: [3,4,5, 0,1,2, 9,10,11, 6,7,8]
-# policy idx:   FR       FL     RR        RL
-# SDK2 motor:   FR       FL     RR        RL  (re-indexed)
+# policy idx:   FL      FR      RL       RR
+# SDK2 motor:   FL      FR      RL       RR  (re-indexed from FR/FL/RR/RL)
 ```
 
 ---

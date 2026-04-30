@@ -20,35 +20,29 @@ set -euo pipefail
 # Common experiment parameters
 ENV_NAME="quadruped-velocity_tracking"
 ALGORITHM="SAC-MPC"
-TOTAL_TIMESTEPS=1000000
+TOTAL_TIMESTEPS=2000000
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
 DOMAIN_RAND="True"
-DOMAIN_RAND_CONFIG_TYPE="sysid_dyn10_default_no_push" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
+DOMAIN_RAND_CONFIG_TYPE="sysid_dyn10_default" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
 USE_GO2_SYSID="True"
 DATA_DIR="data/quadruped_dr/sysid_dyn10_default_no_push_10k/"
 BUFFER_SIZE=5000000
+LEARNING_RATE=3e-4 # TODO: Try lower learning rate to stop the collapse? 1e-4
 POLICY_DELAY=2
-BATCH_SIZE=512 # default value (overridden by LR_BATCH_GRID loop below)
-LR_BATCH_GRID=(
-    "3e-4:256" # OG default
-    "3e-4:512"
-    "1e-4:512"
-    "1e-4:1024"
-    "5e-5:512"
-    "1e-4:256"
-)
+BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
-LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn10_default_no_push_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn10_default_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+#LOG_DIR="logs/quadruped_domain_rand_sac/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(25)
-SEEDS=(100 150)
+SEEDS=(100 999)
 
 # Optional checkpoint videos during training
 CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)
@@ -68,14 +62,15 @@ echo "Domain randomization obs noise override: ${DOMAIN_RAND_OBS_NOISE}"
 echo "Go2 sysID joint dynamics: ${USE_GO2_SYSID}"
 echo "Data directory: ${DATA_DIR}"
 echo "Buffer size: ${BUFFER_SIZE}"
+echo "Learning rate: ${LEARNING_RATE}"
 echo "Policy delay: ${POLICY_DELAY}"
-echo "LR/Batch grid: ${LR_BATCH_GRID[*]}"
+echo "Batch size: ${BATCH_SIZE}"
 echo "Log directory: ${LOG_DIR}"
 echo "Num env sweep: ${NUM_ENVS_SWEEP[*]}"
 echo "Percentages: ${PERCENTAGES[*]}"
 echo "Seeds: ${SEEDS[*]}"
 echo "Checkpoint evals: ${CHECKPOINT_EVALS[*]}"
-TOTAL_RUNS=$((${#NUM_ENVS_SWEEP[@]} * ${#PERCENTAGES[@]} * ${#SEEDS[@]} * ${#LR_BATCH_GRID[@]}))
+TOTAL_RUNS=$((${#NUM_ENVS_SWEEP[@]} * ${#PERCENTAGES[@]} * ${#SEEDS[@]}))
 echo "Total runs: ${TOTAL_RUNS}"
 echo "============================================"
 echo ""
@@ -84,49 +79,46 @@ run_idx=0
 for seed in "${SEEDS[@]}"; do
     for num_envs in "${NUM_ENVS_SWEEP[@]}"; do
         for percentage in "${PERCENTAGES[@]}"; do
-            for lr_batch in "${LR_BATCH_GRID[@]}"; do
-                IFS=":" read -r LEARNING_RATE BATCH_SIZE <<< "${lr_batch}"
-                run_idx=$((run_idx + 1))
-                run_suffix="seed${seed}-env${num_envs}-dr${DOMAIN_RAND_CONFIG_TYPE}-lr${LEARNING_RATE}-bs${BATCH_SIZE}"
+            run_idx=$((run_idx + 1))
+            run_suffix="seed${seed}-env${num_envs}-dr${DOMAIN_RAND_CONFIG_TYPE}"
 
-                echo ""
-                echo "=============================================================="
-                echo "Run ${run_idx}/${TOTAL_RUNS}: envs=${num_envs}, ${percentage}% MPC, seed=${seed}, lr=${LEARNING_RATE}, bs=${BATCH_SIZE}"
-                echo "=============================================================="
-                echo ""
+            echo ""
+            echo "=============================================================="
+            echo "Run ${run_idx}/${TOTAL_RUNS}: envs=${num_envs}, ${percentage}% MPC, seed=${seed}"
+            echo "=============================================================="
+            echo ""
 
-                if ! python mpc_rl/train.py \
-                    --env_name="${ENV_NAME}" \
-                    --algorithm="${ALGORITHM}" \
-                    --total_timesteps="${TOTAL_TIMESTEPS}" \
-                    --num_envs="${num_envs}" \
-                    --seed="${seed}" \
-                    --learning_starts="${LEARNING_STARTS}" \
-                    --save_replay_buffer_checkpoints="${SAVE_REPLAY_BUFFER_CHECKPOINTS}" \
-                    --save_replay_buffer_final="${SAVE_REPLAY_BUFFER_FINAL}" \
-                    --domain_rand="${DOMAIN_RAND}" \
-                    --domain_rand_config_type="${DOMAIN_RAND_CONFIG_TYPE}" \
-                    --domain_rand_obs_noise="${DOMAIN_RAND_OBS_NOISE}" \
-                    --use_go2_sysid="${USE_GO2_SYSID}" \
-                    --data_dir="${DATA_DIR}" \
-                    --buffer_size="${BUFFER_SIZE}" \
-                    --learning_rate="${LEARNING_RATE}" \
-                    --policy_delay="${POLICY_DELAY}" \
-                    --batch_size="${BATCH_SIZE}" \
-                    --logdir="${LOG_DIR}" \
-                    --percentage="${percentage}" \
-                    --checkpoint_evals="${CHECKPOINT_EVALS_CSV}" \
-                    --suffix="${run_suffix}";
-                    echo ""
-                    echo "ERROR: envs=${num_envs}, percentage=${percentage}, seed=${seed}, lr=${LEARNING_RATE}, bs=${BATCH_SIZE} failed."
-                    echo "Stopping sweep."
-                    exit 1
-                fi
+            if ! python mpc_rl/train.py \
+                --env_name="${ENV_NAME}" \
+                --algorithm="${ALGORITHM}" \
+                --total_timesteps="${TOTAL_TIMESTEPS}" \
+                --num_envs="${num_envs}" \
+                --seed="${seed}" \
+                --learning_starts="${LEARNING_STARTS}" \
+                --save_replay_buffer_checkpoints="${SAVE_REPLAY_BUFFER_CHECKPOINTS}" \
+                --save_replay_buffer_final="${SAVE_REPLAY_BUFFER_FINAL}" \
+                --domain_rand="${DOMAIN_RAND}" \
+                --domain_rand_config_type="${DOMAIN_RAND_CONFIG_TYPE}" \
+                --domain_rand_obs_noise="${DOMAIN_RAND_OBS_NOISE}" \
+                --use_go2_sysid="${USE_GO2_SYSID}" \
+                --data_dir="${DATA_DIR}" \
+                --buffer_size="${BUFFER_SIZE}" \
+                --learning_rate="${LEARNING_RATE}" \
+                --policy_delay="${POLICY_DELAY}" \
+                --batch_size="${BATCH_SIZE}" \
+                --logdir="${LOG_DIR}" \
+                --percentage="${percentage}" \
+                --checkpoint_evals="${CHECKPOINT_EVALS_CSV}" \
+                --suffix="${run_suffix}"; then
+                echo ""
+                echo "ERROR: envs=${num_envs}, percentage=${percentage}, seed=${seed} failed."
+                echo "Stopping sweep."
+                exit 1
+            fi
 
-                echo ""
-                echo "Completed envs=${num_envs}, percentage=${percentage}, seed=${seed}, lr=${LEARNING_RATE}, bs=${BATCH_SIZE}"
-                echo ""
-            done
+            echo ""
+            echo "Completed envs=${num_envs}, percentage=${percentage}, seed=${seed}"
+            echo ""
         done
     done
 done

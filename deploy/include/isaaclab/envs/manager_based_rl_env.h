@@ -27,7 +27,7 @@ public:
     {
         // Parse configuration
         this->step_dt = cfg["step_dt"].as<float>();
-        robot->data.joint_ids_map = cfg["joint_ids_map"].as<std::vector<float>>();
+        robot->data.joint_ids_map = cfg["joint_ids_map"].as<std::vector<int>>();
         robot->data.joint_pos.resize(robot->data.joint_ids_map.size());
         robot->data.joint_vel.resize(robot->data.joint_ids_map.size());
 

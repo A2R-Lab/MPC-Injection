@@ -36,6 +36,7 @@ SAC and TD3 use different actor structures in SB3:
 
 Both produce actions in [-1, 1].  The C++ action manager then applies:
     joint_target[i] = actions[i] * 0.5 + default_joint_pos[i]
+using the same FL, FR, RL, RR joint order as the MuJoCo training env.
 
 Usage
 -----
@@ -393,17 +394,17 @@ def export(
     print(f"\nAt default standing pose (zero obs):")
     action_scale = 0.5
     default_joint_pos = np.array([
-        -0.1, 0.9, -1.8,  # FR: hip, thigh, calf
-         0.1, 0.9, -1.8,  # FL
-        -0.1, 0.9, -1.8,  # RR
-         0.1, 0.9, -1.8,  # RL
+         0.0, 0.9, -1.8,  # FL: hip, thigh, calf
+         0.0, 0.9, -1.8,  # FR
+         0.0, 0.9, -1.8,  # RL
+         0.0, 0.9, -1.8,  # RR
     ])
     joint_targets = out_zero[0] * action_scale + default_joint_pos
     joint_names = [
-        "FR_hip", "FR_thigh", "FR_calf",
         "FL_hip", "FL_thigh", "FL_calf",
-        "RR_hip", "RR_thigh", "RR_calf",
+        "FR_hip", "FR_thigh", "FR_calf",
         "RL_hip", "RL_thigh", "RL_calf",
+        "RR_hip", "RR_thigh", "RR_calf",
     ]
     for name, target, default in zip(joint_names, joint_targets, default_joint_pos):
         print(f"  {name:12s}: target={target:+.4f}  (default={default:+.4f})")

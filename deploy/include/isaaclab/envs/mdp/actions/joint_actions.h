@@ -77,7 +77,7 @@ public:
 
     void reset()
     {
-        _raw_actions.assign(_action_dim, 0.0f);
+        process_actions(std::vector<float>(_action_dim, 0.0f));
     }
 
 protected:
