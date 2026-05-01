@@ -7,7 +7,10 @@ from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
 import mujoco
 
-from mpc_rl.envs.domain_randomization import extract_startup_domain_rand_patch
+from mpc_rl.envs.domain_randomization import (
+    extract_startup_domain_rand_patch,
+    resolve_startup_domain_rand_config,
+)
 from mpc_rl.envs.go2_sysid import GO2_SYSID_IDENTIFIED_JOINT_DYNAMICS
 
 _QUADRUPED_DIRECT_TRANSITION_KEYS = (
@@ -696,6 +699,7 @@ class PercentMPCInjectCallback(BaseCallback):
     def _replay_quadruped_trajectory(
         self, temp_env, qpos, qvel, tau_applied, commands,
         episode_length, decimation, default_joint_pos, traj_domain_rand_patch=None,
+        traj_seed: int | None = None,
     ):
         """Replay one quadruped MPC trajectory and inject transitions into the replay buffer.
 
@@ -724,8 +728,31 @@ class PercentMPCInjectCallback(BaseCallback):
         Returns:
             Number of transitions committed to the replay buffer.
         """
-        # Reset temp env then override with trajectory initial state
-        temp_env.reset()
+        if traj_domain_rand_patch is not None:
+            dr_config_type = str(
+                traj_domain_rand_patch.get("dr_config_type", "disabled")
+            )
+            _, replay_dr_cfg = resolve_startup_domain_rand_config(dr_config_type)
+            # gen_traj_data_mpx_dr.py disables observation noise/bias for demos.
+            replay_dr_cfg.obs_noise_level = 0.0
+            replay_dr_cfg.encoder_bias_range = (0.0, 0.0)
+            temp_env.domain_rand_cfg = replay_dr_cfg
+
+        # Match generator reset order: commands are fixed before reset, so reset
+        # does not sample commands and the RNG lands on the same push sequence.
+        if commands.shape[1] > 0:
+            initial_cmd = commands[:, 0]
+            temp_env.set_commands(
+                vx=float(initial_cmd[0]),
+                vy=float(initial_cmd[1]),
+                wz=float(initial_cmd[2]),
+            )
+
+        # Reset temp env then override with trajectory initial state.
+        if traj_seed is None:
+            temp_env.reset()
+        else:
+            temp_env.reset(seed=traj_seed)
         _apply_quadruped_trajectory_dr_patch(temp_env, traj_domain_rand_patch)
         temp_env.mjData.qpos[:] = qpos[:, 0]
         temp_env.mjData.qvel[:] = qvel[:, 0]
@@ -1055,6 +1082,11 @@ class PercentMPCInjectCallback(BaseCallback):
                                 traj_control_dt = float(traj_data['control_dt'])
                                 traj_decimation = int(round(traj_control_dt / traj_sim_dt))
                                 traj_default_joint_pos = traj_data['default_joint_pos']
+                                traj_seed = (
+                                    int(np.array(traj_data["seed"]).item())
+                                    if "seed" in traj_data
+                                    else None
+                                )
                             if self.verbose > 2:
                                 if quadruped_has_direct_transitions:
                                     print(
@@ -1121,6 +1153,7 @@ class PercentMPCInjectCallback(BaseCallback):
                         temp_env, qpos, qvel, traj_tau_applied, traj_commands,
                         traj_episode_length, traj_decimation, traj_default_joint_pos,
                         traj_domain_rand_patch=traj_domain_rand_patch,
+                        traj_seed=traj_seed,
                     )
             else:
                 # ----------------------------------------------------------------

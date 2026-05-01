@@ -9,6 +9,8 @@ set -euo pipefail
 #   - sysid_floor_only_no_push    : floor/contact-surface friction only
 #   - sysid_floor_sensing_no_push : floor friction plus RL sensing noise/bias
 #   - sysid_dyn10_default_no_push : default-no-push DR plus per-joint +/-10% dynamics
+#   - sysid_dyn20_mjlab           : MjLab/IsaacLab Go2 DR, pushes, and per-joint +/-20% dynamics
+#   - sysid_dyn20_mjlab_no_push   : MjLab/IsaacLab Go2 DR and per-joint +/-20% dynamics, no pushes
 #   - default_no_push : default DR values from domain_randomization.py, but no pushes
 #   - half_no_push    : reduced-strength DR, no pushes
 #   - quarter_no_push : quarter-strength DR, no pushes
@@ -25,18 +27,18 @@ LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
 DOMAIN_RAND="True"
-DOMAIN_RAND_CONFIG_TYPE="sysid_dyn10_default" # e.g. "sysid_floor_sensing_no_push", "default_no_push", or "disabled"
+DOMAIN_RAND_CONFIG_TYPE="sysid_dyn20_mjlab" # sysID + DR + pushing
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
 USE_GO2_SYSID="True"
-DATA_DIR="data/quadruped_dr/sysid_dyn10_default_no_push_10k/"
+DATA_DIR="data/quadruped_dr/sysid_dyn20_mjlab_10k/"
 BUFFER_SIZE=5000000
 LEARNING_RATE=3e-4 # TODO: Try lower learning rate to stop the collapse? 1e-4
 POLICY_DELAY=2
 BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
-LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn10_default_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 #LOG_DIR="logs/quadruped_domain_rand_sac/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 
 # Sweep dimensions

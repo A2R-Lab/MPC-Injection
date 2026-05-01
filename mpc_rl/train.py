@@ -234,6 +234,8 @@ _DOMAIN_RAND_CONFIG_TYPE = flags.DEFINE_enum(
         "sysid_dyn10_default",
         "sysid_dyn10_default_no_push",
         "sysid_dyn10_half_no_push",
+        "sysid_dyn20_mjlab",
+        "sysid_dyn20_mjlab_no_push",
         "sysid_floor_only_no_push",
         "sysid_floor_sensing_no_push",
         "disabled",

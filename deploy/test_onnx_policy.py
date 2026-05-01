@@ -63,6 +63,21 @@ from mpc_rl.envs.domain_randomization import (
 )
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 
+
+def _has_dynamics_domain_randomization(domain_rand_cfg: DomainRandomizationConfig) -> bool:
+    return bool(
+        domain_rand_cfg.enable and (
+            domain_rand_cfg.joint_damping_scale_range[0]
+            != domain_rand_cfg.joint_damping_scale_range[1]
+            or domain_rand_cfg.joint_armature_scale_range[0]
+            != domain_rand_cfg.joint_armature_scale_range[1]
+            or domain_rand_cfg.joint_friction_scale_range[0]
+            != domain_rand_cfg.joint_friction_scale_range[1]
+            or domain_rand_cfg.joint_friction_range[0]
+            != domain_rand_cfg.joint_friction_range[1]
+        )
+    )
+
 # =============================================================================
 # GLFW key codes (identical to play_quad.py)
 # =============================================================================
@@ -293,8 +308,14 @@ def main():
     )
     env_base = env_wrapped.unwrapped
     if args.robot.lower() == "go2" and args.use_go2_sysid:
-        assert_go2_sysid_joint_dynamics(env_base.mjModel)
-        print("Verified Go2 sysID joint dynamics in the ONNX simulation environment.")
+        if _has_dynamics_domain_randomization(env_base.domain_rand_cfg):
+            print(
+                "Skipping exact Go2 sysID equality check because this DR preset "
+                "intentionally randomizes joint dynamics."
+            )
+        else:
+            assert_go2_sysid_joint_dynamics(env_base.mjModel)
+            print("Verified Go2 sysID joint dynamics in the ONNX simulation environment.")
     vec_env = DummyVecEnv([lambda: env_wrapped])
     print(
         "Domain randomization during ONNX replay: "

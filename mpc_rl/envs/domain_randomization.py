@@ -58,11 +58,23 @@ STARTUP_DOMAIN_RAND_PRESET_NAMES = (
     "sysid_dyn10_default",
     "sysid_dyn10_default_no_push",
     "sysid_dyn10_half_no_push",
+    "sysid_dyn20_mjlab",
+    "sysid_dyn20_mjlab_no_push",
     "sysid_floor_only_no_push",
     "sysid_floor_sensing_no_push",
     "disabled",
 )
 FLOOR_FRICTION_TARGET_GEOM_NAMES = ("ground", "floor", "hfield", "terrain")
+MJLAB_CONTACT_FRICTION_TARGET_GEOM_NAMES = (
+    "ground",
+    "floor",
+    "hfield",
+    "terrain",
+    "FL",
+    "FR",
+    "RL",
+    "RR",
+)
 STARTUP_DOMAIN_RAND_PATCH_ARRAY_KEYS = (
     "dr_patch_geom_friction",
     "dr_patch_body_mass",
@@ -410,6 +422,54 @@ class DomainRandomizationConfig:
         )
 
     @classmethod
+    def sysid_dyn20_mjlab_no_push(cls) -> DomainRandomizationConfig:
+        """MjLab/IsaacLab-style Go2 DR plus per-joint ±20% sysID dynamics, no pushes."""
+        base_cfg = cls.default_no_push()
+        return cls(
+            friction_range=(0.3, 1.6),
+            friction_target_geom_names=MJLAB_CONTACT_FRICTION_TARGET_GEOM_NAMES,
+            added_mass_range=(-1.0, 3.0),
+            com_displacement_range=(-0.05, 0.05),
+            encoder_bias_range=base_cfg.encoder_bias_range,
+            kp_scale_range=(0.9, 1.1),
+            kd_scale_range=(0.9, 1.1),
+            joint_damping_scale_range=(0.8, 1.2),
+            joint_armature_scale_range=(0.8, 1.2),
+            joint_friction_range=base_cfg.joint_friction_range,
+            joint_friction_scale_range=(0.8, 1.2),
+            motor_strength_range=(0.9, 1.1),
+            obs_noise_level=base_cfg.obs_noise_level,
+            obs_noise_scales=base_cfg.obs_noise_scales.copy(),
+            push_robots=False,
+            push_interval_range_s=(5.0, 10.0),
+            push_velocity_ranges=base_cfg.push_velocity_ranges.copy(),
+        )
+
+    @classmethod
+    def sysid_dyn20_mjlab(cls) -> DomainRandomizationConfig:
+        """MjLab/IsaacLab-style Go2 DR plus per-joint ±20% sysID dynamics and pushes."""
+        no_push_cfg = cls.sysid_dyn20_mjlab_no_push()
+        return cls(
+            friction_range=no_push_cfg.friction_range,
+            friction_target_geom_names=no_push_cfg.friction_target_geom_names,
+            added_mass_range=no_push_cfg.added_mass_range,
+            com_displacement_range=no_push_cfg.com_displacement_range,
+            encoder_bias_range=no_push_cfg.encoder_bias_range,
+            kp_scale_range=no_push_cfg.kp_scale_range,
+            kd_scale_range=no_push_cfg.kd_scale_range,
+            joint_damping_scale_range=no_push_cfg.joint_damping_scale_range,
+            joint_armature_scale_range=no_push_cfg.joint_armature_scale_range,
+            joint_friction_range=no_push_cfg.joint_friction_range,
+            joint_friction_scale_range=no_push_cfg.joint_friction_scale_range,
+            motor_strength_range=no_push_cfg.motor_strength_range,
+            obs_noise_level=no_push_cfg.obs_noise_level,
+            obs_noise_scales=no_push_cfg.obs_noise_scales.copy(),
+            push_robots=True,
+            push_interval_range_s=no_push_cfg.push_interval_range_s,
+            push_velocity_ranges=no_push_cfg.push_velocity_ranges.copy(),
+        )
+
+    @classmethod
     def from_preset(cls, preset: str) -> DomainRandomizationConfig:
         """Create a config from a named preset."""
         preset_factories = {
@@ -420,6 +480,8 @@ class DomainRandomizationConfig:
             "sysid_dyn10_default": cls.sysid_dyn10_default,
             "sysid_dyn10_default_no_push": cls.sysid_dyn10_default_no_push,
             "sysid_dyn10_half_no_push": cls.sysid_dyn10_half_no_push,
+            "sysid_dyn20_mjlab": cls.sysid_dyn20_mjlab,
+            "sysid_dyn20_mjlab_no_push": cls.sysid_dyn20_mjlab_no_push,
             "sysid_floor_only_no_push": cls.sysid_floor_only_no_push,
             "sysid_floor_sensing_no_push": cls.sysid_floor_sensing_no_push,
             "disabled": cls.disabled,

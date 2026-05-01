@@ -35,7 +35,7 @@ except RuntimeError:
 jax.default_device(gpu_device)
 
 
-DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET = "sysid_floor_only_no_push"
+DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET = "sysid_dyn20_mjlab"
 
 
 def _go2_sysid_signature_vector() -> np.ndarray:

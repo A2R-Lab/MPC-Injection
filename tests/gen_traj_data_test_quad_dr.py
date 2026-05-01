@@ -49,6 +49,7 @@ from mpc_rl.envs.domain_randomization import (
     DomainRandomizationConfig,
     apply_startup_domain_rand_patch,
     extract_startup_domain_rand_patch,
+    resolve_startup_domain_rand_config,
 )
 
 
@@ -100,7 +101,14 @@ def load_trajectory(traj_file):
         "control_dt": float(data["control_dt"]),
         "episode_length": int(data["episode_length"]),
         "dr_patch": extract_startup_domain_rand_patch(data),
+        "go2_sysid_enabled": (
+            bool(data["go2_sysid_enabled"]) if "go2_sysid_enabled" in data else True
+        ),
     }
+    if result["dr_patch"] is not None and "dr_config_type" in result["dr_patch"]:
+        result["dr_config_type"] = str(result["dr_patch"]["dr_config_type"])
+    else:
+        result["dr_config_type"] = None
     return result
 
 
@@ -136,6 +144,18 @@ def apply_loaded_dr_patch(env, dr_patch):
     if dr_patch is None:
         return
     env.torque_limits = apply_startup_domain_rand_patch(env.mjModel, env.mjData, dr_patch)
+
+
+def replay_domain_rand_config(traj):
+    """Resolve runtime DR settings needed to mirror generation replay."""
+    if traj.get("dr_config_type") is None:
+        return DomainRandomizationConfig(enable=False, push_robots=False)
+
+    _, cfg = resolve_startup_domain_rand_config(traj["dr_config_type"])
+    # gen_traj_data_mpx_dr.py intentionally records clean observations/actions.
+    cfg.obs_noise_level = 0.0
+    cfg.encoder_bias_range = (0.0, 0.0)
+    return cfg
 
 
 def replay_joint_position_mode(env, traj, max_steps, render_mode=None):
@@ -225,6 +245,11 @@ def replay_joint_position_mode(env, traj, max_steps, render_mode=None):
             env.mjData.ctrl[:] = torques
             mujoco.mj_step(env.mjModel, env.mjData)
 
+        # gen_traj_data_mpx_dr records qpos/qvel after the final substep and
+        # before interval pushes are applied.
+        boundary_qpos = env.mjData.qpos.copy()
+        boundary_qvel = env.mjData.qvel.copy()
+
         # -- Replicate env.step() post-substep bookkeeping --
         env._step_count += 1
         env._steps_since_command_resample += 1
@@ -241,8 +266,8 @@ def replay_joint_position_mode(env, traj, max_steps, render_mode=None):
         env._swing_peak *= ~env._current_contacts
 
         # Record
-        env_qpos_history.append(env.mjData.qpos.copy())
-        env_qvel_history.append(env.mjData.qvel.copy())
+        env_qpos_history.append(boundary_qpos)
+        env_qvel_history.append(boundary_qvel)
         actions_applied.append(action_clipped.copy())
         rewards.append(reward)
 
@@ -286,7 +311,6 @@ def replay_torque_mode(env, traj, max_steps, render_mode=None):
     total_sim_steps = tau_applied.shape[1]
 
     num_ctrl_steps = min(episode_length, max_steps)
-    num_sim_steps = num_ctrl_steps * decimation
 
     frames = []
     env_qpos_history = []
@@ -298,26 +322,46 @@ def replay_torque_mode(env, traj, max_steps, render_mode=None):
 
     print(f"Replaying {num_ctrl_steps} control steps in torque mode...")
 
-    for sim_step in range(min(num_sim_steps, total_sim_steps)):
-        # Directly apply the recorded torques to MuJoCo
-        torques = tau_applied[:, sim_step]
-        env.mjData.ctrl[:] = torques
-        mujoco.mj_step(env.mjModel, env.mjData)
+    for ctrl_step in range(num_ctrl_steps):
+        sim_idx_start = ctrl_step * decimation
+        if sim_idx_start >= total_sim_steps:
+            break
 
-        # Record at control frequency
-        if (sim_step + 1) % decimation == 0:
-            env_qpos_history.append(env.mjData.qpos.copy())
-            env_qvel_history.append(env.mjData.qvel.copy())
+        cmd = commands_recorded[:, sim_idx_start]
+        env.set_commands(vx=cmd[0], vy=cmd[1], wz=cmd[2])
 
-            frame = env.render()
-            if frame is not None:
-                frames.append(frame)
-            if render_mode == "human":
-                time.sleep(control_dt)
+        for sub in range(decimation):
+            sim_idx = sim_idx_start + sub
+            if sim_idx >= total_sim_steps:
+                break
 
-            ctrl_step = (sim_step + 1) // decimation
-            if ctrl_step % 200 == 0:
-                print(f"  Step {ctrl_step}/{num_ctrl_steps}")
+            torques = tau_applied[:, sim_idx]
+            env._applied_torques = torques.copy()
+            env.mjData.ctrl[:] = torques
+            mujoco.mj_step(env.mjModel, env.mjData)
+
+        # Save the state at the same boundary as qpos/qvel in the npz file:
+        # gen_traj_data_mpx_dr records the post-substep state before pushes.
+        env_qpos_history.append(env.mjData.qpos.copy())
+        env_qvel_history.append(env.mjData.qvel.copy())
+
+        env._step_count += 1
+        env._steps_since_command_resample += 1
+        env._maybe_push_robot()
+        env._update_feet_air_time()
+
+        joint_vel_current = env.mjData.qvel[6:].copy()
+        env._joint_acc = (joint_vel_current - env._last_joint_vel) / env.control_dt
+        env._last_joint_vel = joint_vel_current
+
+        frame = env.render()
+        if frame is not None:
+            frames.append(frame)
+        if render_mode == "human":
+            time.sleep(control_dt)
+
+        if (ctrl_step + 1) % 200 == 0:
+            print(f"  Step {ctrl_step + 1}/{num_ctrl_steps}")
 
     env_qpos_history = np.array(env_qpos_history)
     env_qvel_history = np.array(env_qvel_history)
@@ -443,14 +487,20 @@ def test_trajectory(data_dir, random_select=True, filename=None,
     else:
         print("  WARNING: No DR patch found in trajectory file!")
 
-    # Create RL environment with DR disabled -- the saved DR patch will be
-    # applied manually to match the generation environment exactly.
-    print(f"\nCreating QuadrupedVelocityTrackingEnv (DR disabled, default gains)...")
+    replay_dr_cfg = replay_domain_rand_config(traj)
+
+    # Create the env with the same runtime DR preset as generation. Startup
+    # physics are still restored from the saved patch, but reset-time push RNG
+    # must be initialized by the same enabled/disabled push config.
+    print(f"\nCreating QuadrupedVelocityTrackingEnv (saved DR runtime settings)...")
     env = QuadrupedVelocityTrackingEnv(
         robot="go2",
         scene="flat",
         render_mode=render_mode,
-        domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
+        domain_rand_cfg=replay_dr_cfg,
+        apply_startup_domain_rand_on_init=False,
+        simple_reward=True,
+        use_go2_sysid=traj["go2_sysid_enabled"],
     )
 
     # Disable early termination during replay so we can observe the full
@@ -459,23 +509,20 @@ def test_trajectory(data_dir, random_select=True, filename=None,
     env.max_roll = np.pi
     env.min_base_height = -1.0
 
-    # Reset the environment, then apply the DR patch
-    obs, info = env.reset(seed=42)
+    # Match generation order: commands are fixed before reset, so reset does
+    # not sample commands and the env RNG lands on the same push sequence.
+    initial_cmd = traj["commands"][:, 0]
+    env.set_commands(
+        vx=float(initial_cmd[0]),
+        vy=float(initial_cmd[1]),
+        wz=float(initial_cmd[2]),
+    )
+    obs, info = env.reset(seed=traj["seed"])
     apply_loaded_dr_patch(env, traj["dr_patch"])
-
-    # Workaround for existing DR data: the generation script sampled the DR
-    # patch before env.reset(), so the patch stores friction randomized from
-    # the XML default (1.0) instead of the post-reset value (0.7). But reset's
-    # _set_ground_friction(0.7) overwrote ground/foot geoms after DR was
-    # applied, so the trajectory actually ran with ground/foot friction = 0.7.
-    # Re-apply [0.7, 0.005, 0.0] to match the generation environment.
-    # NOTE: Remove this once data is regenerated with the fixed gen script.
-    env._set_generation_contact_friction()
 
     # Print applied DR model params for verification.
     # Show values for the fields that were actually randomized so the user can
-    # confirm the patch took effect. Ground/foot friction is always 0.7 after
-    # the generation-friction workaround, so we print a non-ground geom instead.
+    # confirm the patch took effect.
     if traj["dr_patch"] is not None:
         dr = traj["dr_patch"]
         applied = set(dr.get("dr_applied_fields", np.array([])).tolist())
@@ -483,11 +530,15 @@ def test_trajectory(data_dir, random_select=True, filename=None,
         print(f"  Applied DR patch to RL env:")
 
         if "geom_friction" in applied:
-            # Find a non-ground/foot geom to show the randomized friction.
-            # Ground/foot geoms are pinned to 0.7 and won't reflect DR.
-            gen_ids = env._generation_contact_geom_ids()
+            changed = np.where(
+                ~np.isclose(
+                    env.mjModel.geom_friction[:, 0],
+                    env._nominal_friction[:, 0],
+                )
+            )[0]
             example_id = next(
-                (i for i in range(env.mjModel.ngeom) if i not in gen_ids), 0
+                (int(i) for i in changed),
+                0,
             )
             example_name = mujoco.mj_id2name(
                 env.mjModel, mujoco.mjtObj.mjOBJ_GEOM, example_id
