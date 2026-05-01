@@ -1,0 +1,36 @@
+.git
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Local environments
+.venv/
+venv/
+env/
+.mamba/
+.conda/
+
+# Training outputs
+logs/
+plots/
+videos/
+jax_cache/
+wandb/
+runs/
+tensorboard/
+*.zip
+*.pkl
+*.npz
+*.mp4
+
+# Large datasets/checkpoints; mount these at runtime instead
+data/
+body_trajs/model_traj_data_quadruped/
+body_trajs/model_traj_data_walker/
+
+# Editor/system files
+.vscode/
+.idea/
+.DS_Store
