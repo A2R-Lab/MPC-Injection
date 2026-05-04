@@ -22,7 +22,7 @@ set -euo pipefail
 # Common experiment parameters
 ENV_NAME="quadruped-velocity_tracking"
 ALGORITHM="SAC-MPC"
-TOTAL_TIMESTEPS=2000000
+TOTAL_TIMESTEPS=1000000
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
@@ -31,9 +31,9 @@ DOMAIN_RAND_CONFIG_TYPE="sysid_dyn20_mjlab" # sysID + DR + pushing
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
 USE_GO2_SYSID="True"
-DATA_DIR="data/quadruped_dr/sysid_dyn20_mjlab_10k/"
+DATA_DIR="data/quadruped_dr/sysid_dyn20_mjlab_10k/" # sysid_dyn10_default_no_push_10k
 BUFFER_SIZE=5000000
-LEARNING_RATE=3e-4 # TODO: Try lower learning rate to stop the collapse? 1e-4
+LEARNING_RATE=1e-4 # OG 3e-4, but found that it caused catastrophic forgetting as training went on
 POLICY_DELAY=2
 BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
@@ -44,7 +44,7 @@ LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k/${ALGORITHM}-${
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(25)
-SEEDS=(100 999)
+SEEDS=(100 200 300)
 
 # Optional checkpoint videos during training
 CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)

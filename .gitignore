@@ -240,3 +240,6 @@ deploy/robots/go2/build/
 
 # Ignore serena
 .serena/
+
+# Ignore apptainer
+*.sif
