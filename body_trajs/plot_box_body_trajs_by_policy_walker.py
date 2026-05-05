@@ -221,6 +221,14 @@ def plot_torso_height_boxplots(
         'Walker Torso Height by Checkpoint:\nPure RL vs MPC-Injection',
         fontweight='bold',
     )
+    all_values = np.concatenate([np.concatenate(pure_rl_data), np.concatenate(mpc_data)])
+    positive_values = all_values[all_values > 0.0]
+    if positive_values.size == 0:
+        raise ValueError("Cannot use log y-scale because no torso-height values are positive.")
+    ymin = max(float(np.min(positive_values)) * 0.8, 1e-4)
+    ymax = float(np.max(positive_values)) * 1.05
+    ax.set_yscale('log')
+    ax.set_ylim(ymin, ymax)
     ax.grid(axis='y', alpha=0.3)
     ax.set_axisbelow(True)
 

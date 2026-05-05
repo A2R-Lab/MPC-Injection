@@ -88,6 +88,7 @@ from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 import mpc_rl.envs
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
+from mpc_rl.envs.cheetah3_env import DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -121,6 +122,11 @@ _USE_GO2_SYSID = flags.DEFINE_boolean(
 )
 _MAX_EPISODE_STEPS = flags.DEFINE_integer(
     "max_episode_steps", 1000, "Maximum number of steps per episode"
+)
+_CHEETAH3_SPEED_GOAL = flags.DEFINE_float(
+    "cheetah3_speed_goal",
+    CHEETAH3_DEFAULT_SPEED_GOAL,
+    "Forward speed target in m/s for the cheetah3 reward.",
 )
 
 # Training flags
@@ -270,6 +276,7 @@ class AllConfig:
     random_select: bool
     data_dir: str
     use_go2_sysid: bool
+    cheetah3_speed_goal: float
 
 
 def parse_env_name(env_name: str) -> tuple[str, str]:
@@ -470,6 +477,24 @@ def is_quadruped_env(env_name: str) -> bool:
     return env_name.lower().startswith("quadruped-")
 
 
+def is_cheetah3_env(env_name: str) -> bool:
+    """Check if the environment is the local three-legged cheetah task."""
+    return env_name.lower() in {"cheetah3", "cheetah3-run"} or env_name.lower().startswith("cheetah3-")
+
+
+def make_cheetah3_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
+    """Create the local three-legged cheetah environment wrapped for SBX."""
+    time_limit = _MAX_EPISODE_STEPS.value * 0.01
+    gym_env = gym.make(
+        "Cheetah3-v0",
+        render_mode=render_mode,
+        speed_goal=speed_goal,
+        time_limit=time_limit,
+    )
+    gym_env = FlattenObservation(gym_env)
+    return gym_env
+
+
 def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None,
                        simple_reward: bool = False,
                        use_go2_sysid: bool = True):
@@ -571,9 +596,11 @@ def save_config(logdir: Path, config: dict):
 
 def make_single_env_for_model_loading(domain: str, task: str,
                                       is_quadruped: bool = False,
+                                      is_cheetah3: bool = False,
                                       robot: str = "go2",
                                       simple_reward: bool = False,
-                                      use_go2_sysid: bool = True):
+                                      use_go2_sysid: bool = True,
+                                      cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Create a single-env VecEnv for loading a saved model."""
     is_shadow_hand = (domain == "shadow_hand")
 
@@ -586,6 +613,10 @@ def make_single_env_for_model_loading(domain: str, task: str,
                 use_go2_sysid=use_go2_sysid,
             )
         ])
+    if is_cheetah3:
+        return DummyVecEnv([
+            lambda: make_cheetah3_env(speed_goal=cheetah3_speed_goal)
+        ])
     if is_shadow_hand:
         return DummyVecEnv([lambda: make_shadow_hand_env(task)])
     return DummyVecEnv([lambda: make_dm_env(domain, task)])
@@ -595,17 +626,21 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
                                     vecnormalize_path: Optional[Path],
                                     domain: str, task: str,
                                     is_quadruped: bool = False,
+                                    is_cheetah3: bool = False,
                                     robot: str = "go2",
                                     simple_reward: bool = False,
-                                    use_go2_sysid: bool = True):
+                                    use_go2_sysid: bool = True,
+                                    cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Load a saved model plus its VecNormalize stats for video evaluation."""
     model_env = make_single_env_for_model_loading(
         domain=domain,
         task=task,
         is_quadruped=is_quadruped,
+        is_cheetah3=is_cheetah3,
         robot=robot,
         simple_reward=simple_reward,
         use_go2_sysid=use_go2_sysid,
+        cheetah3_speed_goal=cheetah3_speed_goal,
     )
 
     if vecnormalize_path is not None and vecnormalize_path.exists():
@@ -806,10 +841,12 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                      domain: str, task: str, seed: int,
                      checkpoint_freq: int, eval_freq: int, num_envs: int,
                      is_quadruped: bool = False, robot: str = "go2",
+                     is_cheetah3: bool = False,
                      save_replay_buffer_checkpoints: bool = False,
                      simple_reward: bool = False,
                      use_go2_sysid: bool = True,
-                     domain_rand_config_type: str = "disabled"):
+                     domain_rand_config_type: str = "disabled",
+                     cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """
     Factory function to create all callbacks based on configuration.
     
@@ -870,6 +907,12 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 n_envs=1,
                 seed=seed+1000,
             )
+        elif is_cheetah3:
+            eval_env = make_vec_env(
+                lambda: make_cheetah3_env(speed_goal=cheetah3_speed_goal),
+                n_envs=1,
+                seed=seed+1000,
+            )
         elif is_shadow_hand:
             eval_env = make_vec_env(
                 lambda: make_shadow_hand_env(task),  # task contains the full env name
@@ -918,6 +961,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 data_dir=cfg.data_dir,
                 random_select=cfg.random_select,
                 seed=seed,  # Pass seed for reproducible trajectory selection
+                cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
             )
         elif _INJECT_TYPE.value == "percentage":
@@ -934,6 +978,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 expected_dr_config_type=(
                     domain_rand_config_type if is_quadruped else None
                 ),
+                cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
             )
         callbacks.append(inject_callback)
@@ -948,7 +993,9 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                         num_videos: int, video_dir: Path, normalize_env=None, seed: int = None,
                         is_quadruped: bool = False, robot: str = "go2",
                         simple_reward: bool = False,
-                        use_go2_sysid: bool = True):
+                        use_go2_sysid: bool = True,
+                        is_cheetah3: bool = False,
+                        cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """
     Evaluate model and record videos.
     
@@ -985,6 +1032,11 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+            )
+        elif is_cheetah3:
+            eval_env_base = make_cheetah3_env(
+                render_mode="rgb_array",
+                speed_goal=cheetah3_speed_goal,
             )
         elif is_shadow_hand:
             eval_env_base = make_shadow_hand_env(task, render_mode="rgb_array")
@@ -1045,6 +1097,10 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                 if is_quadruped:
                     # Quadruped env supports render_mode="rgb_array" natively
                     frame = eval_env_base.render()
+                elif is_cheetah3:
+                    frame = eval_env_base.unwrapped._env.physics.render(
+                        camera_id="side", height=480, width=640
+                    )
                 elif domain == "walker":
                     # Use tracking camera for walker environments
                     frame = eval_env.unwrapped.envs[0].unwrapped._env.physics.render(camera_id='side', height=480, width=640)
@@ -1133,7 +1189,9 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                                num_episodes: int, num_videos: int, seed: int,
                                is_quadruped: bool = False, robot: str = "go2",
                                simple_reward: bool = False,
-                               use_go2_sysid: bool = True):
+                               use_go2_sysid: bool = True,
+                               is_cheetah3: bool = False,
+                               cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Load requested checkpoints and record videos for each one."""
     checkpoint_dir = logdir / "checkpoints"
 
@@ -1169,9 +1227,11 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
             domain=domain,
             task=task,
             is_quadruped=is_quadruped,
+            is_cheetah3=is_cheetah3,
             robot=robot,
             simple_reward=simple_reward,
             use_go2_sysid=use_go2_sysid,
+            cheetah3_speed_goal=cheetah3_speed_goal,
         )
 
         try:
@@ -1188,6 +1248,8 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                 robot=robot,
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                is_cheetah3=is_cheetah3,
+                cheetah3_speed_goal=cheetah3_speed_goal,
             )
         finally:
             checkpoint_env.close()
@@ -1217,6 +1279,7 @@ def main(argv):
     # Detect environment type
     is_shadow_hand = is_shadow_hand_env(_ENV_NAME.value)
     is_quadruped = is_quadruped_env(_ENV_NAME.value)
+    is_cheetah3 = is_cheetah3_env(_ENV_NAME.value)
     
     # Parse environment name
     if is_quadruped:
@@ -1224,6 +1287,12 @@ def main(argv):
         domain, task = parse_env_name(_ENV_NAME.value)
         env_name = _ENV_NAME.value
         print(f"Environment: Quadruped ({_ROBOT.value}) / {task}")
+    elif is_cheetah3:
+        env_name = "cheetah3-run"
+        domain = "cheetah3"
+        task = "run"
+        print(f"Environment: Three-Legged Cheetah / run")
+        print(f"Cheetah3 speed goal: {_CHEETAH3_SPEED_GOAL.value:.3f} m/s")
     elif is_shadow_hand:
         # Shadow hand environments use the full registered name
         env_name = _ENV_NAME.value
@@ -1300,6 +1369,7 @@ def main(argv):
         random_select=_RANDOM_SELECT.value,
         data_dir=_DATA_DIR.value,
         use_go2_sysid=_USE_GO2_SYSID.value,
+        cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
     )
     
     # ── Domain randomization setup (quadruped only) ──────────────────────
@@ -1339,6 +1409,7 @@ def main(argv):
             "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
             "use_go2_sysid": _USE_GO2_SYSID.value,
+            "cheetah3_speed_goal": _CHEETAH3_SPEED_GOAL.value,
         })
         if is_quadruped:
             config_dict["domain_randomization"] = {
@@ -1365,6 +1436,13 @@ def main(argv):
             lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr,
                                       simple_reward=_sr,
                                       use_go2_sysid=_USE_GO2_SYSID.value),
+            n_envs=_NUM_ENVS.value,
+            seed=_SEED.value,
+        )
+    elif is_cheetah3:
+        speed_goal = _CHEETAH3_SPEED_GOAL.value
+        vec_env = make_vec_env(
+            lambda: make_cheetah3_env(speed_goal=speed_goal),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )
@@ -1437,12 +1515,14 @@ def main(argv):
             num_envs=_NUM_ENVS.value,
             is_quadruped=is_quadruped,
             robot=_ROBOT.value,
+            is_cheetah3=is_cheetah3,
             save_replay_buffer_checkpoints=_SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             simple_reward=use_simple_reward,
             use_go2_sysid=_USE_GO2_SYSID.value,
             domain_rand_config_type=(
                 _DOMAIN_RAND_CONFIG_TYPE.value if is_quadruped else "disabled"
             ),
+            cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
         )
         
         # If using SAC-MPC with percentage injection, connect the callback to the model
@@ -1497,6 +1577,8 @@ def main(argv):
                 robot=_ROBOT.value,
                 simple_reward=use_simple_reward,
                 use_go2_sysid=_USE_GO2_SYSID.value,
+                is_cheetah3=is_cheetah3,
+                cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
             )
 
         print(f"\nEvaluating model for {_NUM_EVAL_EPISODES.value} episodes...")
@@ -1513,6 +1595,8 @@ def main(argv):
             robot=_ROBOT.value,
             simple_reward=use_simple_reward,
             use_go2_sysid=_USE_GO2_SYSID.value,
+            is_cheetah3=is_cheetah3,
+            cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
         )
     
     vec_env.close()

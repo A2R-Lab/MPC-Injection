@@ -255,18 +255,45 @@ The compiled binary `go2_ctrl` will be at `deploy/robots/go2/build/go2_ctrl`.
 
 2. **Power on** the robot in a safe state (use a harness).
 
-3. **Enter zero-torque & then debug mode**: Press `L2 + B` to enter zero-torque mode. While in zero-torque mode, press `L2 + R2` on the controller to enter debug mode.
+3. **Do not run any other low-level controller.** `go2_ctrl` now uses SDK2's
+   `MotionSwitcherClient` at startup to release Unitree's active high-level
+   motion service (`sport_mode`, `ai_sport`, or `advanced_sport`) before it
+   creates its own `rt/lowcmd` publisher. Keep `basic_service` enabled.
 
-4. **Run the deployment binary**:
+   Do not run any other low-level example or ROS low-level node at the same time
+   as this binary, including `go2_stand_example`, `lowlevel_control.py`, or
+   `go2_lowroscontrol`. The executable checks `rt/lowcmd` after releasing the
+   Unitree service and exits if another publisher is still active.
+
+4. **Enter the robot's safe handoff state and then debug mode**: Press
+   `L2 + B` to enter the robot's damping/zero-torque safe state. While in that
+   state, press `L2 + R2` on the controller to enter debug mode.
+
+5. **Run the deployment binary**:
    ```bash
    cd deploy/robots/go2/build
    ./go2_ctrl --network=network_name # Found via ifconfig
    ```
 
-5. **Operate the FSM** via the controller:
+   Watch the startup log closely. It should report that no Unitree high-level
+   motion service is active before waiting for `LowState`. If you see:
+   ```text
+   Another process is still publishing on rt/lowcmd after releasing Unitree's motion service.
+   ```
+   the binary has refused to start because a non-Unitree low-level controller is
+   still publishing. Stop that process and relaunch before entering `FixStand`
+   or `Velocity`.
+
+6. **Operate the FSM** via the controller:
    - `L2 + Up` -- transition from Passive -> FixStand (robot stands up slowly)
    - `R2 + A` -- transition from FixStand -> Velocity (policy takes over)
    - `L2 + B` -- return to Passive at any point (safe abort)
+
+   Note: this repo's `Passive` state is a damping state, not true zero torque.
+   It sets `kp = 0`, `kd = 3`, and continuously publishes each motor's current
+   position, so some viscous limb resistance is expected. Rattling, rapid
+   oscillation, or repeated `lowcmd` warnings are not expected; stop, re-check
+   that `sport_mode`/`ai_sport`/`advanced_sport` is off, and relaunch cleanly.
 
 ---
 

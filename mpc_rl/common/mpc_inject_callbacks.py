@@ -7,6 +7,10 @@ from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
 import mujoco
 
+from mpc_rl.envs.cheetah3_env import (
+    Cheetah3Env,
+    DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL,
+)
 from mpc_rl.envs.domain_randomization import (
     extract_startup_domain_rand_patch,
     resolve_startup_domain_rand_config,
@@ -71,6 +75,57 @@ def _quadruped_traj_has_direct_transitions(traj_data) -> bool:
     return all(key in traj_data for key in _QUADRUPED_DIRECT_TRANSITION_KEYS)
 
 
+def _make_cheetah3_temp_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
+    """Create the cheetah3 Gymnasium env exactly as training uses it."""
+    gym_env = Cheetah3Env(
+        render_mode=render_mode,
+        speed_goal=speed_goal,
+    )
+    return FlattenObservation(gym_env)
+
+
+def _add_transition_to_replay_buffer(replay_buffer, *, obs, next_obs, action, reward, done, infos, source=None):
+    """Add a transition, tagging MPC source when the replay buffer supports it."""
+    kwargs = dict(
+        obs=obs,
+        next_obs=next_obs,
+        action=action,
+        reward=reward,
+        done=done,
+        infos=infos,
+    )
+    if source is not None and hasattr(replay_buffer, "transition_sources"):
+        kwargs["source"] = source
+    replay_buffer.add(**kwargs)
+
+
+def _validate_cheetah3_timing(traj_data, env, *, verbose: int = 0):
+    """Validate cheetah3 trajectory timing against the RL env."""
+    env_dt = float(env.unwrapped._env.physics.timestep())
+
+    if "physics_timestep" in traj_data:
+        traj_dt = float(np.asarray(traj_data["physics_timestep"]).item())
+    else:
+        time = np.asarray(traj_data["time"], dtype=np.float64)
+        traj_dt = float(time[1] - time[0])
+
+    if not np.isclose(traj_dt, env_dt, rtol=0.0, atol=1.0e-12):
+        raise ValueError(
+            "cheetah3 MPC trajectory timestep must match RL env timestep. "
+            f"trajectory dt={traj_dt}, env dt={env_dt}. Do not inject data "
+            "collected at a different transition timestep."
+        )
+
+    if verbose > 1 and "agent_timestep" in traj_data:
+        agent_dt = float(np.asarray(traj_data["agent_timestep"]).item())
+        steps_per_agent_update = int(round(agent_dt / env_dt))
+        print(
+            "    cheetah3 timing: "
+            f"physics_dt={env_dt:.6f}s, agent_dt={agent_dt:.6f}s, "
+            f"held action steps={steps_per_agent_update}; injection downsample=1"
+        )
+
+
 class FixedMPCInjectCallback(BaseCallback):
     """
     Injects MPC trajectories into replay buffer during training at regular intervals.
@@ -95,6 +150,7 @@ class FixedMPCInjectCallback(BaseCallback):
         random_select: bool=True,             # If True, randomly select trajectories from data_dir
         trajectory_files: list=None,          # List of specific filenames to load (used when random_select=False)
         seed: int=None,                       # Random seed for trajectory selection (for reproducibility)
+        cheetah3_speed_goal: float=CHEETAH3_DEFAULT_SPEED_GOAL,
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
@@ -112,6 +168,7 @@ class FixedMPCInjectCallback(BaseCallback):
         self.random_select = random_select
         self.trajectory_files = trajectory_files if trajectory_files is not None else []
         self.trajectory_file_idx = 0  # For cycling through specified files
+        self.cheetah3_speed_goal = float(cheetah3_speed_goal)
         
         # Store seed for reproducibility
         self.seed = seed
@@ -224,6 +281,11 @@ class FixedMPCInjectCallback(BaseCallback):
             downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
         elif self.domain == "shadow_hand":
             downsample_factor = 1  # MPC and RL both at 0.002s
+        elif self.domain == "cheetah3":
+            # cheetah3 MPC files and the RL env both step at MuJoCo physics dt = 0.01s.
+            # The MPC agent action is updated at 0.02s, but gen_traj_data_cheetah3.py
+            # records the held action at every physics step, so do not downsample here.
+            downsample_factor = 1
         else:
             raise ValueError(f"Unsupported domain: {self.domain}")
         
@@ -234,6 +296,11 @@ class FixedMPCInjectCallback(BaseCallback):
             # For shadow_hand, task is the full gym env name
             temp_env = gym.make(self.task, render_mode=None)
             temp_env = FlattenObservation(temp_env)
+        elif self.domain == "cheetah3":
+            temp_env = _make_cheetah3_temp_env(
+                render_mode=None,
+                speed_goal=self.cheetah3_speed_goal,
+            )
         else:
             # For dm_control environments
             dm_env = suite.load(domain_name=self.domain, task_name=self.task)
@@ -263,6 +330,8 @@ class FixedMPCInjectCallback(BaseCallback):
                         qvel = data["qvel"]
                         ctrl = data["ctrl"]
                         time = data["time"]
+                        if self.domain == "cheetah3":
+                            _validate_cheetah3_timing(data, temp_env, verbose=self.verbose)
                         
                         if self.verbose > 1:
                             init_qpos = data["init_qpos"]
@@ -316,6 +385,11 @@ class FixedMPCInjectCallback(BaseCallback):
                 mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
                 # Get observation from environment
                 obs = temp_env.unwrapped._get_obs()
+            elif self.domain == "cheetah3":
+                temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                temp_env.unwrapped._env.physics.forward()
+                obs = temp_env.unwrapped._env.task.get_observation(temp_env.unwrapped._env.physics)
             else:
                 # For dm_control environments
                 temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
@@ -357,13 +431,15 @@ class FixedMPCInjectCallback(BaseCallback):
                 info_vec = [info] * n_envs  # list of n_envs infos
                 
                 # Note: VecNormalize will normalize obs/rewards when sampling
-                self.model.replay_buffer.add(
-                    obs_vec,
-                    next_obs_vec,
-                    action_vec,
-                    reward_vec,
-                    done_vec,
-                    info_vec
+                _add_transition_to_replay_buffer(
+                    self.model.replay_buffer,
+                    obs=obs_vec,
+                    next_obs=next_obs_vec,
+                    action=action_vec,
+                    reward=reward_vec,
+                    done=done_vec,
+                    infos=info_vec,
+                    source=1,
                 )
                 
                 # Track transitions added (each MPC step = 1 unique transition in buffer)
@@ -441,6 +517,7 @@ class PercentMPCInjectCallback(BaseCallback):
         robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
         use_go2_sysid: bool=True,             # Whether quadruped temp envs should apply the Go2 sysID patch
         expected_dr_config_type: str | None = None,  # Expected DR preset for loaded quadruped demos
+        cheetah3_speed_goal: float=CHEETAH3_DEFAULT_SPEED_GOAL,
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
@@ -450,6 +527,7 @@ class PercentMPCInjectCallback(BaseCallback):
         self.robot = robot
         self.use_go2_sysid = use_go2_sysid
         self.expected_dr_config_type = expected_dr_config_type
+        self.cheetah3_speed_goal = float(cheetah3_speed_goal)
         self._warned_dr_mismatch = False
         self._warned_sysid_mismatch = False
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
@@ -890,6 +968,7 @@ class PercentMPCInjectCallback(BaseCallback):
         # NOTE: This can be calculated/seen from the env_modified.xml and the related
         #       task.xml files for MPC vs the env.py and env.py files for RL in dm_control.
         is_quadruped = (self.domain == "quadruped")
+        is_cheetah3 = (self.domain == "cheetah3")
         downsample_factor = None  # Not used for quadruped
         if is_quadruped:
             pass  # Quadruped indexes trajectory at control frequency via decimation
@@ -899,6 +978,11 @@ class PercentMPCInjectCallback(BaseCallback):
             downsample_factor = 10  # MPC at 0.0025s, RL at 0.025s
         elif self.domain == "shadow_hand":
             downsample_factor = 1  # MPC and RL both at 0.002s
+        elif is_cheetah3:
+            # cheetah3 RL control step is the MuJoCo physics timestep (0.01s).
+            # MPC agent actions update every 0.02s, but trajectory files store
+            # the held control at every 0.01s physics step. Inject every row.
+            downsample_factor = 1
         else:
             raise ValueError(f"Unsupported domain: {self.domain}")
         
@@ -911,6 +995,11 @@ class PercentMPCInjectCallback(BaseCallback):
             # For shadow_hand, task is the full gym env name
             temp_env = gym.make(self.task, render_mode=None)
             temp_env = FlattenObservation(temp_env)
+        elif is_cheetah3:
+            temp_env = _make_cheetah3_temp_env(
+                render_mode=None,
+                speed_goal=self.cheetah3_speed_goal,
+            )
         else:
             # For dm_control environments
             dm_env = suite.load(domain_name=self.domain, task_name=self.task)
@@ -1104,6 +1193,12 @@ class PercentMPCInjectCallback(BaseCallback):
                                     )
                         else:
                             ctrl = traj_data['ctrl']  # Shape: (ctrl_dim, num_steps)
+                            if is_cheetah3:
+                                _validate_cheetah3_timing(
+                                    traj_data,
+                                    temp_env,
+                                    verbose=self.verbose,
+                                )
                             # Downsample controls to match RL action timestep
                             ctrl_downsampled = ctrl[:, ::downsample_factor]
                             if self.verbose > 2:
@@ -1159,12 +1254,23 @@ class PercentMPCInjectCallback(BaseCallback):
                 # ----------------------------------------------------------------
                 # dm_control / shadow_hand: direct action replay
                 # ----------------------------------------------------------------
+                # Reset per trajectory so hidden episode counters/time-limit state
+                # do not leak across injected files. qpos/qvel are overridden below.
+                temp_env.reset()
+
                 # Set the environment to the MPC initial state
                 if self.domain == "shadow_hand":
                     temp_env.unwrapped.data.qpos[:] = qpos[:, 0]
                     temp_env.unwrapped.data.qvel[:] = qvel[:, 0]
                     mujoco.mj_forward(temp_env.unwrapped.model, temp_env.unwrapped.data)
                     obs = temp_env.unwrapped._get_obs()
+                elif is_cheetah3:
+                    temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
+                    temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
+                    temp_env.unwrapped._env.physics.forward()
+                    obs = temp_env.unwrapped._env.task.get_observation(
+                        temp_env.unwrapped._env.physics
+                    )
                 else:
                     temp_env.unwrapped._env.physics.data.qpos[:] = qpos[:, 0]
                     temp_env.unwrapped._env.physics.data.qvel[:] = qvel[:, 0]
