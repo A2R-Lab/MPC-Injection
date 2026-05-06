@@ -65,6 +65,67 @@ def _configure_mpc_duty_factor(commands: np.ndarray, mpc) -> float:
     return float(total_command)
 
 
+def _geom_body_label(mj_model: mujoco.MjModel, geom_id: int) -> str:
+    """Return a compact geom/body label for contact rejection messages."""
+    geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+    body_id = int(mj_model.geom_bodyid[geom_id])
+    body_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+    geom_label = geom_name if geom_name else f"geom_{geom_id}"
+    body_label = body_name if body_name else f"body_{body_id}"
+    return f"{geom_label}({body_label})"
+
+
+def _body_is_descendant_of(
+    mj_model: mujoco.MjModel,
+    body_id: int,
+    root_body_id: int,
+) -> bool:
+    """Return whether body_id is root_body_id or belongs to its body subtree."""
+    while body_id != 0:
+        if body_id == root_body_id:
+            return True
+        body_id = int(mj_model.body_parentid[body_id])
+    return False
+
+
+def _find_non_foot_ground_contact(
+    env: QuadrupedVelocityTrackingEnv,
+) -> tuple[str, str] | None:
+    """Return contact details if a non-foot geom touches a world-body ground geom."""
+    for contact_idx in range(env.mjData.ncon):
+        contact = env.mjData.contact[contact_idx]
+        geom1, geom2 = int(contact.geom1), int(contact.geom2)
+        body1 = int(env.mjModel.geom_bodyid[geom1])
+        body2 = int(env.mjModel.geom_bodyid[geom2])
+
+        if body1 == 0 and body2 == 0:
+            continue
+        if body1 != 0 and body2 != 0:
+            continue
+
+        ground_geom = geom1 if body1 == 0 else geom2
+        robot_geom = geom2 if body1 == 0 else geom1
+        if robot_geom in env._foot_geom_id_set:
+            continue
+
+        robot_body_id = int(env.mjModel.geom_bodyid[robot_geom])
+        if not _body_is_descendant_of(
+            env.mjModel, robot_body_id, int(env._base_body_id)
+        ):
+            continue
+
+        robot_body_name = mujoco.mj_id2name(
+            env.mjModel, mujoco.mjtObj.mjOBJ_BODY, robot_body_id
+        )
+        detail = (
+            f"{_geom_body_label(env.mjModel, robot_geom)} touched "
+            f"{_geom_body_label(env.mjModel, ground_geom)}"
+        )
+        return (robot_body_name or f"body_{robot_body_id}", detail)
+
+    return None
+
+
 def _inverse_pd_residual_action(env: QuadrupedVelocityTrackingEnv, tau_applied_first: np.ndarray) -> np.ndarray:
     """Recover the RL residual action whose PD torques match the first applied torque."""
     q_current = env.mjData.qpos[7 : 7 + env.num_joints].copy()
@@ -97,6 +158,7 @@ def _rollout_control_step_with_torques(
     env._last_action = action.copy()
 
     viewer_closed = False
+    non_foot_ground_contact = None
     for substep in range(env.decimation):
         sim_idx = sim_idx_start + substep
         q_current = env.mjData.qpos[7 : 7 + env.num_joints].copy()
@@ -120,6 +182,10 @@ def _rollout_control_step_with_torques(
         qvel_traj[:, sim_idx + 1] = env.mjData.qvel.copy()
         time_traj[sim_idx + 1] = env.mjData.time
 
+        non_foot_ground_contact = _find_non_foot_ground_contact(env)
+        if non_foot_ground_contact is not None:
+            break
+
         if viewer is not None:
             viewer.sync()
             time.sleep(env.sim_dt)
@@ -142,7 +208,14 @@ def _rollout_control_step_with_torques(
     info = env._get_info()
     env._swing_peak *= ~env._current_contacts
 
-    return next_obs, float(reward), bool(terminated), info, viewer_closed
+    return (
+        next_obs,
+        float(reward),
+        bool(terminated),
+        info,
+        viewer_closed,
+        non_foot_ground_contact,
+    )
 
 
 def _select_summary_geom_friction(
@@ -365,7 +438,14 @@ def generate_trajectory(
             action = _inverse_pd_residual_action(env, tau_applied_first)
             actions_traj.append(action.copy())
 
-            next_obs, reward, terminated, _, viewer_closed = _rollout_control_step_with_torques(
+            (
+                next_obs,
+                reward,
+                terminated,
+                _,
+                viewer_closed,
+                non_foot_ground_contact,
+            ) = _rollout_control_step_with_torques(
                 env,
                 action=action,
                 tau_mpx=tau_mpx,
@@ -391,6 +471,20 @@ def generate_trajectory(
 
             if viewer_closed:
                 failure_reason = "viewer_closed"
+                break
+
+            if non_foot_ground_contact is not None:
+                fell = True
+                body_name, contact_detail = non_foot_ground_contact
+                if body_name.lower() in {"base", "torso", "trunk"}:
+                    failure_reason = f"torso_ground_contact: {contact_detail}"
+                else:
+                    failure_reason = f"non_foot_ground_contact: {contact_detail}"
+                if verbose > 1:
+                    print(
+                        f"  [Seed {seed}] {failure_reason} at ctrl step "
+                        f"{completed_control_steps} - aborting"
+                    )
                 break
 
             if terminated:
