@@ -3,7 +3,10 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <eigen3/Eigen/Dense>
+#include <stdexcept>
 #include <yaml-cpp/yaml.h>
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/manager/action_manager.h"
@@ -25,6 +28,7 @@ public:
         }
         _raw_actions.resize(_action_dim, 0.0f);
         _processed_actions.resize(_action_dim, 0.0f);
+        _filtered_actions.resize(_action_dim, 0.0f);
         if(!cfg["scale"].IsNull()) {
             _scale = cfg["scale"].as<std::vector<float>>();
         }
@@ -33,6 +37,18 @@ public:
         }
         if(!cfg["clip"].IsNull()) {
             _clip = cfg["clip"].as<std::vector<std::vector<float> >>();
+        }
+        if(!cfg["low_pass_filter_cutoff_hz"].IsNull()) {
+            const float cutoff_hz = cfg["low_pass_filter_cutoff_hz"].as<float>();
+            if(cutoff_hz > 0.0f) {
+                if(env->step_dt <= 0.0f) {
+                    throw std::runtime_error("Action LPF requires positive env step_dt.");
+                }
+                constexpr float kPi = 3.14159265358979323846f;
+                _lpf_alpha = 1.0f - std::exp(-2.0f * kPi * cutoff_hz * env->step_dt);
+                _lpf_alpha = std::clamp(_lpf_alpha, 0.0f, 1.0f);
+                _lpf_enabled = true;
+            }
         }
     }
 
@@ -57,6 +73,19 @@ public:
                 _processed_actions[i] = std::clamp(_processed_actions[i], _clip[i][0], _clip[i][1]);
             }
         }
+
+        if(_lpf_enabled)
+        {
+            if(!_lpf_initialized) {
+                _filtered_actions = _processed_actions;
+                _lpf_initialized = true;
+            } else {
+                for(int i(0); i<_action_dim; ++i) {
+                    _filtered_actions[i] += _lpf_alpha * (_processed_actions[i] - _filtered_actions[i]);
+                }
+            }
+            _processed_actions = _filtered_actions;
+        }
     }
 
 
@@ -77,6 +106,7 @@ public:
 
     void reset()
     {
+        _lpf_initialized = false;
         process_actions(std::vector<float>(_action_dim, 0.0f));
     }
 
@@ -86,10 +116,15 @@ protected:
 
     std::vector<float> _raw_actions;
     std::vector<float> _processed_actions;
+    std::vector<float> _filtered_actions;
 
     std::vector<float> _scale;
     std::vector<float> _offset;
     std::vector<std::vector<float> > _clip;
+
+    bool _lpf_enabled = false;
+    bool _lpf_initialized = false;
+    float _lpf_alpha = 1.0f;
 };
 
 

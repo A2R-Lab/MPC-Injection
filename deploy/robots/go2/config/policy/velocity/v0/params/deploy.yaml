@@ -17,6 +17,7 @@ actions:
     joint_names: [.*]
     scale: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     offset: [0.0,0.9,-1.8, 0.0,0.9,-1.8, 0.0,0.9,-1.8, 0.0,0.9,-1.8]
+    low_pass_filter_cutoff_hz: 6.0
     joint_ids: null
 observations:
   base_ang_vel:

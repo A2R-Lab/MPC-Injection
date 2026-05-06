@@ -51,9 +51,10 @@ is the component that converts raw neural network outputs into physical joint
 position targets. It reads `scale` and `offset` arrays from `deploy.yaml` and
 applies them element-wise to each action dimension. For the Go2, this becomes:
 ```
-joint_target[i] = action[i] * 0.5 + default_joint_pos[i]
+joint_target_raw[i] = action[i] * 0.5 + default_joint_pos[i]
+joint_target[i] = action_lpf(joint_target_raw[i])
 ```
-identically for both algorithms. The processed targets are then written to the
+identically for both algorithms. The low-pass-filtered targets are then written to the
 Unitree SDK `LowCmd` motor position fields at 1 kHz by `State_RLBase::run()`.
 
 ### Step 2 -- Observation normalisation and why it must be "baked in"
@@ -117,8 +118,9 @@ algorithm: one input named `"obs"`, one output named `"actions"`.  The
    a. Reads `LowState` from the SDK (IMU + joint encoders)
    b. Assembles the 45-dim observation vector
    c. Calls the ONNX policy -> 12 raw actions
-   d. Scales: `joint_target = action * 0.5 + default_joint_pos`
-   e. Writes position targets to `LowCmd` which the SDK sends to the motors
+   d. Scales: `joint_target_raw = action * 0.5 + default_joint_pos`
+   e. Low-pass filters the joint target before the motor-side PD controller
+   f. Writes position targets to `LowCmd` which the SDK sends to the motors
 4. PD gains (stiffness / damping) are set from `config/policy/velocity/v0/params/deploy.yaml`.
 
 ### Observation vector layout (45 dimensions)

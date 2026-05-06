@@ -19,7 +19,8 @@ Observation space (Dict):
 
 Action space (12-dim):
     Joint position targets as residuals around the default standing pose.
-    action_applied = default_joint_pos + action_scale * action
+    raw_target = default_joint_pos + action_scale * action
+    action_applied = low_pass_filter(raw_target)
     A PD controller converts targets to torques: tau = Kp*(q_target - q) + Kd*(0 - dq)
 
 The asymmetric observation design enables:
@@ -92,6 +93,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         kd: float | dict[str, float] | None = None,
         
         action_scale: float = 0.5, # NOTE: mjlab uses 0.5
+        action_lpf_cutoff_hz: float | None = 5.0,
         # Command ranges
         lin_vel_x_range: tuple[float, float] = (0., 0.5), #(-0.5, 0.5), # NOTE mjlab biases forward
         lin_vel_y_range: tuple[float, float] = (0., 0.), #(-0.25, 0.25),
@@ -126,6 +128,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             kp: Proportional gain for PD controller.
             kd: Derivative gain for PD controller.
             action_scale: Scaling factor for action residuals (radians).
+            action_lpf_cutoff_hz: First-order low-pass cutoff for absolute joint
+                targets before the PD controller. Set to None or <= 0 to disable.
             lin_vel_x_range: Range for commanded x velocity (m/s).
             lin_vel_y_range: Range for commanded y velocity (m/s).
             ang_vel_z_range: Range for commanded yaw rate (rad/s).
@@ -154,6 +158,13 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._kp_init = kp
         self._kd_init = kd
         self.action_scale = np.float64(action_scale)
+        self.action_lpf_cutoff_hz = (
+            None if action_lpf_cutoff_hz is None else np.float64(action_lpf_cutoff_hz)
+        )
+        self.action_lpf_alpha = self._compute_lpf_alpha(
+            self.action_lpf_cutoff_hz,
+            self.control_dt,
+        )
 
         # Command ranges
         self.lin_vel_x_range = lin_vel_x_range
@@ -323,6 +334,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._commands = np.zeros(3, dtype=np.float64)
         self._last_action = np.zeros(self.num_joints, dtype=np.float64)
         self._prev_last_action = np.zeros(self.num_joints, dtype=np.float64)
+        self._raw_q_target = self.default_joint_pos.copy()
+        self._filtered_q_target = self.default_joint_pos.copy()
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
         self._step_count = 0
         self._steps_since_command_resample = 0
@@ -396,8 +409,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._prev_last_action = self._last_action.copy()
         self._last_action = action.copy()
 
-        # Compute joint position targets
-        q_target = self.default_joint_pos + self.action_scale * action
+        # Compute and filter joint position targets before the PD controller.
+        self._raw_q_target = self.default_joint_pos + self.action_scale * action
+        q_target = self._apply_action_lpf(self._raw_q_target)
 
         # Apply PD control for `decimation` simulation steps
         for _ in range(self.decimation):
@@ -518,6 +532,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Reset internal state
         self._last_action = np.zeros(self.num_joints, dtype=np.float64)
         self._prev_last_action = np.zeros(self.num_joints, dtype=np.float64)
+        self._raw_q_target = self.default_joint_pos.copy()
+        self._filtered_q_target = self.default_joint_pos.copy()
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
         self._feet_air_time = np.zeros(self._num_feet, dtype=np.float64)
         self._feet_contact_time = np.zeros(self._num_feet, dtype=np.float64)
@@ -542,6 +558,26 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         obs = self._get_obs()
         info = self._get_info()
         return obs, info
+
+    @staticmethod
+    def _compute_lpf_alpha(cutoff_hz: float | None, dt: float) -> np.float64:
+        """Return first-order LPF alpha for y += alpha * (x - y)."""
+        if cutoff_hz is None or cutoff_hz <= 0.0:
+            return np.float64(1.0)
+        if dt <= 0.0:
+            raise ValueError(f"LPF timestep must be positive, got {dt}")
+        alpha = 1.0 - np.exp(-2.0 * np.pi * float(cutoff_hz) * float(dt))
+        return np.float64(np.clip(alpha, 0.0, 1.0))
+
+    def _apply_action_lpf(self, raw_q_target: np.ndarray) -> np.ndarray:
+        """Filter absolute joint-position targets before PD control."""
+        if self.action_lpf_alpha >= 1.0:
+            self._filtered_q_target = raw_q_target.copy()
+        else:
+            self._filtered_q_target += (
+                self.action_lpf_alpha * (raw_q_target - self._filtered_q_target)
+            )
+        return self._filtered_q_target.copy()
 
     def render(self) -> np.ndarray | None:
         """Render the environment.
@@ -1662,6 +1698,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "base_lin_vel_body": base_lin_vel_body.copy(),
             "base_ang_vel_body": self.mjData.qvel[3:6].copy(),
             "base_height": float(self.mjData.qpos[2]),
+            "raw_q_target": self._raw_q_target.copy(),
+            "filtered_q_target": self._filtered_q_target.copy(),
             "applied_torques": self._applied_torques.copy(),
             "foot_contacts": self._last_foot_contacts.copy(),
             "feet_air_time": self._feet_air_time.copy(),

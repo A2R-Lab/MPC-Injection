@@ -32,9 +32,11 @@ decimation = 4
 control_dt = 0.02  # 50 Hz
 ```
 
-The policy action is converted once into `q_target`, then the environment runs the PD loop for `decimation` MuJoCo steps:
+The policy action is converted once into a raw joint target, passed through the action LPF, then the environment runs the PD loop for `decimation` MuJoCo steps:
 
 ```python
+raw_q_target = default_joint_pos + action_scale * action
+q_target = action_lpf(raw_q_target)
 for _ in range(self.decimation):
     torques = self.kp * (q_target - q_current) + self.kd * (0.0 - dq_current)
     mujoco.mj_step(self.mjModel, self.mjData)
@@ -44,6 +46,56 @@ So with `sim_dt = 0.005` and `decimation = 4`:
 
 - policy update rate: 50 Hz
 - simulated PD torque update rate: 200 Hz
+
+## Action Low-Pass Filter
+
+The action LPF sits between the policy and the PD controller. The policy still
+outputs a 12D residual action in `[-1, 1]`, and that raw policy action is still
+what appears in the `last_action` observation. The filter is applied after the
+raw action is converted into an absolute joint-position target:
+
+```python
+raw_q_target = default_joint_pos + action_scale * action
+filtered_q_target += alpha * (raw_q_target - filtered_q_target)
+```
+
+The PD controller tracks `filtered_q_target`, not `raw_q_target`:
+
+```python
+torques = kp * (filtered_q_target - q_current) + kd * (0.0 - dq_current)
+```
+
+This is a first-order exponential low-pass filter. The coefficient is computed
+from the cutoff frequency and the policy/control timestep:
+
+```python
+alpha = 1.0 - exp(-2.0 * pi * cutoff_hz * control_dt)
+```
+
+For the current 50 Hz policy timing and 5 Hz cutoff:
+
+```python
+control_dt = 0.02
+cutoff_hz = 5.0
+alpha = 1.0 - exp(-2.0 * pi * 5.0 * 0.02)  # about 0.467
+```
+
+So each policy step moves the commanded joint target about 46.7% of the way
+from the previous filtered target toward the new raw target. Sudden target
+changes are smoothed, but steady targets are eventually reached.
+
+In training this is configured by `action_lpf_cutoff_hz` in
+`mpc_rl/envs/velocity_tracking_env.py`. Set it to `None` or `<= 0` to disable
+the filter. In deployment this is configured by `low_pass_filter_cutoff_hz` in:
+
+```text
+deploy/robots/go2/config/policy/velocity/v0/params/deploy.yaml
+```
+
+The deployment filter uses `step_dt` as its timestep, so changing deployment
+policy Hz changes `alpha` for the same cutoff. If you retrain and deploy at a
+new policy rate, keep the cutoff frequency consistent between training and
+deployment rather than manually matching the old `alpha`.
 
 If you retrain at 25 Hz, the clean change is:
 
@@ -102,7 +154,7 @@ For 25 Hz deployment:
 step_dt: 0.04  # 25 Hz
 ```
 
-The FSM itself still runs at 1 kHz and writes the most recent processed action into `lowcmd->motor_cmd()[...].q()` in:
+The FSM itself still runs at 1 kHz and writes the most recent processed, low-pass-filtered action into `lowcmd->motor_cmd()[...].q()` in:
 
 ```text
 deploy/robots/go2/src/State_RLBase.cpp

@@ -316,6 +316,50 @@ class TestEnvSanity:
         )
 
 
+class TestActionLowPassFilter:
+    """Verify policy targets are filtered before PD control."""
+
+    def test_default_action_lpf_cutoff(self, env):
+        """Default action target LPF should be enabled at 5 Hz."""
+        assert env.action_lpf_cutoff_hz == pytest.approx(5.0)
+        expected_alpha = 1.0 - np.exp(-2.0 * np.pi * 5.0 * env.control_dt)
+        assert env.action_lpf_alpha == pytest.approx(expected_alpha)
+
+    def test_action_lpf_filters_joint_targets(self, env):
+        """First nonzero action should move the PD target partway from default pose."""
+        env.reset(seed=42)
+        action = np.ones(env.num_joints)
+        raw_target = env.default_joint_pos + env.action_scale * action
+        expected_target = (
+            env.default_joint_pos
+            + env.action_lpf_alpha * (raw_target - env.default_joint_pos)
+        )
+
+        env.step(action)
+
+        np.testing.assert_allclose(env._raw_q_target, raw_target)
+        np.testing.assert_allclose(env._filtered_q_target, expected_target)
+
+    def test_action_lpf_can_be_disabled(self):
+        """Setting cutoff to None should pass raw targets straight to the PD loop."""
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            action_lpf_cutoff_hz=None,
+        )
+        try:
+            env.reset(seed=42)
+            action = np.ones(env.num_joints)
+            expected_target = env.default_joint_pos + env.action_scale * action
+
+            env.step(action)
+
+            assert env.action_lpf_alpha == pytest.approx(1.0)
+            np.testing.assert_allclose(env._filtered_q_target, expected_target)
+        finally:
+            env.close()
+
+
 class TestNominalPlantAlignment:
     """Ensure the no-DR RL env matches the quadruped MPC plant."""
 
