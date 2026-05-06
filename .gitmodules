@@ -6,4 +6,4 @@
 	url = git@github.com:RX-00/gym-quadruped.git
 [submodule "deps/mpx"]
 	path = deps/mpx
-	url = git@github.com:iit-DLSLab/mpx.git
+	url = git@github.com:RX-00/mpx.git
