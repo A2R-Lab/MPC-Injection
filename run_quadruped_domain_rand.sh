@@ -38,7 +38,7 @@ POLICY_DELAY=2
 BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
-LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 #LOG_DIR="logs/quadruped_domain_rand_sac/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 
 # Sweep dimensions
