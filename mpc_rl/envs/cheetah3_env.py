@@ -22,7 +22,7 @@ from mpc_rl.envs.cheetah3_common import sample_valid_cheetah3_initial_state
 
 
 CHEETAH3_MODEL_PATH = Path(__file__).parent.parent / "tasks/cheetah/task.xml"
-DEFAULT_SPEED_GOAL = 2.0
+DEFAULT_SPEED_GOAL = 3.0
 DEFAULT_TIME_LIMIT = 10.0
 
 
