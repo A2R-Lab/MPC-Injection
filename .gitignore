@@ -243,3 +243,6 @@ deploy/robots/go2/build/
 
 # Ignore apptainer
 *.sif
+
+# Ignore exported ONNX policies
+*.onnx
