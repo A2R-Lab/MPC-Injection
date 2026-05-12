@@ -219,6 +219,9 @@ body_trajs/model_traj_data/walker*
 # Ignore MuJoCo logs
 MUJOCO_LOG.TXT
 
+# Local agent handoff notes
+reward_shaping_progress.md
+
 # Ignore saved compressed numpy arrays
 *.npz
 *.zip
