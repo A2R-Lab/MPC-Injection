@@ -33,8 +33,11 @@ class QuadrupedTensorboardCallback(BaseCallback):
         track_lin_vel_terms = []
         track_ang_vel_terms = []
         lin_vel_forward_terms = []
+        flat_orientation_terms = []
         pose_terms = []
         track_base_height_terms = []
+        body_ang_vel_terms = []
+        angular_momentum_terms = []
         feet_air_time_terms = []
         feet_clearance_terms = []
         feet_slip_terms = []
@@ -72,11 +75,20 @@ class QuadrupedTensorboardCallback(BaseCallback):
             if reward_components is not None and "lin_vel_forward" in reward_components:
                 lin_vel_forward_terms.append(float(reward_components["lin_vel_forward"]))
 
+            if reward_components is not None and "flat_orientation" in reward_components:
+                flat_orientation_terms.append(float(reward_components["flat_orientation"]))
+
             if reward_components is not None and "pose" in reward_components:
                 pose_terms.append(float(reward_components["pose"]))
 
             if reward_components is not None and "track_base_height" in reward_components:
                 track_base_height_terms.append(float(reward_components["track_base_height"]))
+
+            if reward_components is not None and "body_ang_vel" in reward_components:
+                body_ang_vel_terms.append(float(reward_components["body_ang_vel"]))
+
+            if reward_components is not None and "angular_momentum" in reward_components:
+                angular_momentum_terms.append(float(reward_components["angular_momentum"]))
 
             if reward_components is not None and "feet_air_time" in reward_components:
                 feet_air_time_terms.append(float(reward_components["feet_air_time"]))
@@ -112,10 +124,16 @@ class QuadrupedTensorboardCallback(BaseCallback):
                 self.logger.record("reward/track_ang_vel", float(np.mean(track_ang_vel_terms)))
             if lin_vel_forward_terms:
                 self.logger.record("reward/lin_vel_forward", float(np.mean(lin_vel_forward_terms)))
+            if flat_orientation_terms:
+                self.logger.record("reward/flat_orientation", float(np.mean(flat_orientation_terms)))
             if pose_terms:
                 self.logger.record("reward/pose", float(np.mean(pose_terms)))
             if track_base_height_terms:
                 self.logger.record("reward/track_base_height", float(np.mean(track_base_height_terms)))
+            if body_ang_vel_terms:
+                self.logger.record("reward/body_ang_vel", float(np.mean(body_ang_vel_terms)))
+            if angular_momentum_terms:
+                self.logger.record("reward/angular_momentum", float(np.mean(angular_momentum_terms)))
             if feet_air_time_terms:
                 self.logger.record("reward/feet_air_time", float(np.mean(feet_air_time_terms)))
             if feet_clearance_terms:

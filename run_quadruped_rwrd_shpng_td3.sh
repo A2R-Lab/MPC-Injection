@@ -45,7 +45,7 @@ LOG_DIR="logs/quadruped_td3_lpf/"
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(0)
-SEEDS=(200)
+SEEDS=(500)
 
 # Optional checkpoint videos during training
 CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)

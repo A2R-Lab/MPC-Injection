@@ -1730,18 +1730,18 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         Reward terms and weights:
             Positive rewards (desired behavior):
                 - track_lin_vel (3.0):     Exponential xy velocity tracking
-                - track_ang_vel (1.5):     Exponential yaw rate tracking
+                - track_ang_vel (2.0):     Exponential yaw rate tracking
                 - lin_vel_forward (5.0):   Linear forward velocity (SAC gradient)
                 - ang_vel_forward (0.5):   Linear angular velocity (SAC gradient)
                 - alive (0.3):             Constant survival bonus
-                - pose (0.35):             Speed-dependent default pose tracking
+                - pose (0.5):              Speed-dependent default pose tracking
                 - track_base_height (1.0): Exponential target base height tracking
                 - feet_air_time (0.75):    Trotting gait encouragement
 
             Penalties (undesired behavior):
-                - flat_orientation (-2.0):  Body tilt
-                - body_ang_vel (-0.12):     Excessive body angular velocity
-                - angular_momentum (-0.012): Whole-body angular momentum
+                - flat_orientation (-0.9):  Body tilt
+                - body_ang_vel (-0.18):     Excessive body angular velocity
+                - angular_momentum (-0.018): Whole-body angular momentum
                 - is_terminated (-200.0):   Falling over
                 - joint_acc (-2.5e-7):      Jerky joint motion
                 - joint_pos_limits (-10.0): Joints near limits
@@ -1755,7 +1755,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
             "tracking_sigma": 0.25,
             "w_track_lin_vel": 3.0,
-            "w_track_ang_vel": 1.5,
+            "w_track_ang_vel": 2.0,
             # -- Forward velocity rewards (linear, constant gradient) --
             # Critical for SAC to escape the standing-still local optimum.
             # Projects velocity onto command direction, clipped at cmd magnitude.
@@ -1764,19 +1764,19 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Alive bonus (constant per-step survival reward) --
             "w_alive": 0.0,
             # -- Orientation penalty --
-            "w_flat_orientation": -0.5,
+            "w_flat_orientation": -0.9,
             # -- Variable posture reward --
             # Speed-dependent default pose tracking with per-joint-type stds
-            "w_pose": 0.35,
+            "w_pose": 0.5,
             "w_track_base_height": 1.0,
             "base_height_target": 0.27,
             "base_height_sigma": 0.01,
             "posture_walking_threshold": 0.05,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
-            "w_body_ang_vel": -0.12,
+            "w_body_ang_vel": -0.18,
             # -- Angular momentum penalty (whole-body) --
-            "w_angular_momentum": -0.012,
+            "w_angular_momentum": -0.018,
             # -- Termination penalty (large negative on fall) --
             "w_is_terminated": -10.0,
             # -- Joint acceleration L2 penalty --
