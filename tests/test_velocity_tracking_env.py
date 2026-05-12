@@ -316,6 +316,43 @@ class TestEnvSanity:
         )
 
 
+class TestRewardConfiguration:
+    """Reward-shaping regression tests for the shared full reward."""
+
+    def test_reward_tuning_values(self):
+        """Shared full reward should use the locomotion tune."""
+        cfg = QuadrupedVelocityTrackingEnv._default_reward_cfg()
+
+        assert cfg["w_track_lin_vel"] == pytest.approx(3.0)
+        assert cfg["w_lin_vel_forward"] == pytest.approx(5.0)
+        assert cfg["w_track_ang_vel"] == pytest.approx(1.5)
+        assert cfg["w_pose"] == pytest.approx(0.35)
+        assert cfg["w_track_base_height"] == pytest.approx(1.0)
+        assert cfg["base_height_target"] == pytest.approx(0.27)
+        assert cfg["base_height_sigma"] == pytest.approx(0.01)
+        assert cfg["w_body_ang_vel"] == pytest.approx(-0.12)
+        assert cfg["w_angular_momentum"] == pytest.approx(-0.012)
+        assert cfg["w_action_rate"] == pytest.approx(-0.045)
+        assert cfg["w_feet_air_time"] == pytest.approx(0.75)
+        assert cfg["w_feet_clearance"] == pytest.approx(-0.8)
+        assert cfg["w_feet_slip"] == pytest.approx(-0.1)
+
+    def test_simple_reward_dispatch_still_bypasses_full_reward(self, env):
+        """The MPC-injection simple reward guard must remain intact."""
+        env.simple_reward = True
+        sentinel_reward = 123.456
+
+        def _sentinel_simple_reward(action, terminated):
+            del action, terminated
+            return sentinel_reward
+
+        env._compute_simple_reward = _sentinel_simple_reward
+
+        reward = env._compute_reward(np.zeros(env.num_joints), terminated=False)
+
+        assert reward == pytest.approx(sentinel_reward)
+
+
 class TestActionLowPassFilter:
     """Verify policy targets are filtered before PD control."""
 

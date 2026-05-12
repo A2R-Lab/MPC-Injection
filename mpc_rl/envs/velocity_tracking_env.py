@@ -1091,6 +1091,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - ang_vel_forward: Linear angular velocity toward command
             - alive: Constant per-step survival bonus
             - variable_posture: Speed-dependent default pose tracking
+            - track_base_height: Exponential tracking of target base height
             - feet_air_time: Encourage trotting gait with proper timing
 
         Penalties (discourage undesired behavior):
@@ -1188,6 +1189,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         joint_pos_error = self.mjData.qpos[7:] - self.default_joint_pos
         pose_reward = np.exp(-np.mean(joint_pos_error ** 2 / (std ** 2)))
+
+        # ------------------------------------------------------------
+        # 4b. Track base height (weight > 0)
+        #     Prevents low crouched gaits that satisfy velocity tracking with
+        #     knees close to the ground.
+        # ------------------------------------------------------------
+        base_height_error = (self.mjData.qpos[2] - cfg["base_height_target"]) ** 2
+        track_base_height = np.exp(-base_height_error / cfg["base_height_sigma"])
 
         # ------------------------------------------------------------
         # 5. Body angular velocity penalty (weight < 0)
@@ -1300,6 +1309,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             + cfg["w_alive"] * 1.0
             + cfg["w_flat_orientation"] * flat_orientation
             + cfg["w_pose"] * pose_reward
+            + cfg["w_track_base_height"] * track_base_height
             + cfg["w_body_ang_vel"] * body_ang_vel_penalty
             + cfg["w_angular_momentum"] * angular_momentum_penalty
             + cfg["w_is_terminated"] * termination_cost
@@ -1321,6 +1331,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "alive": cfg["w_alive"] * 1.0,
             "flat_orientation": cfg["w_flat_orientation"] * flat_orientation,
             "pose": cfg["w_pose"] * pose_reward,
+            "track_base_height": cfg["w_track_base_height"] * track_base_height,
             "body_ang_vel": cfg["w_body_ang_vel"] * body_ang_vel_penalty,
             "angular_momentum": cfg["w_angular_momentum"] * angular_momentum_penalty,
             "is_terminated": cfg["w_is_terminated"] * termination_cost,
@@ -1718,23 +1729,24 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         Reward terms and weights:
             Positive rewards (desired behavior):
-                - track_lin_vel (1.0):     Exponential xy velocity tracking
-                - track_ang_vel (1.0):     Exponential yaw rate tracking
-                - lin_vel_forward (1.5):   Linear forward velocity (SAC gradient)
+                - track_lin_vel (3.0):     Exponential xy velocity tracking
+                - track_ang_vel (1.5):     Exponential yaw rate tracking
+                - lin_vel_forward (5.0):   Linear forward velocity (SAC gradient)
                 - ang_vel_forward (0.5):   Linear angular velocity (SAC gradient)
                 - alive (0.3):             Constant survival bonus
-                - pose (0.5):              Speed-dependent default pose tracking
-                - feet_air_time (1.0):     Trotting gait encouragement
+                - pose (0.35):             Speed-dependent default pose tracking
+                - track_base_height (1.0): Exponential target base height tracking
+                - feet_air_time (0.75):    Trotting gait encouragement
 
             Penalties (undesired behavior):
                 - flat_orientation (-2.0):  Body tilt
-                - body_ang_vel (-0.05):     Excessive body angular velocity
-                - angular_momentum (-0.0125): Whole-body angular momentum
+                - body_ang_vel (-0.12):     Excessive body angular velocity
+                - angular_momentum (-0.012): Whole-body angular momentum
                 - is_terminated (-200.0):   Falling over
                 - joint_acc (-2.5e-7):      Jerky joint motion
                 - joint_pos_limits (-10.0): Joints near limits
-                - action_rate (-0.05):      Rapid action changes
-                - feet_clearance (-1.0):    Incorrect swing foot height
+                - action_rate (-0.045):     Rapid action changes
+                - feet_clearance (-0.8):    Incorrect swing foot height
                 - feet_slip (-0.25):        Foot sliding during contact
                 - soft_landing (-1e-3):     High impact forces at landing
         """
@@ -1742,12 +1754,12 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Tracking rewards --
             # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
             "tracking_sigma": 0.25,
-            "w_track_lin_vel": 1.5,
+            "w_track_lin_vel": 3.0,
             "w_track_ang_vel": 1.5,
             # -- Forward velocity rewards (linear, constant gradient) --
             # Critical for SAC to escape the standing-still local optimum.
             # Projects velocity onto command direction, clipped at cmd magnitude.
-            "w_lin_vel_forward": 1.5,
+            "w_lin_vel_forward": 5.0,
             "w_ang_vel_forward": 1.0,
             # -- Alive bonus (constant per-step survival reward) --
             "w_alive": 0.0,
@@ -1755,13 +1767,16 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "w_flat_orientation": -0.5,
             # -- Variable posture reward --
             # Speed-dependent default pose tracking with per-joint-type stds
-            "w_pose": 0.5,
+            "w_pose": 0.35,
+            "w_track_base_height": 1.0,
+            "base_height_target": 0.27,
+            "base_height_sigma": 0.01,
             "posture_walking_threshold": 0.05,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
-            "w_body_ang_vel": -0.05, # FROM 1 to 5
+            "w_body_ang_vel": -0.12,
             # -- Angular momentum penalty (whole-body) --
-            "w_angular_momentum": -0.005, # FROM 1 TO 5
+            "w_angular_momentum": -0.012,
             # -- Termination penalty (large negative on fall) --
             "w_is_terminated": -10.0,
             # -- Joint acceleration L2 penalty --
@@ -1769,12 +1784,12 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Joint position limits penalty (soft limits at 95% range) --
             "w_joint_pos_limits": -1.0,
             # -- Action rate L2 penalty --
-            "w_action_rate": -0.03,
+            "w_action_rate": -0.045,
             # -- Feet air time reward (trotting gait) --
-            "w_feet_air_time": 1.0,
+            "w_feet_air_time": 0.75,
             "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
             # -- Feet clearance penalty (target swing foot height) --
-            "w_feet_clearance": -0.5,
+            "w_feet_clearance": -0.8,
             "foot_clearance_target": 0.10,    # meters
             # -- Feet slip penalty (no sliding during contact) --
             "w_feet_slip": -0.1,

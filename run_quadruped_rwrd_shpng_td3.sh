@@ -22,7 +22,7 @@ set -euo pipefail
 # Common experiment parameters
 ENV_NAME="quadruped-velocity_tracking"
 ALGORITHM="TD3"
-TOTAL_TIMESTEPS=2000000
+TOTAL_TIMESTEPS=1000000
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
@@ -43,9 +43,9 @@ BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 LOG_DIR="logs/quadruped_td3_lpf/"
 
 # Sweep dimensions
-NUM_ENVS_SWEEP=(256 512)
+NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(0)
-SEEDS=(100 200 300 400 500)
+SEEDS=(200)
 
 # Optional checkpoint videos during training
 CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)

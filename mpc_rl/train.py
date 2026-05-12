@@ -873,8 +873,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     eval_env = None
     inject_callback = None  # Initialize to None for non-SAC-MPC algorithms
 
-    # Add rollout Tensorboard callback for quadruped TD3-MPC or SAC-MPC
-    if is_quadruped and cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
+    # Add rollout Tensorboard callback for quadruped off-policy training.
+    if is_quadruped and cfg.algorithm in ["SAC", "TD3", "SAC-MPC", "TD3-MPC"]:
         callbacks.append(QuadrupedTensorboardCallback(log_freq=100))
     
     # Add checkpoint callback if logging is enabled

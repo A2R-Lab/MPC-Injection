@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
-from mpc_rl.train import AllConfig, create_model, make_quadruped_env
+from mpc_rl.common import QuadrupedTensorboardCallback
+from mpc_rl.train import AllConfig, create_callbacks, create_model, make_quadruped_env
 
 FLAGS = flags.FLAGS
 
@@ -48,6 +49,7 @@ def _build_cfg(algorithm: str) -> AllConfig:
         random_select=True,
         data_dir="",
         use_go2_sysid=True,
+        cheetah3_speed_goal=3.0,
     )
 
 
@@ -131,3 +133,29 @@ def test_make_quadruped_env_go2_can_disable_sysid_joint_dynamics():
             assert_go2_sysid_joint_dynamics(env.unwrapped.mjModel)
     finally:
         env.close()
+
+
+@pytest.mark.parametrize("algorithm", ["SAC", "TD3"])
+def test_quadruped_pure_off_policy_uses_tensorboard_callback(tmp_path, algorithm):
+    callbacks, eval_env, inject_callback = create_callbacks(
+        cfg=_build_cfg(algorithm),
+        enable_logging=False,
+        logdir=tmp_path,
+        domain="quadruped",
+        task="velocity_tracking",
+        seed=1,
+        checkpoint_freq=25_000,
+        eval_freq=10_000,
+        num_envs=1,
+        is_quadruped=True,
+        robot="go2",
+        save_replay_buffer_checkpoints=False,
+        simple_reward=False,
+        use_go2_sysid=True,
+        domain_rand_config_type="disabled",
+        cheetah3_speed_goal=3.0,
+    )
+
+    assert any(isinstance(callback, QuadrupedTensorboardCallback) for callback in callbacks)
+    assert eval_env is None
+    assert inject_callback is None

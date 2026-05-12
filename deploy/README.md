@@ -129,7 +129,7 @@ algorithm: one input named `"obs"`, one output named `"actions"`.  The
 |-------|------|--------|-----|
 | `[0:3]`   | `base_ang_vel`    | IMU gyroscope (body frame) | 3 |
 | `[3:6]`   | `projected_gravity` | IMU orientation -> R^T*[0,0,-1] | 3 |
-| `[6:9]`   | `velocity_commands` | Joystick (vx, vy, wz) | 3 |
+| `[6:9]`   | `velocity_commands` | Velocity command source (controller vx/vy/wz or keyboard vx-only) | 3 |
 | `[9:21]`  | `joint_pos_rel`   | Encoder pos - default pos | 12 |
 | `[21:33]` | `joint_vel_rel`   | Encoder velocities | 12 |
 | `[33:45]` | `last_action`     | Previous policy output | 12 |
@@ -277,6 +277,15 @@ The compiled binary `go2_ctrl` will be at `deploy/robots/go2/build/go2_ctrl`.
    ./go2_ctrl --network=network_name # Found via ifconfig
    ```
 
+   At startup, the binary prompts for velocity command input:
+   ```text
+   Select velocity command input ([c]ontroller / [k]eyboard):
+   ```
+   Choose `c` to use the controller sticks for velocity commands. Choose `k`
+   to use keyboard velocity commands; in keyboard mode, `Up` / `Down` adjust
+   `vx` in 0.1 increments and `R` resets `vx` to zero. The controller is still
+   required for FSM transitions and passive aborts.
+
    Watch the startup log closely. It should report that no Unitree high-level
    motion service is active before waiting for `LowState`. If you see:
    ```text
@@ -286,7 +295,7 @@ The compiled binary `go2_ctrl` will be at `deploy/robots/go2/build/go2_ctrl`.
    still publishing. Stop that process and relaunch before entering `FixStand`
    or `Velocity`.
 
-6. **Operate the FSM** via the controller:
+6. **Operate the FSM** via the controller in either input mode:
    - `L2 + Up` -- transition from Passive -> FixStand (robot stands up slowly)
    - `R2 + A` -- transition from FixStand -> Velocity (policy takes over)
    - `L2 + B` -- return to Passive at any point (safe abort)

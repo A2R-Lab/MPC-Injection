@@ -1,6 +1,6 @@
 # Reward Surfaces for MPC-RL
 
-Visualize reward surfaces for your trained SBX (Stable-Baselines3 + JAX) agents.
+Visualize reward surfaces for trained SBX (Stable Baselines Jax) agents and SBX-based MPC variants.
 
 ## Prerequisites
 
@@ -124,7 +124,7 @@ python reward_surfaces/scripts/generate_plane_jobs.py \
 # Run evaluations (faster on small grid for testing)
 python reward_surfaces/scripts/run_jobs_multiproc.py \
   --num-cpus=4 \
-  logs/sac_mpc_walker_stand_only_reward_0_reward_surface/jobs.sh
+  plots/sac_mpc_walker_stand_only_reward_0_reward_surface/jobs.sh
 
 # Convert to CSV
 python reward_surfaces/scripts/job_results_to_csv.py \
@@ -213,7 +213,7 @@ evaluator = SBXRewardSurfaceEvaluator(model_path, domain, task)
 # Extract current parameters
 weights = evaluator.get_weights()  # List of numpy arrays
 
-# Generate 2 random orthogonal directions via filter normalization
+# Generate 2 independent random directions via filter normalization
 dir1_vec = [filter_normalize(w) for w in weights]
 dir2_vec = [filter_normalize(w) for w in weights]
 

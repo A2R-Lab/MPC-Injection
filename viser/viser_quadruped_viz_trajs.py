@@ -40,6 +40,14 @@ FOOT_COLORS = {
 GHOST_COLOR = np.array([255, 145, 40], dtype=np.uint8)
 GHOST_COLOR_2 = np.array([95, 150, 255], dtype=np.uint8)
 
+DEFAULT_CAMERA_FOLLOW_ENABLED = True
+DEFAULT_CAMERA_DISTANCE = -0.4
+DEFAULT_CAMERA_HEIGHT = 0.4
+DEFAULT_CAMERA_SIDE_OFFSET = 1.6
+DEFAULT_CAMERA_LOOK_AT_HEIGHT = 0.45
+DEFAULT_CAMERA_LOOK_AT_FORWARD = -0.5
+DEFAULT_CAMERA_PRESET = "Side View (Right to Left)"
+
 
 @dataclass
 class XmlVisualGeom:
@@ -316,7 +324,7 @@ class QuadrupedTrajVisualizer:
         self.trajectory_data = None
         self.trajectory_data_2 = None
         self.current_frame = 0.0
-        self._camera_follow_enabled = False
+        self._camera_follow_enabled = DEFAULT_CAMERA_FOLLOW_ENABLED
         self._trail_handles: dict[str, Any] = {}
         self._last_time = time.perf_counter()
 
@@ -479,42 +487,42 @@ class QuadrupedTrajVisualizer:
         with self.server.gui.add_folder("Camera Follow", expand_by_default=True):
             self.follow_camera_checkbox = self.server.gui.add_checkbox(
                 "Follow Robot",
-                initial_value=False,
+                initial_value=DEFAULT_CAMERA_FOLLOW_ENABLED,
             )
             self.camera_distance_slider = self.server.gui.add_slider(
                 "Distance Behind",
                 min=-10.0,
                 max=10.0,
                 step=0.1,
-                initial_value=-5.0,
+                initial_value=DEFAULT_CAMERA_DISTANCE,
             )
             self.camera_height_slider = self.server.gui.add_slider(
                 "Height Above",
                 min=-2.0,
                 max=10.0,
                 step=0.1,
-                initial_value=2.0,
+                initial_value=DEFAULT_CAMERA_HEIGHT,
             )
             self.camera_side_offset_slider = self.server.gui.add_slider(
                 "Side Offset",
                 min=-10.0,
                 max=10.0,
                 step=0.1,
-                initial_value=-3.5,
+                initial_value=DEFAULT_CAMERA_SIDE_OFFSET,
             )
             self.look_at_height_slider = self.server.gui.add_slider(
                 "Look-at Height",
                 min=-2.0,
                 max=5.0,
-                step=0.1,
-                initial_value=0.4,
+                step=0.05,
+                initial_value=DEFAULT_CAMERA_LOOK_AT_HEIGHT,
             )
             self.look_at_forward_slider = self.server.gui.add_slider(
                 "Look-at Forward",
                 min=-5.0,
                 max=10.0,
                 step=0.1,
-                initial_value=1.5,
+                initial_value=DEFAULT_CAMERA_LOOK_AT_FORWARD,
             )
             self.camera_preset_dropdown = self.server.gui.add_dropdown(
                 "Camera Preset",
@@ -527,7 +535,7 @@ class QuadrupedTrajVisualizer:
                     "3/4 View",
                     "Front View",
                 ],
-                initial_value="Custom",
+                initial_value=DEFAULT_CAMERA_PRESET,
             )
 
             @self.follow_camera_checkbox.on_update
@@ -539,11 +547,11 @@ class QuadrupedTrajVisualizer:
             def _(_):
                 preset = self.camera_preset_dropdown.value
                 if preset == "Side View (Right to Left)":
-                    self.camera_distance_slider.value = 0.0
-                    self.camera_height_slider.value = 1.0
-                    self.camera_side_offset_slider.value = 5.0
-                    self.look_at_height_slider.value = 0.8
-                    self.look_at_forward_slider.value = 0.0
+                    self.camera_distance_slider.value = DEFAULT_CAMERA_DISTANCE
+                    self.camera_height_slider.value = DEFAULT_CAMERA_HEIGHT
+                    self.camera_side_offset_slider.value = DEFAULT_CAMERA_SIDE_OFFSET
+                    self.look_at_height_slider.value = DEFAULT_CAMERA_LOOK_AT_HEIGHT
+                    self.look_at_forward_slider.value = DEFAULT_CAMERA_LOOK_AT_FORWARD
                 elif preset == "Side View (Left to Right)":
                     self.camera_distance_slider.value = 0.0
                     self.camera_height_slider.value = 1.0

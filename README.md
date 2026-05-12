@@ -1,7 +1,7 @@
 # MPC-RL Experimental Workspace
 This repo is a test space for research ideas in combining MPC and RL methods to leverage both their strengths for robot control.
 
-The initial setup uses dm_control environments with SBX (Stable Baselines Jax) for training RL policies. The main training script (`train.py`) provides a flexible command-line interface for training, evaluation, and checkpoint management.
+The main training script (`mpc_rl/train.py`) provides a flexible command-line interface for training, evaluation, checkpointing, MPC trajectory injection, and video recording. It supports dm_control tasks through SBX (Stable Baselines Jax), SB3-based quadruped policies, SAC-MPC / TD3-MPC variants, cheetah3 experiments, shadow hand experiments, and Go2 export/deployment workflows.
 
 ## Prerequisites
 - Conda (recommended) or Python virtual environment
@@ -53,7 +53,7 @@ We recommend using [VSCode](https://code.visualstudio.com/) and 2 of its extensi
 ### Installing MuJoCo-MPC Python Bindings
 Make sure you're doing this in the mpc-rl conda environment and after you've built the project as seen above. Next, change to mujoco_mpc's python directory (or else the script can't find certain file paths):
 ```bash
-cd MPC-RL/mujoco_mpc/python
+cd deps/mujoco_mpc/python
 ```
 
 Install the Python module:
@@ -67,7 +67,7 @@ python deps/mujoco_mpc/python/mujoco_mpc/agent_test.py
 ```
 This should result in 18 tests run with 1 failed and 3 skipped. This is okay for now.
 
-Example scripts are found in `mujoco_mpc/python/mujoco_mpc/demos`. For example from `python/`:
+Example scripts are found in `deps/mujoco_mpc/python/mujoco_mpc/demos`. For example, from the project root:
 ```bash
 python deps/mujoco_mpc/python/mujoco_mpc/demos/agent/cartpole_gui.py
 ```
@@ -124,9 +124,9 @@ python mpc_rl/play_quad.py --model=logs/quadruped-velocity_tracking-*-*-*
 
 ## Deploy
 
-The project's deployment workflow is currently being worked on. See `deploy/README.md` for work-in-progress notes and instructions.
+See `deploy/README.md` for Go2 ONNX export, simulation testing, C++ build, and real-robot deployment instructions.
 
-Note that we keep the `--env_name` flag to be split up into `domain-task` or `domain_task`. You can quickly list the available environments with this command:
+The `--env_name` flag uses the `domain-task` format. Underscores can appear inside the task name, as in `quadruped-velocity_tracking`, but the separator between domain and task is a hyphen. You can quickly list dm_control environments with this command:
 ```
 python -c "from dm_control import suite; print('\n'.join([f'{domain}/{task}' for domain, task in suite.ALL_TASKS]))"
 ```
@@ -167,7 +167,7 @@ Evaluate a trained model and generate videos:
 python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --play_only \
-    --load_run_name=cartpole-swingup-20251006-143022
+    --load_run_name=cartpole-swingup-SAC-20251006-143022
 ```
 
 This will:
@@ -182,7 +182,7 @@ This will:
 python mpc_rl/train.py \
     --env_name=cartpole-swingup \
     --play_only \
-    --load_run_name=cartpole-swingup-20251006-143022 \
+    --load_run_name=cartpole-swingup-SAC-20251006-143022 \
     --num_eval_episodes=10 \
     --num_videos=5
 ```
@@ -194,7 +194,7 @@ Resume training from a previously saved checkpoint:
 ```bash
 python mpc_rl/train.py \
     --env_name=cartpole-swingup \
-    --load_run_name=cartpole-swingup-20251006-143022 \
+    --load_run_name=cartpole-swingup-SAC-20251006-143022 \
     --total_timesteps=200000
 ```
 
@@ -203,46 +203,60 @@ This will load the existing model and normalization statistics, then continue tr
 ## Command-Line Flags
 
 ### Environment Flags
-- `--env_name`: Environment name in format `domain-task` (e.g., `cartpole-swingup`, `acrobot-swingup`, `walker-walk`)
-- `--domain`: Domain name (optional, parsed from env_name if not provided)
-- `--task`: Task name (optional, parsed from env_name if not provided)
+- `--env_name`: Environment name in `domain-task` format (e.g., `cartpole-swingup`, `acrobot-swingup`, `walker-walk`, `quadruped-velocity_tracking`)
+- `--domain`: Domain name. Optional; parsed from `--env_name` if not provided.
+- `--task`: Task name. Optional; parsed from `--env_name` if not provided.
+- `--robot`: Quadruped robot model for quadruped environments. Default: `go2`
+- `--use_go2_sysid`: Apply the identified Go2 joint-dynamics patch for quadruped environments and MPX controllers. Default: `True`
+- `--max_episode_steps`: Maximum episode length. Default: `1000`
+- `--cheetah3_speed_goal`: Forward speed target for cheetah3 reward. Default: `3.0`
 
 ### Training Flags
-- `--algorithm`: RL algorithm to use (`SAC`, `SAC-MPC`, `PPO`, or `TD3`). Default: `SAC`
-- `--total_timesteps`: Total number of training timesteps. Default: `100000`
+- `--algorithm`: RL algorithm to use (`SAC`, `PPO`, `TD3`, `SAC-MPC`, or `TD3-MPC`). Default: `SAC`
+- `--total_timesteps`: Total number of training timesteps. Default: `500000`
 - `--num_envs`: Number of parallel environments for training. Default: `4`
 - `--seed`: Random seed for reproducibility. Default: `1`
 
 ### Evaluation Flags
 - `--play_only`: Skip training and only evaluate the model. Default: `False`
-- `--load_run_name`: Name of the run directory to load checkpoint from (e.g., `cartpole-swingup-20251006-143022`)
+- `--load_run_name`: Name of the run directory to load from (e.g., `cartpole-swingup-SAC-20251006-143022`)
 - `--num_eval_episodes`: Number of episodes to run during evaluation. Default: `5`
 - `--num_videos`: Number of videos to record during evaluation. Default: `3`
+- `--checkpoint_evals`: Comma-separated checkpoint steps for additional video evaluations (e.g., `400000,500000`)
 
 ### Experiment Flags
 - `--suffix`: Custom suffix to append to the experiment name
-- `--logdir`: Base directory for storing logs and checkpoints. Default: `logs`
-- `--enable_logging`: Enables checkpoints, videos, and tensorboard logging for hyperparam optimization with optuna. Default: `True`
+- `--logdir`: Base directory for logs, checkpoints, videos, and TensorBoard output. Default: `logs`
+- `--enable_logging`: Enables checkpoints, videos, and TensorBoard logging. Set to `False` for hyperparameter optimization. Default: `True`
 
-### Hyperparameter Flags (SAC/TD3)
+### Hyperparameter Flags (SAC/TD3 variants)
 - `--learning_rate`: Learning rate. Default: `3e-4`
 - `--buffer_size`: Replay buffer size. Default: `1000000`
-- `--learning_starts`: Steps before learning starts. Default: `10000`
-- `--batch_size`: Batch size for training. Default: `256`
+- `--learning_starts`: Steps to collect transitions before learning starts. Default: `10000`
+- `--policy_delay`: TD3 actor update delay. Default: `2`
+- `--batch_size`: Minibatch size. Default: `256`
 - `--tau`: Target network update rate. Default: `0.005`
 - `--gamma`: Discount factor. Default: `0.99`
+- `--gradient_steps`: Gradient steps per rollout. Default: `-1`
 
-### MPC Injection Flags (SAC-MPC only)
-- `--inject_n_timesteps`: Inject MPC trajectories every N timesteps. Default: `5000`
-- `--inject_type`: Type of injection of MPC trajectories (percentage, fixed, etc.). Default: `percentage`
-- `--percentage`: Percentage of the replay buffer that should be MPC trajectories. Default: `25`
-- `--num_traj`: Number of fixed MPC trajectories to inject each time. This results in decreasing % over time. Default: `10`
+### MPC Injection Flags (SAC-MPC / TD3-MPC only)
+- `--inject_n_timesteps`: Inject MPC trajectories every N timesteps for fixed injection. Default: `5000`
+- `--inject_type`: MPC injection mode (`percentage` or `fixed`). Default: `percentage`
+- `--percentage`: Target replay-buffer percentage for MPC trajectories. Default: `25`
+- `--num_traj`: Number of fixed MPC trajectories to inject each time. Default: `10`
 - `--random_select`: Randomly select trajectories to inject. Default: `True`
-- `--data_dir`: Directory containing pre-generated MPC trajectories. Default: `data/cartpole_0_001dt/`
+- `--data_dir`: Directory containing pre-generated MPC trajectories. Default: `None`
 
-### Checkpoint Flags
-- `--checkpoint_freq`: Save checkpoint every N steps. Default: `25000`
-- `--eval_freq`: Evaluate policy every N steps during training. Default: `10000`
+### Checkpoint and Replay-Buffer Flags
+- `--checkpoint_freq`: Save checkpoint every N environment steps. Default: `25000`
+- `--eval_freq`: Evaluate policy every N environment steps during training. Default: `10000`
+- `--save_replay_buffer_checkpoints`: Save replay buffer at each checkpoint. Default: `False`
+- `--save_replay_buffer_final`: Save replay buffer at the end of training for resume support. Default: `False`
+
+### Domain-Randomization Flags
+- `--domain_rand`: Enable quadruped domain randomization. Default: `True`
+- `--domain_rand_config_type`: Named quadruped domain-randomization preset. Default: `custom`
+- `--domain_rand_obs_noise`: Observation noise level for custom domain randomization. Default: `1.0`
 
 ## Directory Structure
 This is the current high-level repo layout for training, MPC data generation, rollout recording, and plotting.
@@ -263,6 +277,7 @@ MPC-RL/
 ├── data/                            # MPC trajectory datasets consumed by SAC-MPC / TD3-MPC runs
 │   ├── cartpole_0_001dt/
 │   ├── cartpole_0_001dt_all/
+│   ├── cheetah3_0_010dt/
 │   ├── quadruped/
 │   ├── quadruped_dr/
 │   ├── quadruped_full_vel_cmds/
@@ -315,6 +330,9 @@ MPC-RL/
 │   └── README.md
 ├── run_quadruped_domain_rand.sh     # Main quadruped domain-randomization experiment sweep
 ├── run_quadruped_experiments.sh     # Quadruped MPC-percentage experiment sweep
+├── run_quadruped_rwrd_shpng_sac.sh  # Quadruped SAC reward-shaping experiment sweep
+├── run_quadruped_rwrd_shpng_td3.sh  # Quadruped TD3 reward-shaping experiment sweep
+├── run_cheetah_experiments.sh       # Cheetah3 experiment sweep
 ├── run_walker_experiments.sh        # Walker MPC-percentage experiment sweep
 ├── setup.py
 ├── tests/                           # Diagnostics, environment checks, and trajectory-generation tests
@@ -364,20 +382,20 @@ After running training, the logs are organized as follows:
 
 ```
 logs/
-└── {env_name}-{timestamp}-{suffix}/
+└── {env_name}-{algorithm}-{timestamp}[-injection][-suffix]/
     ├── config.json                    # Training configuration
     ├── final_model.zip                # Final trained model
     ├── vec_normalize.pkl              # Observation normalization statistics
     ├── checkpoints/                   # Periodic checkpoints during training
     │   ├── model_25000_steps.zip
     │   ├── model_50000_steps.zip
-    │   ├── rl_model_25000_steps.zip  # Replay buffer
+    │   ├── model_vecnormalize_25000_steps.pkl
+    │   ├── model_replay_buffer_25000_steps.pkl  # Only when replay-buffer checkpoints are enabled
     │   └── ...
     ├── best_model/                    # Best model based on evaluation
     │   └── best_model.zip
     ├── eval_logs/                     # Evaluation metrics during training
-    │   ├── evaluations.npz
-    │   └── evaluations.txt
+    │   └── evaluations.npz
     ├── videos/                        # Evaluation videos (MP4)
     │   ├── rollout0.mp4
     │   ├── rollout1.mp4
@@ -392,6 +410,8 @@ logs/
 - **`vec_normalize.pkl`**: Statistics for observation/reward normalization (important for evaluation)
 - **`config.json`**: Records all hyperparameters and settings used for training
 - **`checkpoints/`**: Contains periodic snapshots of the model during training
+- **`checkpoints/model_vecnormalize_*_steps.pkl`**: VecNormalize snapshots paired with checkpointed models
+- **`checkpoints/model_replay_buffer_*_steps.pkl`**: Replay-buffer snapshots, if `--save_replay_buffer_checkpoints=True`
 - **`best_model/`**: Contains the best-performing model based on evaluation metrics
 - **`videos/`**: MP4 recordings of the agent's behavior during evaluation
 
