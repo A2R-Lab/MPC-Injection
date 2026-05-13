@@ -45,10 +45,10 @@ LOG_DIR="logs/quadruped_sac_lpf/"
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(0)
-SEEDS=(100)
+SEEDS=(1)
 
 # Optional checkpoint videos during training
-CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)
+CHECKPOINT_EVALS=(900000)
 CHECKPOINT_EVALS_CSV=$(IFS=,; echo "${CHECKPOINT_EVALS[*]}")
 
 echo "Starting quadruped domain-randomization sweep"
