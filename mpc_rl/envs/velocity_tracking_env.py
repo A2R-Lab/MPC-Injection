@@ -242,6 +242,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
                 f"Foot geom '{geom_name}' not found in MuJoCo model"
             )
             self._foot_geom_ids[leg_name] = geom_id
+        self._foot_names = tuple(self._foot_geom_ids.keys())
+        self._foot_name_to_idx = {
+            name: i for i, name in enumerate(self._foot_names)
+        }
         self._foot_geom_id_set = set(self._foot_geom_ids.values())
         self._num_feet = len(self._foot_geom_ids)
 
@@ -1093,6 +1097,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - variable_posture: Speed-dependent default pose tracking
             - track_base_height: Exponential tracking of target base height
             - feet_air_time: Encourage trotting gait with proper timing
+            - foot_gait: Encourage diagonal trot contact timing
 
         Penalties (discourage undesired behavior):
             - flat_orientation_l2: Penalize body tilt
@@ -1105,6 +1110,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - feet_clearance: Penalize incorrect foot height during swing
             - feet_slip: Penalize foot sliding during contact
             - soft_landing: Penalize high impact forces at landing
+            - bad_two_foot_contacts: Penalize bounding/pacing two-foot support
         """
         if self.simple_reward:
             return self._compute_simple_reward(action, terminated)
@@ -1268,6 +1274,47 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         feet_air_time_reward *= cmd_active
 
         # ------------------------------------------------------------
+        # 11b. Scheduled diagonal gait reward (weight > 0)
+        #      Unitree MJLab uses a phase-based foot_gait term for Go2:
+        #      FR+RL in stance together, then FL+RR half a cycle later.
+        #      The period is matched to the observed good 0.5 m/s trot
+        #      timing from reward_shaping_progress.md.
+        # ------------------------------------------------------------
+        foot_gait_reward = 0.0
+        bad_two_foot_contacts = 0.0
+        gait_foot_names = ("FL", "FR", "RL", "RR")
+        if cmd_active and all(name in self._foot_name_to_idx for name in gait_foot_names):
+            phase = (
+                (self._step_count * self.control_dt)
+                / cfg["foot_gait_period"]
+            ) % 1.0
+            offsets = np.zeros(self._num_feet, dtype=np.float64)
+            offsets[self._foot_name_to_idx["FR"]] = 0.0
+            offsets[self._foot_name_to_idx["RL"]] = 0.0
+            offsets[self._foot_name_to_idx["FL"]] = 0.5
+            offsets[self._foot_name_to_idx["RR"]] = 0.5
+            scheduled_stance = (
+                (phase + offsets) % 1.0
+            ) < cfg["foot_gait_stance_fraction"]
+            gait_match = np.mean(scheduled_stance == in_contact)
+            # Raw match gives 0.5 when all feet are planted because two feet are
+            # scheduled for stance. Do not pay that standing local optimum.
+            foot_gait_reward = max(2.0 * (gait_match - 0.5), 0.0)
+
+            fl = in_contact[self._foot_name_to_idx["FL"]]
+            fr = in_contact[self._foot_name_to_idx["FR"]]
+            rl = in_contact[self._foot_name_to_idx["RL"]]
+            rr = in_contact[self._foot_name_to_idx["RR"]]
+            diagonal_support = (
+                (fl and rr and not fr and not rl)
+                or (fr and rl and not fl and not rr)
+            )
+            exactly_two_contacts = np.count_nonzero(in_contact) == 2
+            bad_two_foot_contacts = float(
+                exactly_two_contacts and not diagonal_support
+            )
+
+        # ------------------------------------------------------------
         # 12. Feet clearance penalty (weight < 0)
         #     Penalizes foot height deviation from target, weighted
         #     by foot xy velocity (only moving feet contribute).
@@ -1317,6 +1364,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             + cfg["w_joint_pos_limits"] * joint_pos_limits_penalty
             + cfg["w_action_rate"] * action_rate_penalty
             + cfg["w_feet_air_time"] * feet_air_time_reward
+            + cfg["w_foot_gait"] * foot_gait_reward
+            + cfg["w_bad_two_foot_contacts"] * bad_two_foot_contacts
             + cfg["w_feet_clearance"] * feet_clearance_penalty
             + cfg["w_feet_slip"] * feet_slip_penalty
             + cfg["w_soft_landing"] * soft_landing_penalty
@@ -1339,6 +1388,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "joint_pos_limits": cfg["w_joint_pos_limits"] * joint_pos_limits_penalty,
             "action_rate": cfg["w_action_rate"] * action_rate_penalty,
             "feet_air_time": cfg["w_feet_air_time"] * feet_air_time_reward,
+            "foot_gait": cfg["w_foot_gait"] * foot_gait_reward,
+            "bad_two_foot_contacts": (
+                cfg["w_bad_two_foot_contacts"] * bad_two_foot_contacts
+            ),
             "feet_clearance": cfg["w_feet_clearance"] * feet_clearance_penalty,
             "feet_slip": cfg["w_feet_slip"] * feet_slip_penalty,
             "soft_landing": cfg["w_soft_landing"] * soft_landing_penalty,
@@ -1730,32 +1783,34 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         Reward terms and weights:
             Positive rewards (desired behavior):
                 - track_lin_vel (3.0):     Exponential xy velocity tracking
-                - track_ang_vel (2.0):     Exponential yaw rate tracking
-                - lin_vel_forward (5.0):   Linear forward velocity (SAC gradient)
-                - ang_vel_forward (0.5):   Linear angular velocity (SAC gradient)
-                - alive (0.3):             Constant survival bonus
-                - pose (0.5):              Speed-dependent default pose tracking
+                - track_ang_vel (1.5):     Exponential yaw rate tracking
+                - lin_vel_forward (5.0):   Linear forward velocity
+                - ang_vel_forward (1.0):   Linear angular velocity
+                - alive (0.0):             Constant survival bonus
+                - pose (0.35):             Speed-dependent default pose tracking
                 - track_base_height (1.0): Exponential target base height tracking
                 - feet_air_time (0.75):    Trotting gait encouragement
+                - foot_gait (1.0):         Diagonal trot phase matching
 
             Penalties (undesired behavior):
-                - flat_orientation (-0.9):  Body tilt
-                - body_ang_vel (-0.18):     Excessive body angular velocity
-                - angular_momentum (-0.018): Whole-body angular momentum
-                - is_terminated (-200.0):   Falling over
-                - joint_acc (-2.5e-7):      Jerky joint motion
-                - joint_pos_limits (-10.0): Joints near limits
+                - flat_orientation (-0.5):  Body tilt
+                - body_ang_vel (-0.12):     Excessive body angular velocity
+                - angular_momentum (-0.012): Whole-body angular momentum
+                - is_terminated (-10.0):    Falling over
+                - joint_acc (-3.0e-7):      Jerky joint motion
+                - joint_pos_limits (-1.0):  Joints near limits
                 - action_rate (-0.045):     Rapid action changes
                 - feet_clearance (-0.8):    Incorrect swing foot height
-                - feet_slip (-0.25):        Foot sliding during contact
-                - soft_landing (-1e-3):     High impact forces at landing
+                - feet_slip (-0.1):         Foot sliding during contact
+                - soft_landing (-1e-4):     High impact forces at landing
+                - bad_two_foot_contacts (-0.6): Bounding/pacing support
         """
         return {
             # -- Tracking rewards --
             # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
             "tracking_sigma": 0.25,
             "w_track_lin_vel": 3.0,
-            "w_track_ang_vel": 2.0,
+            "w_track_ang_vel": 1.5,
             # -- Forward velocity rewards (linear, constant gradient) --
             # Critical for SAC to escape the standing-still local optimum.
             # Projects velocity onto command direction, clipped at cmd magnitude.
@@ -1764,19 +1819,19 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Alive bonus (constant per-step survival reward) --
             "w_alive": 0.0,
             # -- Orientation penalty --
-            "w_flat_orientation": -0.9,
+            "w_flat_orientation": -0.5,
             # -- Variable posture reward --
             # Speed-dependent default pose tracking with per-joint-type stds
-            "w_pose": 0.5,
+            "w_pose": 0.35,
             "w_track_base_height": 1.0,
             "base_height_target": 0.27,
             "base_height_sigma": 0.01,
             "posture_walking_threshold": 0.05,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
-            "w_body_ang_vel": -0.18,
+            "w_body_ang_vel": -0.12,
             # -- Angular momentum penalty (whole-body) --
-            "w_angular_momentum": -0.018,
+            "w_angular_momentum": -0.012,
             # -- Termination penalty (large negative on fall) --
             "w_is_terminated": -10.0,
             # -- Joint acceleration L2 penalty --
@@ -1787,10 +1842,18 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "w_action_rate": -0.045,
             # -- Feet air time reward (trotting gait) --
             "w_feet_air_time": 0.75,
-            "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
+            "feet_air_time_threshold": 0.225,   # target stance/swing duration (s)
+            # -- Scheduled diagonal trot reward --
+            # FR+RL stance alternates with FL+RR stance. The 0.48 s period gives
+            # ~0.23-0.25 s stance windows, matching the good SAC-MPC trajectory.
+            "w_foot_gait": 1.0,
+            "foot_gait_period": 0.48,
+            "foot_gait_stance_fraction": 0.52,
+            # -- Penalize exact two-foot non-diagonal support (bound/pace) --
+            "w_bad_two_foot_contacts": -0.6,
             # -- Feet clearance penalty (target swing foot height) --
             "w_feet_clearance": -0.8,
-            "foot_clearance_target": 0.10,    # meters
+            "foot_clearance_target": 0.05,    # meters
             # -- Feet slip penalty (no sliding during contact) --
             "w_feet_slip": -0.1,
             # -- Soft landing penalty (minimize impact forces) --

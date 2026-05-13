@@ -249,3 +249,6 @@ deploy/robots/go2/build/
 
 # Ignore exported ONNX policies
 *.onnx
+
+# Ignore resulting videos
+*.mp4

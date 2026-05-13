@@ -1,5 +1,5 @@
 """
-Record a high-quality viser video for a saved MuJoCo walker trajectory.
+Record a high-quality viser video for a saved MuJoCo quadruped trajectory.
 
 Open the viser URL in a browser when prompted. The script renders each selected
 trajectory frame through that browser client, writes PNG frames, then encodes an
@@ -16,33 +16,30 @@ from pathlib import Path
 from typing import Any
 
 import imageio.v3 as iio
+import mujoco
 import numpy as np
 import viser
-from viser.extras import ViserUrdf
+from viser import transforms as tf
+
+from viser_quadruped_viz_trajs import (
+    COM_COLOR,
+    DEFAULT_SOURCE_MODEL_PATH,
+    FOOT_COLORS,
+    RobotMeshInstance,
+    _build_visual_geom_specs,
+    _xmat_to_wxyz,
+)
 
 
-FOOT_NAMES = ("right_foot", "left_foot")
-FOOT_COLORS = {
-    "right_foot": (235, 54, 54),
-    "left_foot": (40, 190, 90),
-}
-TRAIL_COLORS = {
-    "torso": (0, 220, 255),
-    "right_thigh": (255, 150, 0),
-    "right_leg": (255, 210, 0),
-    "right_foot": (235, 54, 54),
-    "left_thigh": (180, 110, 255),
-    "left_leg": (70, 130, 255),
-    "left_foot": (40, 190, 90),
-}
+DEFAULT_TRAIL_BODIES = "com,feet"
 
 
-class WalkerTrajectoryVideoRecorder:
-    """Viser scene and frame-capture helper for walker trajectory videos."""
+class QuadrupedTrajectoryVideoRecorder:
+    """Viser scene and frame-capture helper for quadruped trajectory videos."""
 
     def __init__(
         self,
-        urdf_path: Path,
+        source_model_path: Path,
         port: int,
         dt: float,
         show_contacts: bool,
@@ -53,6 +50,34 @@ class WalkerTrajectoryVideoRecorder:
         contact_radius: float,
     ) -> None:
         self.server = viser.ViserServer(port=port)
+        self.server.scene.set_up_direction("+z")
+        self.server.scene.configure_default_lights(enabled=False, cast_shadow=False)
+        self.server.scene.add_light_ambient(
+            "/lights/ambient",
+            color=(255, 255, 255),
+            intensity=1.65,
+        )
+        self.server.scene.add_light_hemisphere(
+            "/lights/hemi",
+            sky_color=(255, 255, 255),
+            ground_color=(188, 195, 205),
+            intensity=1.15,
+        )
+        self.server.scene.add_light_directional(
+            "/lights/key",
+            color=(255, 245, 235),
+            intensity=1.8,
+            cast_shadow=False,
+            wxyz=tf.SO3.from_rpy_radians(-0.9, 0.2, -0.7).wxyz,
+        )
+        self.server.scene.add_light_directional(
+            "/lights/fill",
+            color=(220, 235, 255),
+            intensity=0.9,
+            cast_shadow=False,
+            wxyz=tf.SO3.from_rpy_radians(0.65, -0.3, 2.4).wxyz,
+        )
+
         self.port = port
         self.dt = dt
         self.show_contacts = show_contacts
@@ -62,106 +87,246 @@ class WalkerTrajectoryVideoRecorder:
         self.trail_line_width = trail_line_width
         self.contact_radius = contact_radius
 
-        self.urdf_path = Path(urdf_path)
-        self.trajectory_data: np.lib.npyio.NpzFile | None = None
-        self.num_frames = 0
+        self.source_model_path = Path(source_model_path).resolve()
+        self.render_model, self.visual_geom_specs = _build_visual_geom_specs(self.source_model_path)
+        self.render_data = mujoco.MjData(self.render_model)
+        self.robot_instance = self._create_robot_mesh_instance("/robot")
 
-        self.world_node = self.server.scene.add_frame("/world", show_axes=False)
-        self.urdf_handle = ViserUrdf(
-            target=self.server,
-            urdf_or_path=self.urdf_path,
-            root_node_name="/world",
-        )
         self.server.scene.add_grid(
             "/grid",
             width=200,
             height=200,
             position=(0.0, 0.0, 0.0),
             plane="xy",
+            shadow_opacity=0.0,
         )
 
+        self.trajectory_data: np.lib.npyio.NpzFile | None = None
+        self.num_frames = 0
+        self.foot_names: list[str] = []
+        self.body_names: list[str] = []
+        self.body_name_to_index: dict[str, int] = {}
         self.contact_handles: dict[str, Any] = {}
         self.trail_handles: dict[str, Any] = {}
 
+    def _create_robot_mesh_instance(self, root_name: str) -> RobotMeshInstance:
+        root = self.server.scene.add_frame(root_name, show_axes=False)
+        geom_frames: dict[int, Any] = {}
+        mesh_handles: dict[int, Any] = {}
+
+        for spec in self.visual_geom_specs:
+            frame_name = f"{root_name}/geom_{spec.geom_id}"
+            mesh_name = f"{frame_name}/mesh"
+            geom_frames[spec.geom_id] = self.server.scene.add_frame(frame_name, show_axes=False)
+            mesh_handles[spec.geom_id] = self.server.scene.add_mesh_simple(
+                mesh_name,
+                vertices=spec.vertices,
+                faces=spec.faces,
+                color=spec.color,
+                opacity=spec.opacity,
+                material="standard",
+                flat_shading=False,
+                cast_shadow=False,
+                receive_shadow=False,
+            )
+
+        return RobotMeshInstance(
+            root=root,
+            geom_frames=geom_frames,
+            mesh_handles=mesh_handles,
+            contact_handles={},
+        )
+
     def load_trajectory(self, npz_path: Path) -> None:
         data = np.load(npz_path, allow_pickle=True)
-        required = ["timesteps", "joint_angles"]
-        missing = [key for key in required if key not in data.files]
-        if missing:
-            raise ValueError(f"{npz_path} is missing required keys: {missing}")
+        if "qpos_ctrl" not in data.files and "qpos" not in data.files:
+            raise ValueError(f"{npz_path} is missing qpos_ctrl or qpos")
 
         self.trajectory_data = data
-        self.num_frames = int(data["timesteps"])
+        self.num_frames = self._num_frames()
+        if "frame_dt" in data.files:
+            self.dt = float(data["frame_dt"])
+        elif "control_dt" in data.files:
+            self.dt = float(data["control_dt"])
 
-        if self.trail_bodies == ["all"]:
-            self.trail_bodies = sorted(
-                key.removeprefix("pos_")
-                for key in data.files
-                if key.startswith("pos_")
-            )
-        else:
-            valid_bodies = []
-            for body_name in self.trail_bodies:
-                if f"pos_{body_name}" in data.files:
-                    valid_bodies.append(body_name)
-                else:
-                    print(f"Warning: skipping missing body trail pos_{body_name}")
-            self.trail_bodies = valid_bodies
+        self.foot_names = self._load_name_list("foot_names", ["FL", "FR", "RL", "RR"])
+        self.body_names = self._load_name_list("body_names", [])
+        self.body_name_to_index = {name: idx for idx, name in enumerate(self.body_names)}
+        self.trail_bodies = self._expand_and_validate_trail_bodies(self.trail_bodies)
 
         print(f"Loaded {npz_path}")
         print(f"  frames: {self.num_frames}")
         print(f"  duration at dt={self.dt:g}: {self.num_frames * self.dt:.3f} s")
+        print(f"  model xml: {self.source_model_path}")
         print(f"  trail bodies: {', '.join(self.trail_bodies) or 'none'}")
-        if "contact_pct_right_foot" in data.files:
-            print(f"  right foot contact: {float(data['contact_pct_right_foot']):.1f}%")
-        if "contact_pct_left_foot" in data.files:
-            print(f"  left foot contact: {float(data['contact_pct_left_foot']):.1f}%")
+        self._print_contact_summary()
 
         self.update_visualization(0)
 
-    def _get_actuated_joint_positions(self, frame_idx: int) -> np.ndarray:
+    def _load_name_list(self, key: str, fallback: list[str]) -> list[str]:
         assert self.trajectory_data is not None
-        qpos = self.trajectory_data["joint_angles"][frame_idx]
-        return np.asarray(qpos[2:], dtype=float)
+        if key not in self.trajectory_data.files:
+            return list(fallback)
+        return [str(name) for name in self.trajectory_data[key]]
+
+    def _num_frames(self) -> int:
+        assert self.trajectory_data is not None
+        if "qpos_ctrl" in self.trajectory_data.files:
+            return int(self.trajectory_data["qpos_ctrl"].shape[0])
+        return int(self.trajectory_data["timesteps"])
+
+    def _qpos_ctrl(self) -> np.ndarray:
+        assert self.trajectory_data is not None
+        if "qpos_ctrl" in self.trajectory_data.files:
+            return np.asarray(self.trajectory_data["qpos_ctrl"], dtype=float)
+        qpos = np.asarray(self.trajectory_data["qpos"], dtype=float)
+        decimation = int(self.trajectory_data["decimation"]) if "decimation" in self.trajectory_data.files else 4
+        return qpos[:, ::decimation].T
 
     def _get_root_state(self, frame_idx: int) -> tuple[np.ndarray, np.ndarray]:
-        assert self.trajectory_data is not None
-        qpos = self.trajectory_data["joint_angles"][frame_idx]
+        qpos = self._qpos_ctrl()[frame_idx]
+        return np.asarray(qpos[:3], dtype=float), np.asarray(qpos[3:7], dtype=float)
 
-        # Walker qpos layout follows the existing visualizer:
-        # qpos[0] = rootz, qpos[1] = rootx, qpos[2] = rooty.
-        root_pos = np.array([qpos[1], 0.0, qpos[0]], dtype=float)
-        root_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
-        return root_pos, root_quat
+    def _apply_qpos_to_robot(self, qpos: np.ndarray) -> None:
+        self.render_data.qpos[:] = qpos
+        mujoco.mj_forward(self.render_model, self.render_data)
+
+        for spec in self.visual_geom_specs:
+            frame = self.robot_instance.geom_frames[spec.geom_id]
+            frame.position = np.array(self.render_data.geom_xpos[spec.geom_id], copy=True)
+            frame.wxyz = _xmat_to_wxyz(self.render_data.geom_xmat[spec.geom_id])
+
+    def _print_contact_summary(self) -> None:
+        assert self.trajectory_data is not None
+        if "foot_contacts" not in self.trajectory_data.files:
+            return
+
+        contacts = np.asarray(self.trajectory_data["foot_contacts"], dtype=bool)
+        if contacts.ndim != 2:
+            return
+
+        for foot_idx, foot_name in enumerate(self.foot_names):
+            if foot_idx < contacts.shape[1]:
+                print(f"  {foot_name} contact: {100.0 * float(np.mean(contacts[:, foot_idx])):.1f}%")
+
+    def _canonical_trail_name(self, name: str) -> str | None:
+        assert self.trajectory_data is not None
+        lower_name = name.lower()
+
+        if lower_name in {"com", "center_of_mass", "center-of-mass"}:
+            return "com" if "com_positions" in self.trajectory_data.files else None
+        if lower_name == "base" and "base_positions" in self.trajectory_data.files:
+            return "base"
+
+        for foot_name in self.foot_names:
+            if lower_name == foot_name.lower():
+                return foot_name if "foot_positions" in self.trajectory_data.files else None
+        for body_name in self.body_names:
+            if lower_name == body_name.lower():
+                return body_name if "body_positions" in self.trajectory_data.files else None
+        return None
+
+    def _expand_and_validate_trail_bodies(self, requested_bodies: list[str]) -> list[str]:
+        assert self.trajectory_data is not None
+        expanded: list[str] = []
+
+        def add_name(name: str) -> None:
+            if name not in expanded:
+                expanded.append(name)
+
+        for body_name in requested_bodies:
+            lower_name = body_name.lower()
+            if lower_name == "all":
+                if "com_positions" in self.trajectory_data.files:
+                    add_name("com")
+                if "foot_positions" in self.trajectory_data.files:
+                    for foot_name in self.foot_names:
+                        add_name(foot_name)
+                if "body_positions" in self.trajectory_data.files:
+                    for saved_body_name in self.body_names:
+                        add_name(saved_body_name)
+                continue
+            if lower_name == "feet":
+                if "foot_positions" in self.trajectory_data.files:
+                    for foot_name in self.foot_names:
+                        add_name(foot_name)
+                else:
+                    print("Warning: skipping foot trails because foot_positions is missing")
+                continue
+
+            canonical_name = self._canonical_trail_name(body_name)
+            if canonical_name is None:
+                print(f"Warning: skipping missing trail body {body_name}")
+                continue
+            add_name(canonical_name)
+
+        return expanded
+
+    def _trail_color(self, trail_name: str) -> tuple[int, int, int]:
+        if trail_name == "com":
+            return tuple(int(x) for x in COM_COLOR)
+        if trail_name in FOOT_COLORS:
+            return tuple(int(x) for x in FOOT_COLORS[trail_name])
+
+        palette = (
+            (0, 220, 255),
+            (255, 150, 0),
+            (255, 210, 0),
+            (180, 110, 255),
+            (70, 130, 255),
+            (40, 190, 90),
+        )
+        return palette[sum(ord(char) for char in trail_name) % len(palette)]
+
+    def _trail_positions(self, trail_name: str, window: slice) -> np.ndarray | None:
+        assert self.trajectory_data is not None
+
+        if trail_name == "com" and "com_positions" in self.trajectory_data.files:
+            return np.asarray(self.trajectory_data["com_positions"][window], dtype=float)
+        if trail_name == "base" and "base_positions" in self.trajectory_data.files:
+            return np.asarray(self.trajectory_data["base_positions"][window], dtype=float)
+        if trail_name in self.foot_names and "foot_positions" in self.trajectory_data.files:
+            return np.asarray(
+                self.trajectory_data["foot_positions"][window, self.foot_names.index(trail_name), :],
+                dtype=float,
+            )
+        if trail_name in self.body_name_to_index and "body_positions" in self.trajectory_data.files:
+            return np.asarray(
+                self.trajectory_data["body_positions"][window, self.body_name_to_index[trail_name], :],
+                dtype=float,
+            )
+        return None
 
     def _update_contacts(self, frame_idx: int) -> None:
         assert self.trajectory_data is not None
-        if not self.show_contacts:
+        if (
+            not self.show_contacts
+            or "foot_positions" not in self.trajectory_data.files
+            or "foot_contacts" not in self.trajectory_data.files
+        ):
             for handle in self.contact_handles.values():
                 handle.visible = False
             return
 
-        for foot_name in FOOT_NAMES:
-            contact_key = f"contact_{foot_name}"
-            pos_key = f"pos_{foot_name}"
-            if contact_key not in self.trajectory_data.files or pos_key not in self.trajectory_data.files:
+        foot_positions = np.asarray(self.trajectory_data["foot_positions"][frame_idx], dtype=float)
+        foot_contacts = np.asarray(self.trajectory_data["foot_contacts"][frame_idx], dtype=bool)
+
+        for foot_idx, foot_name in enumerate(self.foot_names):
+            if foot_idx >= len(foot_positions) or foot_idx >= len(foot_contacts):
                 continue
 
-            is_in_contact = bool(self.trajectory_data[contact_key][frame_idx])
-            foot_pos = np.asarray(self.trajectory_data[pos_key][frame_idx], dtype=float)
             handle_name = f"/contact_{foot_name}"
-
             if handle_name not in self.contact_handles:
                 self.contact_handles[handle_name] = self.server.scene.add_icosphere(
                     handle_name,
                     radius=self.contact_radius,
-                    color=FOOT_COLORS[foot_name],
-                    position=tuple(foot_pos),
+                    color=self._trail_color(foot_name),
+                    position=tuple(foot_positions[foot_idx]),
                 )
 
             handle = self.contact_handles[handle_name]
-            handle.position = tuple(foot_pos)
-            handle.visible = is_in_contact
+            handle.position = tuple(foot_positions[foot_idx])
+            handle.visible = bool(foot_contacts[foot_idx])
 
     def _fade_colors(self, base_color: tuple[int, int, int], num_segments: int) -> np.ndarray:
         colors = np.zeros((num_segments, 2, 3), dtype=np.uint8)
@@ -178,18 +343,15 @@ class WalkerTrajectoryVideoRecorder:
                 handle.visible = False
             return
 
-        for body_name in self.trail_bodies:
-            pos_key = f"pos_{body_name}"
-            if pos_key not in self.trajectory_data.files:
-                continue
+        start_idx = 0
+        if self.trail_window > 0:
+            start_idx = max(0, frame_idx - self.trail_window + 1)
+        window = slice(start_idx, frame_idx + 1)
 
-            start_idx = 0
-            if self.trail_window > 0:
-                start_idx = max(0, frame_idx - self.trail_window + 1)
-            positions = np.asarray(
-                self.trajectory_data[pos_key][start_idx : frame_idx + 1],
-                dtype=float,
-            )
+        for body_name in self.trail_bodies:
+            positions = self._trail_positions(body_name, window)
+            if positions is None:
+                continue
 
             line_name = f"/trail_{body_name}"
             handle = self.trail_handles.get(line_name)
@@ -199,10 +361,7 @@ class WalkerTrajectoryVideoRecorder:
                 continue
 
             points = np.stack([positions[:-1], positions[1:]], axis=1)
-            colors = self._fade_colors(
-                TRAIL_COLORS.get(body_name, (255, 255, 255)),
-                len(points),
-            )
+            colors = self._fade_colors(self._trail_color(body_name), len(points))
 
             if handle is None:
                 self.trail_handles[line_name] = self.server.scene.add_line_segments(
@@ -222,13 +381,10 @@ class WalkerTrajectoryVideoRecorder:
             return
 
         frame_idx = int(np.clip(frame_idx, 0, self.num_frames - 1))
-        root_pos, root_quat = self._get_root_state(frame_idx)
-        joint_positions = self._get_actuated_joint_positions(frame_idx)
+        qpos = self._qpos_ctrl()[frame_idx]
 
         with self.server.atomic():
-            self.world_node.position = tuple(root_pos)
-            self.world_node.wxyz = tuple(root_quat)
-            self.urdf_handle.update_cfg(joint_positions)
+            self._apply_qpos_to_robot(qpos)
             self._update_contacts(frame_idx)
             self._update_body_trails(frame_idx)
 
@@ -255,7 +411,7 @@ class WalkerTrajectoryVideoRecorder:
 
 def parse_trail_bodies(value: str) -> list[str]:
     bodies = [item.strip() for item in value.split(",") if item.strip()]
-    return bodies or ["torso", "right_foot", "left_foot"]
+    return bodies or parse_trail_bodies(DEFAULT_TRAIL_BODIES)
 
 
 def apply_camera_preset(args: argparse.Namespace) -> None:
@@ -264,35 +420,43 @@ def apply_camera_preset(args: argparse.Namespace) -> None:
     presets = {
         "side_left": {
             "camera_distance": 0.0,
-            "camera_side_offset": -5.0,
-            "camera_height": 1.15,
-            "look_at_forward": 0.8,
-            "look_at_height": 0.9,
-            "fov_deg": 45.0,
-        },
-        "side_right": { # Default
-            "camera_distance": 0.0,
-            "camera_side_offset": 5.0,
-            "camera_height": 1.3,
+            "camera_side_offset": -2.1,
+            "camera_height": 0.85,
             "look_at_forward": 0.0,
-            "look_at_height": 1.0,
-            "fov_deg": 45.0,
+            "look_at_height": 0.0,
+            "fov_deg": 50.0,
+        },
+        "side_right": { # default
+            "camera_distance": 0.0,
+            "camera_side_offset": 2.1,
+            "camera_height": 0.85,
+            "look_at_forward": 0.0,
+            "look_at_height": 0.0,
+            "fov_deg": 50.0,
         },
         "behind": {
-            "camera_distance": -5.0,
+            "camera_distance": -2.0,
             "camera_side_offset": 0.0,
-            "camera_height": 2.0,
-            "look_at_forward": 2.0,
-            "look_at_height": 0.8,
+            "camera_height": 0.75,
+            "look_at_forward": 0.8,
+            "look_at_height": 0.35,
             "fov_deg": 55.0,
         },
         "three_quarter": {
-            "camera_distance": -4.0,
-            "camera_side_offset": -3.0,
-            "camera_height": 2.8,
-            "look_at_forward": 1.2,
-            "look_at_height": 0.85,
+            "camera_distance": -1.5,
+            "camera_side_offset": 1.2,
+            "camera_height": 0.9,
+            "look_at_forward": 0.4,
+            "look_at_height": 0.4,
             "fov_deg": 50.0,
+        },
+        "front": {
+            "camera_distance": 2.0,
+            "camera_side_offset": 0.0,
+            "camera_height": 0.65,
+            "look_at_forward": 0.0,
+            "look_at_height": 0.45,
+            "fov_deg": 55.0,
         },
     }
     for name, value in presets[args.camera_preset].items():
@@ -383,7 +547,7 @@ def frame_indices(start_frame: int, end_frame: int, stride: int) -> list[int]:
 
 
 def record_frames(
-    recorder: WalkerTrajectoryVideoRecorder,
+    recorder: QuadrupedTrajectoryVideoRecorder,
     client: viser.ClientHandle,
     indices: list[int],
     frames_dir: Path,
@@ -446,18 +610,21 @@ def record_frames(
 
 
 def main() -> None:
-    script_dir = Path(__file__).parent
-    workspace_root = script_dir.parent
-    default_urdf_path = workspace_root / "mpc_rl" / "tasks" / "walker" / "walker_modified.urdf"
-
     parser = argparse.ArgumentParser(
-        description="Record a viser MP4 of a saved MuJoCo walker trajectory.",
+        description="Record a viser MP4 of a saved MuJoCo quadruped trajectory.",
     )
     parser.add_argument("--trajectory", type=Path, required=True, help="Path to trajectory .npz file")
     parser.add_argument("--output", type=Path, help="Output MP4 path")
-    parser.add_argument("--urdf", type=Path, default=default_urdf_path, help=f"Walker URDF path (default: {default_urdf_path})")
-    parser.add_argument("--port", type=int, default=8080, help="Viser server port (default: 8080)")
-    parser.add_argument("--dt", type=float, default=0.0025, help="Trajectory timestep in seconds (default: 0.0025)")
+    parser.add_argument(
+        "--model-xml",
+        "--urdf",
+        dest="model_xml",
+        type=Path,
+        default=DEFAULT_SOURCE_MODEL_PATH,
+        help=f"Path to the Go2 MuJoCo XML visual model (default: {DEFAULT_SOURCE_MODEL_PATH})",
+    )
+    parser.add_argument("--port", type=int, default=8081, help="Viser server port (default: 8081)")
+    parser.add_argument("--dt", type=float, default=0.02, help="Fallback trajectory timestep in seconds (default: 0.02)")
 
     parser.add_argument("--start-frame", type=int, default=0, help="First trajectory frame to render (default: 0)")
     parser.add_argument("--end-frame", type=int, help="Exclusive end frame; defaults to trajectory length")
@@ -468,30 +635,33 @@ def main() -> None:
     parser.add_argument("--render-pause", type=float, default=0.02, help="Seconds to wait after scene updates before capture (default: 0.02)")
 
     parser.add_argument("--no-contacts", action="store_true", help="Hide foot contact indicators")
-    parser.add_argument("--no-trails", action="store_true", help="Hide body-part trajectory trails")
+    parser.add_argument("--no-trails", action="store_true", help="Hide trajectory trails")
     parser.add_argument(
         "--trail-bodies",
         type=parse_trail_bodies,
-        default=parse_trail_bodies("torso,right_foot,left_foot"),
-        help="Comma-separated body names to trail, or 'all' (default: torso,right_foot,left_foot)",
+        default=parse_trail_bodies(DEFAULT_TRAIL_BODIES),
+        help=(
+            "Comma-separated trails: com, feet, base, saved body names, or all "
+            f"(default: {DEFAULT_TRAIL_BODIES})"
+        ),
     )
     parser.add_argument("--trail-window", type=int, default=0, help="Trail length in frames; 0 means full history (default: 0)")
     parser.add_argument("--trail-line-width", type=float, default=3.0, help="Trail line width (default: 3.0)")
-    parser.add_argument("--contact-radius", type=float, default=0.1, help="Foot contact sphere radius (default: 0.1)")
+    parser.add_argument("--contact-radius", type=float, default=0.03, help="Foot contact sphere radius (default: 0.03)")
 
     parser.add_argument(
         "--camera-preset",
-        choices=["side_left", "side_right", "behind", "three_quarter", "custom"],
+        choices=["side_left", "side_right", "behind", "three_quarter", "front", "custom"],
         default="side_right",
         help="Scripted camera preset (default: side_right)",
     )
     parser.add_argument("--manual-camera", action="store_true", help="Use the browser camera as-is instead of scripted follow camera")
-    parser.add_argument("--camera-distance", type=float, default=0.0, help="Camera X offset from walker root for custom camera")
-    parser.add_argument("--camera-side-offset", type=float, default=-5.0, help="Camera Y offset from walker root for custom camera")
-    parser.add_argument("--camera-height", type=float, default=1.15, help="Camera Z offset from walker root for custom camera")
-    parser.add_argument("--look-at-forward", type=float, default=0.8, help="Look-at X offset from walker root")
-    parser.add_argument("--look-at-height", type=float, default=0.9, help="Look-at Z offset from walker root")
-    parser.add_argument("--fov-deg", type=float, default=45.0, help="Vertical FOV for scripted camera (default: 45)")
+    parser.add_argument("--camera-distance", type=float, default=0.0, help="Camera X offset from robot root for custom camera")
+    parser.add_argument("--camera-side-offset", type=float, default=2.1, help="Camera Y offset from robot root for custom camera")
+    parser.add_argument("--camera-height", type=float, default=0.85, help="Camera Z offset from robot root for custom camera")
+    parser.add_argument("--look-at-forward", type=float, default=0.0, help="Look-at X offset from robot root")
+    parser.add_argument("--look-at-height", type=float, default=0.0, help="Look-at Z offset from robot root")
+    parser.add_argument("--fov-deg", type=float, default=50.0, help="Vertical FOV for scripted camera (default: 50)")
 
     parser.add_argument("--frames-dir", type=Path, help="Directory for rendered PNG frames")
     parser.add_argument("--keep-frames", action="store_true", help="Keep rendered PNG frames")
@@ -515,8 +685,8 @@ def main() -> None:
 
     output_path = args.output or default_output_path(args.trajectory)
 
-    recorder = WalkerTrajectoryVideoRecorder(
-        urdf_path=args.urdf,
+    recorder = QuadrupedTrajectoryVideoRecorder(
+        source_model_path=args.model_xml,
         port=args.port,
         dt=args.dt,
         show_contacts=not args.no_contacts,
@@ -533,7 +703,7 @@ def main() -> None:
     end_frame = int(np.clip(end_frame, start_frame + 1, recorder.num_frames))
     indices = frame_indices(start_frame, end_frame, args.stride)
     video_duration = len(indices) / args.fps
-    sim_duration = (indices[-1] - indices[0] + 1) * args.dt
+    sim_duration = (indices[-1] - indices[0] + 1) * recorder.dt
 
     if not args.manual_camera:
         camera_position, look_at_position = recorder.camera_pose(
@@ -572,7 +742,7 @@ def main() -> None:
     elif args.keep_frames or args.skip_encode:
         frames_dir = output_path.with_suffix("").with_name(f"{output_path.stem}_frames")
     else:
-        cleanup_dir = tempfile.TemporaryDirectory(prefix="viser_walker_frames_")
+        cleanup_dir = tempfile.TemporaryDirectory(prefix="viser_quadruped_frames_")
         frames_dir = Path(cleanup_dir.name)
 
     try:
