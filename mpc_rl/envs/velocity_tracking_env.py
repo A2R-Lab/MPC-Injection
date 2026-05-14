@@ -1857,12 +1857,12 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "w_action_rate": -0.045,
             # -- Feet air time reward (trotting gait) --
             "w_feet_air_time": 0.75,
-            "feet_air_time_threshold": 0.225,   # target stance/swing duration (s)
+            "feet_air_time_threshold": 0.245,   # target stance/swing duration (s)
             # -- Scheduled diagonal trot reward --
-            # FR+RL stance alternates with FL+RR stance. The 0.48 s period gives
-            # ~0.23-0.25 s stance windows, matching the good SAC-MPC trajectory.
+            # FR+RL stance alternates with FL+RR stance. The 0.52 s period gives
+            # slightly longer stance/swing windows for less tip-toeing.
             "w_foot_gait": 1.35,
-            "foot_gait_period": 0.48,
+            "foot_gait_period": 0.52,
             "foot_gait_stance_fraction": 0.52,
             # -- Penalize exact two-foot non-diagonal support (bound/pace) --
             "w_bad_two_foot_contacts": -0.7,
