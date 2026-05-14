@@ -727,7 +727,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Per-joint-type standard deviations (Go2 config from mjlab, with a
         # mildly tighter walking/running hip tolerance to reduce lateral bowing).
         std_map = {
-            'hip_joint':   {'standing': 0.05, 'walking': 0.14, 'running': 0.14},
+            'hip_joint':   {'standing': 0.05, 'walking': 0.13, 'running': 0.13},
             'thigh_joint': {'standing': 0.1,  'walking': 0.35, 'running': 0.35},
             'calf_joint':  {'standing': 0.15, 'walking': 0.5,  'running': 0.5},
         }
@@ -1792,19 +1792,19 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         Reward terms and weights:
             Positive rewards (desired behavior):
-                - track_lin_vel (3.5):     Exponential xy velocity tracking
-                - track_ang_vel (1.5):     Exponential yaw rate tracking
+                - track_lin_vel (4.0):     Exponential xy velocity tracking
+                - track_ang_vel (2.5):     Exponential yaw rate tracking
                 - lin_vel_forward (6.0):   Linear forward velocity
                 - ang_vel_forward (1.0):   Linear angular velocity
                 - alive (0.0):             Constant survival bonus
                 - pose (0.42):             Speed-dependent default pose tracking
                 - track_base_height (1.0): Exponential target base height tracking
                 - feet_air_time (0.75):    Trotting gait encouragement
-                - foot_gait (1.2):         Diagonal trot phase matching
+                - foot_gait (1.35):        Diagonal trot phase matching
 
             Penalties (undesired behavior):
                 - flat_orientation (-0.7):  Body tilt
-                - pitch_tilt (-1.5):        Forward/back body pitch tilt
+                - pitch_tilt (-2.0):        Forward/back body pitch tilt
                 - lateral_vel (-1.0):       Sideways body velocity
                 - body_ang_vel (-0.16):     Excessive body angular velocity
                 - angular_momentum (-0.014): Whole-body angular momentum
@@ -1821,8 +1821,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Tracking rewards --
             # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
             "tracking_sigma": 0.25,
-            "w_track_lin_vel": 3.5,
-            "w_track_ang_vel": 1.5,
+            "w_track_lin_vel": 4.0,
+            "w_track_ang_vel": 2.5,
             # -- Forward velocity rewards (linear, constant gradient) --
             # Critical for SAC to escape the standing-still local optimum.
             # Projects velocity onto command direction, clipped at cmd magnitude.
@@ -1844,7 +1844,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
             "w_body_ang_vel": -0.16,
-            "w_pitch_tilt": -1.5,
+            "w_pitch_tilt": -2.0,
             # -- Angular momentum penalty (whole-body) --
             "w_angular_momentum": -0.014,
             # -- Termination penalty (large negative on fall) --
@@ -1861,7 +1861,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Scheduled diagonal trot reward --
             # FR+RL stance alternates with FL+RR stance. The 0.48 s period gives
             # ~0.23-0.25 s stance windows, matching the good SAC-MPC trajectory.
-            "w_foot_gait": 1.2,
+            "w_foot_gait": 1.35,
             "foot_gait_period": 0.48,
             "foot_gait_stance_fraction": 0.52,
             # -- Penalize exact two-foot non-diagonal support (bound/pace) --
