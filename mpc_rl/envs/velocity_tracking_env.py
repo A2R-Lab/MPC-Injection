@@ -69,6 +69,17 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 50}
+    _SIMPLE_REWARD_CFG = {
+        "tracking_sigma": 0.25,
+        "w_track_lin_vel": 1.5,
+        "w_track_ang_vel": 1.5,
+        "w_lin_vel_forward": 1.5,
+        "w_ang_vel_forward": 1.0,
+        "w_is_terminated": -10.0,
+        "w_joint_acc": -3.0e-7,
+        "w_action_rate": -0.03,
+        "only_positive_rewards": False,
+    }
 
     def __init__(
         self,
@@ -1423,7 +1434,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - track_ang_vel: Exponential tracking of commanded yaw rate
             - is_terminated: Large penalty for falling
         """
-        cfg = self.reward_cfg
+        cfg = self._SIMPLE_REWARD_CFG
 
         # -- Ground truth velocities (simulation only) --
         base_lin_vel_body = self._base_lin_vel_body()
