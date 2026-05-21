@@ -27,6 +27,21 @@ _QUADRUPED_DIRECT_TRANSITION_KEYS = (
     "terminated_ctrl",
 )
 
+_QUADRUPED_TORQUE_REPLAY_KEYS = (
+    "tau_applied",
+    "commands",
+    "episode_length",
+    "sim_dt",
+    "control_dt",
+    "default_joint_pos",
+)
+
+_QUADRUPED_MPC_REPLAY_MODES = (
+    "direct",
+    "torque_saved_pd",
+    "torque_current_pd",
+)
+
 
 def _go2_sysid_signature_vector() -> np.ndarray:
     """Return a deterministic vector snapshot of the canonical Go2 sysID table."""
@@ -73,6 +88,11 @@ def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
 def _quadruped_traj_has_direct_transitions(traj_data) -> bool:
     """Return True when a quadruped trajectory file stores direct RL transitions."""
     return all(key in traj_data for key in _QUADRUPED_DIRECT_TRANSITION_KEYS)
+
+
+def _quadruped_traj_has_torque_replay_data(traj_data) -> bool:
+    """Return True when a quadruped trajectory can be replayed from torques."""
+    return all(key in traj_data for key in _QUADRUPED_TORQUE_REPLAY_KEYS)
 
 
 def _make_cheetah3_temp_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
@@ -517,16 +537,24 @@ class PercentMPCInjectCallback(BaseCallback):
         robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
         use_go2_sysid: bool=True,             # Whether quadruped temp envs should apply the Go2 sysID patch
         expected_dr_config_type: str | None = None,  # Expected DR preset for loaded quadruped demos
+        quadruped_mpc_replay_mode: str="direct",  # direct, torque_saved_pd, or torque_current_pd
         cheetah3_speed_goal: float=CHEETAH3_DEFAULT_SPEED_GOAL,
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
+        if quadruped_mpc_replay_mode not in _QUADRUPED_MPC_REPLAY_MODES:
+            valid = ", ".join(_QUADRUPED_MPC_REPLAY_MODES)
+            raise ValueError(
+                f"Invalid quadruped_mpc_replay_mode={quadruped_mpc_replay_mode!r}; "
+                f"expected one of: {valid}"
+            )
         self.domain = domain
         self.task = task
         self.target_percentage = target_percentage
         self.robot = robot
         self.use_go2_sysid = use_go2_sysid
         self.expected_dr_config_type = expected_dr_config_type
+        self.quadruped_mpc_replay_mode = quadruped_mpc_replay_mode
         self.cheetah3_speed_goal = float(cheetah3_speed_goal)
         self._warned_dr_mismatch = False
         self._warned_sysid_mismatch = False
@@ -572,6 +600,8 @@ class PercentMPCInjectCallback(BaseCallback):
         if data_dir:
             print(f"  Loading from: {data_dir}")
             print(f"  Random selection: {random_select}")
+        if domain == "quadruped":
+            print(f"  Quadruped MPC replay mode: {quadruped_mpc_replay_mode}")
         if seed is not None:
             print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}")
@@ -778,6 +808,7 @@ class PercentMPCInjectCallback(BaseCallback):
         self, temp_env, qpos, qvel, tau_applied, commands,
         episode_length, decimation, default_joint_pos, traj_domain_rand_patch=None,
         traj_seed: int | None = None,
+        use_current_pd_gains: bool = False,
     ):
         """Replay one quadruped MPC trajectory and inject transitions into the replay buffer.
 
@@ -802,6 +833,9 @@ class PercentMPCInjectCallback(BaseCallback):
             decimation: Sim steps per control step (typically 4).
             default_joint_pos: Default standing joint positions, shape (12,).
             traj_domain_rand_patch: Optional saved startup-DR model patch.
+            use_current_pd_gains: When True, keep the saved trajectory plant
+                patch except for saved PD gains, so inverse-PD action conversion
+                uses the current QuadrupedVelocityTrackingEnv gains.
 
         Returns:
             Number of transitions committed to the replay buffer.
@@ -826,12 +860,18 @@ class PercentMPCInjectCallback(BaseCallback):
                 wz=float(initial_cmd[2]),
             )
 
+        replay_dr_patch = traj_domain_rand_patch
+        if use_current_pd_gains and replay_dr_patch is not None:
+            replay_dr_patch = dict(replay_dr_patch)
+            replay_dr_patch.pop("dr_realized_kp", None)
+            replay_dr_patch.pop("dr_realized_kd", None)
+
         # Reset temp env then override with trajectory initial state.
         if traj_seed is None:
             temp_env.reset()
         else:
             temp_env.reset(seed=traj_seed)
-        _apply_quadruped_trajectory_dr_patch(temp_env, traj_domain_rand_patch)
+        _apply_quadruped_trajectory_dr_patch(temp_env, replay_dr_patch)
         temp_env.mjData.qpos[:] = qpos[:, 0]
         temp_env.mjData.qvel[:] = qvel[:, 0]
         temp_env.mjData.ctrl[:] = 0.0
@@ -1158,6 +1198,24 @@ class PercentMPCInjectCallback(BaseCallback):
                         quadruped_has_direct_transitions = (
                             is_quadruped and _quadruped_traj_has_direct_transitions(traj_data)
                         )
+                        quadruped_force_torque_replay = (
+                            is_quadruped
+                            and self.quadruped_mpc_replay_mode
+                            in {"torque_saved_pd", "torque_current_pd"}
+                        )
+                        if quadruped_force_torque_replay:
+                            if not _quadruped_traj_has_torque_replay_data(traj_data):
+                                missing = [
+                                    key for key in _QUADRUPED_TORQUE_REPLAY_KEYS
+                                    if key not in traj_data
+                                ]
+                                raise KeyError(
+                                    "Quadruped MPC replay mode "
+                                    f"{self.quadruped_mpc_replay_mode!r} requires "
+                                    f"torque replay keys missing from {selected_file.name}: "
+                                    f"{missing}"
+                                )
+                            quadruped_has_direct_transitions = False
 
                         if is_quadruped:
                             traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)
@@ -1249,6 +1307,9 @@ class PercentMPCInjectCallback(BaseCallback):
                         traj_episode_length, traj_decimation, traj_default_joint_pos,
                         traj_domain_rand_patch=traj_domain_rand_patch,
                         traj_seed=traj_seed,
+                        use_current_pd_gains=(
+                            self.quadruped_mpc_replay_mode == "torque_current_pd"
+                        ),
                     )
             else:
                 # ----------------------------------------------------------------

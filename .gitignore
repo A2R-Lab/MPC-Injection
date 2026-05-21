@@ -252,3 +252,6 @@ deploy/robots/go2/build/
 
 # Ignore resulting videos
 *.mp4
+
+# Ignore agent generated reference docs
+misc_docs/

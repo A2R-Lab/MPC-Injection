@@ -430,7 +430,7 @@ def plot_multiple_experiments(
 
 def main():
     """Main function to run the plotting script."""
-    base_dir = "../logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd"
+    base_dir = "../logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_ablation"
 
     env_pattern = "quadruped-velocity_tracking"
     title_suffix = "Quadruped Velocity Tracking - Velocity Only Reward"

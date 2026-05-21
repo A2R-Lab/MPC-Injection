@@ -199,6 +199,100 @@ export is numerically correct.
 
 ---
 
+### Testing Multiple Policies
+
+For real-robot sweeps, export each candidate into its own deploy directory
+instead of repeatedly overwriting `v0/exported/policy.onnx`. Do this with the
+batch exporter; do not manually set `RUN` for every training directory.
+
+Run from the **MPC-RL root directory**:
+
+```bash
+python deploy/batch_export_onnx_go2.py --dry_run
+```
+
+The dry run scans:
+
+```text
+logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/SAC-MPC-sysid_dyn20_mjlab/
+```
+
+and prints every deployable candidate it finds. By default, it looks for both:
+
+```text
+final_model.zip + vec_normalize.pkl
+checkpoints/model_900000_steps.zip + checkpoints/model_vecnormalize_900000_steps.pkl
+```
+
+Then export every available candidate:
+
+```bash
+python deploy/batch_export_onnx_go2.py --network=enp130s0
+```
+
+Each output policy directory has the layout expected by `go2_ctrl`:
+
+```text
+deploy/robots/go2/config/policy/velocity/policies/<policy_name>/
+  params/deploy.yaml
+  exported/policy.onnx
+```
+
+The script skips incomplete runs, which is expected while training jobs are
+still running. It also skips policies that are already exported and current, so
+rerun the same command later to pick up newly finished final models:
+
+```bash
+python deploy/batch_export_onnx_go2.py --network=enp130s0
+```
+
+Useful options:
+
+```bash
+# Re-export even if policy.onnx already exists
+python deploy/batch_export_onnx_go2.py --force --network=enp130s0
+
+# Export another checkpoint in addition to 900k
+python deploy/batch_export_onnx_go2.py --checkpoint_step=900000 --checkpoint_step=1200000
+
+# Export only the 900k checkpoint candidates
+python deploy/batch_export_onnx_go2.py --skip_final
+```
+
+After exporting, the script writes:
+
+```text
+deploy/robots/go2/config/policy/velocity/policies/manifest.tsv
+deploy/robots/go2/config/policy/velocity/policies/launch_commands.txt
+```
+
+Use `manifest.tsv` to track which log directory produced each policy. Use
+`launch_commands.txt` as the real-robot test queue.
+
+Before running a candidate on the robot, test that exact ONNX file in
+simulation:
+
+```bash
+python deploy/test_onnx_policy.py \
+    --onnx deploy/robots/go2/config/policy/velocity/policies/<policy_name>/exported/policy.onnx
+```
+
+When launching the robot controller, select a specific policy with
+`--policy_dir`. Relative paths are resolved from `deploy/robots/go2`, the Go2
+controller project directory:
+
+```bash
+cd deploy/robots/go2/build
+./go2_ctrl \
+    --network=enp130s0 \
+    --policy_dir=config/policy/velocity/policies/<policy_name>
+```
+
+If `--policy_dir` is omitted, the controller keeps using the `policy_dir` from
+`deploy/robots/go2/config/config.yaml`, so the existing workflow still works.
+
+---
+
 ### Step B -- Test the ONNX policy in simulation
 
 Before touching the real robot, verify the ONNX policy drives the simulated
@@ -275,6 +369,13 @@ The compiled binary `go2_ctrl` will be at `deploy/robots/go2/build/go2_ctrl`.
    ```bash
    cd deploy/robots/go2/build
    ./go2_ctrl --network=network_name # Found via ifconfig
+   ```
+
+   To run one of several exported policy directories, add `--policy_dir`:
+   ```bash
+   ./go2_ctrl \
+       --network=network_name \
+       --policy_dir=config/policy/velocity/policies/<policy_name>
    ```
 
    At startup, the binary prompts for velocity command input:

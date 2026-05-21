@@ -205,6 +205,16 @@ _RANDOM_SELECT = flags.DEFINE_boolean(
 _DATA_DIR = flags.DEFINE_string(
     "data_dir", None, "Directory containing pre-generated MPC trajectories (e.g., 'data/cartpole_0_010dt/' or 'data/walker_0_0025dt/')"
 )
+_QUADRUPED_MPC_REPLAY_MODE = flags.DEFINE_enum(
+    "quadruped_mpc_replay_mode",
+    "direct",
+    ["direct", "torque_saved_pd", "torque_current_pd"],
+    "Quadruped MPC data replay mode. 'direct' injects saved RL transitions "
+    "when available. 'torque_saved_pd' forces torque replay and uses saved "
+    "trajectory PD gains. 'torque_current_pd' forces torque replay but uses "
+    "the current QuadrupedVelocityTrackingEnv PD gains for inverse-PD action "
+    "conversion.",
+)
 
 # Checkpoint flags
 _CHECKPOINT_FREQ = flags.DEFINE_integer(
@@ -275,6 +285,7 @@ class AllConfig:
     num_traj: int
     random_select: bool
     data_dir: str
+    quadruped_mpc_replay_mode: str
     use_go2_sysid: bool
     cheetah3_speed_goal: float
 
@@ -978,6 +989,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 expected_dr_config_type=(
                     domain_rand_config_type if is_quadruped else None
                 ),
+                quadruped_mpc_replay_mode=cfg.quadruped_mpc_replay_mode,
                 cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
             )
@@ -1368,6 +1380,7 @@ def main(argv):
         num_traj=_NUM_TRAJ.value,
         random_select=_RANDOM_SELECT.value,
         data_dir=_DATA_DIR.value,
+        quadruped_mpc_replay_mode=_QUADRUPED_MPC_REPLAY_MODE.value,
         use_go2_sysid=_USE_GO2_SYSID.value,
         cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
     )

@@ -48,6 +48,7 @@ def _build_cfg(algorithm: str) -> AllConfig:
         num_traj=10,
         random_select=True,
         data_dir="",
+        quadruped_mpc_replay_mode="direct",
         use_go2_sysid=True,
         cheetah3_speed_goal=3.0,
     )
