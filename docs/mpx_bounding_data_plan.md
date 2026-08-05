@@ -102,10 +102,15 @@ The investigation was performed at:
 - nested `primal_dual_ilqr` commit
   `273d78dec439ed270af6f9cb8340af801fefd332`.
 
-The root worktree is dirty with unrelated user changes. The MPX submodule is
-also dirty: `config_go2.py` locally changes the roll cost in `Qrot` from 5,000
-to 10,000. That uncommitted cost changes controller behavior and must not be
-silently included or omitted from generated data.
+At investigation time, the root worktree was dirty with unrelated user changes
+and the MPX submodule had an uncommitted `config_go2.py` change increasing the
+roll cost in `Qrot` from 5,000 to 10,000. Those changes were subsequently
+checkpointed at root commit
+`55fe2464bb2c0389829100a29904fb845e89ce99` and MPX commit
+`249c7323ab0cd13bea2ddb8ed5f252eb9ccde85c`. The checkpoint preserves the
+edit; it does not approve the 10,000 value for the bounding experiment. That
+choice must still be explicit in controller configuration and dataset metadata.
+Untracked exported policy artifacts remain outside the WIP commit.
 
 The `mpc-rl` Conda environment matches `environment.yml` for the important
 runtime packages: Python 3.11, JAX/JAXLIB 0.6.2, MuJoCo/MJX 3.3.6,
@@ -216,11 +221,12 @@ the feature worktree; do not copy the dirty worktree wholesale. Before running
 the commands, confirm that neither proposed branch name nor target worktree
 path already exists and choose a non-conflicting equivalent if needed.
 
-Before implementation, decide explicitly whether the dirty
-`config_go2.py::Qrot` roll-cost change belongs in the experiment. If it does,
-commit it independently on the MPX feature branch and identify it in metadata.
-If it does not, leave the clean branch at the committed 5,000 value. Do not copy
-the entire dirty root worktree into the feature branch.
+Before implementation, decide explicitly whether MPX checkpoint commit
+`249c7323ab0cd13bea2ddb8ed5f252eb9ccde85c`, which changes
+`config_go2.py::Qrot`, belongs in the experiment. If it does, bring that commit
+onto the MPX feature branch and identify it in metadata. If it does not, leave
+the clean branch at the baseline 5,000 value. Do not copy the entire WIP root
+commit into the feature branch.
 
 Because `deps/mpx` is a Git submodule with its own `origin` fork, use two
 coordinated commits:
