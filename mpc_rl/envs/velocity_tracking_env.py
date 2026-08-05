@@ -124,6 +124,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         simple_reward: bool = False,
         # Opt-in exact control-loop diagnostics for trajectory validation
         enable_substep_diagnostics: bool = False,
+        # Validation-only fixed pushes keyed by zero-based control step
+        deterministic_push_schedule: dict[int, np.ndarray] | None = None,
     ):
         """Initialize the velocity tracking environment.
 
@@ -158,6 +160,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             enable_substep_diagnostics: If True, include action clipping and
                 per-simulation-substep torque, contact, state, and non-foot
                 contact diagnostics in ``info``. Disabled by default.
+            deterministic_push_schedule: Optional validation-only mapping from
+                zero-based control-step index to a six-element base velocity
+                delta `[x, y, z, roll, pitch, yaw]`. When supplied, it replaces
+                stochastic interval pushes. Normal training leaves it unset.
         """
         super().__init__()
 
@@ -205,6 +211,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Simplified reward mode
         self.simple_reward = simple_reward
         self.enable_substep_diagnostics = bool(enable_substep_diagnostics)
+        self._deterministic_push_schedule = self._validate_push_schedule(
+            deterministic_push_schedule
+        )
 
         # Reward configuration
         self.reward_cfg = self._default_reward_cfg()
@@ -673,6 +682,31 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             raise ValueError(f"LPF timestep must be positive, got {dt}")
         alpha = 1.0 - np.exp(-2.0 * np.pi * float(cutoff_hz) * float(dt))
         return np.float64(np.clip(alpha, 0.0, 1.0))
+
+    @staticmethod
+    def _validate_push_schedule(
+        schedule: dict[int, np.ndarray] | None,
+    ) -> dict[int, np.ndarray] | None:
+        """Validate and copy a deterministic validation push schedule."""
+        if schedule is None:
+            return None
+
+        validated = {}
+        for control_step, delta in schedule.items():
+            if not isinstance(control_step, (int, np.integer)) or control_step < 0:
+                raise ValueError(
+                    "deterministic push steps must be non-negative integers"
+                )
+            delta_array = np.asarray(delta, dtype=np.float64)
+            if delta_array.shape != (6,):
+                raise ValueError(
+                    "deterministic push deltas must have shape (6,), got "
+                    f"{delta_array.shape} at step {control_step}"
+                )
+            if not np.all(np.isfinite(delta_array)):
+                raise ValueError("deterministic push deltas must be finite")
+            validated[int(control_step)] = delta_array.copy()
+        return validated
 
     def _apply_action_lpf(self, raw_q_target: np.ndarray) -> np.ndarray:
         """Filter absolute joint-position targets before PD control."""
@@ -1880,6 +1914,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
     def _resample_push_interval(self):
         """Sample a new random push interval for this episode."""
+        if self._deterministic_push_schedule is not None:
+            self._push_interval_steps = 0
+            return
         dr = self.domain_rand_cfg
         if dr.enable and dr.push_robots:
             lo, hi = dr.push_interval_range_s
@@ -1897,6 +1934,13 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         the policy must recover from. Matches MjLab's push_by_setting_velocity
         with 6-DOF velocity kicks and randomized timing.
         """
+        if self._deterministic_push_schedule is not None:
+            control_step = self._step_count - 1
+            delta = self._deterministic_push_schedule.get(control_step)
+            if delta is not None:
+                self.mjData.qvel[:6] += delta
+            return
+
         dr = self.domain_rand_cfg
         if not dr.enable or not dr.push_robots:
             return

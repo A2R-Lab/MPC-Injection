@@ -260,6 +260,7 @@ def generate_trajectory(
     verbose=1,
     render=False,
     use_go2_sysid=True,
+    deterministic_push_schedule=None,
 ):
     """Generate one MPX-controlled trajectory inside the RL quadruped env."""
     rng = np.random.RandomState(seed)
@@ -282,6 +283,7 @@ def generate_trajectory(
         apply_startup_domain_rand_on_init=False,
         simple_reward=True,
         use_go2_sysid=use_go2_sysid,
+        deterministic_push_schedule=deterministic_push_schedule,
     )
 
     own_mpc = mpc is None
@@ -546,6 +548,9 @@ def generate_trajectory(
             np.asarray(dr_bundle["dr_patch_geom_friction"], dtype=np.float64),
             env.domain_rand_cfg.friction_target_geom_names,
         )
+        deterministic_push_steps = sorted(
+            (deterministic_push_schedule or {}).keys()
+        )
 
         return {
             "qpos": qpos_traj,
@@ -597,6 +602,15 @@ def generate_trajectory(
             "push_delta_qvel": np.asarray(
                 push_delta_qvel_traj, dtype=np.float64
             ),
+            "deterministic_push_steps": np.asarray(
+                deterministic_push_steps, dtype=np.int64
+            ),
+            "deterministic_push_deltas": np.asarray(
+                [deterministic_push_schedule[step] for step in deterministic_push_steps]
+                if deterministic_push_schedule
+                else [],
+                dtype=np.float64,
+            ).reshape(-1, 6),
             "seed": seed,
             "dr_seed": dr_seed,
             "base_body_id": int(env._base_body_id),

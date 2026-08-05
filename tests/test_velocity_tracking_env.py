@@ -547,6 +547,50 @@ class TestSubstepDiagnostics:
             plain_env.close()
             diagnostic_env.close()
 
+    def test_deterministic_push_schedule_uses_zero_based_control_steps(self):
+        delta = np.array([0.2, -0.1, 0.05, 0.08, -0.06, 0.12])
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(
+                enable=False, push_robots=False
+            ),
+            enable_substep_diagnostics=True,
+            deterministic_push_schedule={1: delta},
+        )
+        try:
+            env.reset(seed=42)
+
+            first_info = env.step(np.zeros(env.num_joints))[4]
+            second_info = env.step(np.zeros(env.num_joints))[4]
+
+            np.testing.assert_array_equal(
+                first_info["substep_diagnostics"]["push_delta_qvel"],
+                np.zeros(6),
+            )
+            np.testing.assert_array_equal(
+                second_info["substep_diagnostics"]["push_delta_qvel"],
+                delta,
+            )
+        finally:
+            env.close()
+
+    @pytest.mark.parametrize(
+        "schedule",
+        [
+            {-1: np.zeros(6)},
+            {0: np.zeros(5)},
+            {0: np.array([0.0, 0.0, 0.0, 0.0, 0.0, np.nan])},
+        ],
+    )
+    def test_invalid_deterministic_push_schedule_is_rejected(self, schedule):
+        with pytest.raises(ValueError, match="deterministic push"):
+            QuadrupedVelocityTrackingEnv(
+                robot="go2",
+                scene="flat",
+                deterministic_push_schedule=schedule,
+            )
+
 
 class TestNominalPlantAlignment:
     """Ensure the no-DR RL env matches the quadruped MPC plant."""

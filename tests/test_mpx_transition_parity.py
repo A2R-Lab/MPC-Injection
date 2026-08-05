@@ -54,3 +54,23 @@ def test_predeclared_contract_covers_required_fields_and_scenarios():
     }
     assert contract["exact_fields"]["termination_mismatch_count"] == 0
     assert contract["mask_tolerances"]["replay_action_clipping_fraction"] == 0.0
+
+
+def test_v2_changes_push_coverage_without_changing_thresholds():
+    v1 = json.loads(DEFAULT_TOLERANCES.read_text(encoding="utf-8"))
+    v2_path = DEFAULT_TOLERANCES.with_name("transition_parity_tolerances_v2.json")
+    v2 = json.loads(v2_path.read_text(encoding="utf-8"))
+
+    for key in (
+        "numeric_fields",
+        "exact_fields",
+        "mask_tolerances",
+        "generation_action_conversion_limits",
+        "one_step_control_steps",
+        "short_rollout_control_steps",
+        "rollout_seed",
+        "dr_seed_offset",
+    ):
+        assert v2[key] == v1[key]
+    assert v2["thresholds_changed_from_v1"] is False
+    assert len(v2["scenarios"][1]["deterministic_push_schedule"]) == 2

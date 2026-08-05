@@ -108,7 +108,20 @@ def _metric_passes(metrics: dict, tolerance: dict) -> bool:
     )
 
 
-def _make_replay_env(domain_rand_config_type: str) -> QuadrupedVelocityTrackingEnv:
+def _deterministic_push_schedule(scenario: dict) -> dict[int, np.ndarray]:
+    """Convert the declared JSON push schedule to environment arrays."""
+    return {
+        int(event["after_control_step_zero_based"]): np.asarray(
+            event["delta_qvel_xyz_rpy"], dtype=np.float64
+        )
+        for event in scenario.get("deterministic_push_schedule", [])
+    }
+
+
+def _make_replay_env(
+    domain_rand_config_type: str,
+    deterministic_push_schedule: dict[int, np.ndarray],
+) -> QuadrupedVelocityTrackingEnv:
     _, domain_rand_cfg = resolve_startup_domain_rand_config(
         domain_rand_config_type
     )
@@ -122,6 +135,7 @@ def _make_replay_env(domain_rand_config_type: str) -> QuadrupedVelocityTrackingE
         simple_reward=True,
         use_go2_sysid=True,
         enable_substep_diagnostics=True,
+        deterministic_push_schedule=deterministic_push_schedule,
     )
 
 
@@ -129,10 +143,13 @@ def _replay_saved_actions(
     trajectory: dict,
     *,
     domain_rand_config_type: str,
+    deterministic_push_schedule: dict[int, np.ndarray],
     seed: int,
     control_steps: int,
 ) -> dict:
-    env = _make_replay_env(domain_rand_config_type)
+    env = _make_replay_env(
+        domain_rand_config_type, deterministic_push_schedule
+    )
     try:
         patch = extract_startup_domain_rand_patch(trajectory)
         env.apply_startup_domain_rand_bundle(patch)
@@ -343,6 +360,7 @@ def _measure_scenario(
 ) -> dict:
     seed = int(tolerances["rollout_seed"])
     requested_steps = int(tolerances["short_rollout_control_steps"])
+    push_schedule = _deterministic_push_schedule(scenario)
     trajectory = generate_trajectory(
         seed=seed,
         domain_rand_config_type=scenario["domain_rand_config_type"],
@@ -352,17 +370,20 @@ def _measure_scenario(
         verbose=verbose,
         render=False,
         use_go2_sysid=True,
+        deterministic_push_schedule=push_schedule,
     )
 
     one_step_replay = _replay_saved_actions(
         trajectory,
         domain_rand_config_type=scenario["domain_rand_config_type"],
+        deterministic_push_schedule=push_schedule,
         seed=seed,
         control_steps=int(tolerances["one_step_control_steps"]),
     )
     full_replay = _replay_saved_actions(
         trajectory,
         domain_rand_config_type=scenario["domain_rand_config_type"],
+        deterministic_push_schedule=push_schedule,
         seed=seed,
         control_steps=requested_steps,
     )
