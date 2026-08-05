@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "declaration_id": "mpx-transition-parity-v2-env-step-evaluation",
+  "inherits_thresholds_from": "mpx-transition-parity-v2",
+  "declared_at": "2026-08-05T14:30:10-04:00",
+  "declared_before_measurement": true,
+  "thresholds_changed_from_v2": false,
+  "conversion_mode_under_test": "env_step_lpf_inverse_v1",
+  "one_step_control_steps": 1,
+  "short_rollout_control_steps": 160,
+  "simulation_substeps_per_control_step": 4,
+  "rollout_seed": 17,
+  "dr_seed_offset": 1000000,
+  "scenarios": [
+    {
+      "name": "nominal",
+      "domain_rand_config_type": "disabled",
+      "require_push_event": false,
+      "deterministic_push_schedule": []
+    },
+    {
+      "name": "deterministic_nontrivial_dr",
+      "domain_rand_config_type": "sysid_dyn20_mjlab",
+      "require_push_event": true,
+      "determinism": "The startup-DR patch is sampled from the fixed DR seed. Two fixed validation-only velocity deltas are applied after zero-based control steps 39 and 99 in both source and replay.",
+      "deterministic_push_schedule": [
+        {
+          "after_control_step_zero_based": 39,
+          "delta_qvel_xyz_rpy": [0.2, -0.1, 0.05, 0.08, -0.06, 0.12]
+        },
+        {
+          "after_control_step_zero_based": 99,
+          "delta_qvel_xyz_rpy": [-0.15, 0.08, -0.04, -0.05, 0.07, -0.1]
+        }
+      ]
+    }
+  ],
+  "numeric_fields": {
+    "qpos": {"max_abs": 1e-6, "rms": 1e-7},
+    "qvel": {"max_abs": 1e-5, "rms": 1e-6},
+    "policy_observation": {"max_abs": 1e-5, "rms": 1e-6},
+    "privileged_observation": {"max_abs": 1e-5, "rms": 1e-6},
+    "reward": {"max_abs": 2e-6, "rms": 5e-7},
+    "applied_torque": {"max_abs": 1e-5, "rms": 1e-6},
+    "push_delta_qvel": {"max_abs": 1e-12, "rms": 1e-13}
+  },
+  "exact_fields": {
+    "termination_mismatch_count": 0,
+    "truncation_mismatch_count": 0,
+    "action_out_of_range_count": 0,
+    "push_event_mismatch_count": 0
+  },
+  "mask_tolerances": {
+    "torque_saturation_mismatch_fraction": 0.001,
+    "replay_action_clipping_fraction": 0.0
+  },
+  "generation_action_conversion_limits": {
+    "clipped_element_fraction": 0.01,
+    "max_clip_magnitude": 0.05
+  },
+  "acceptance_rule": "Every numeric field must satisfy both max_abs and RMS limits over one step and the entire short rollout in both scenarios; every exact/mask/action-conversion limit must also pass. Thresholds are inherited unchanged from v2 and must not be changed after this measurement."
+}

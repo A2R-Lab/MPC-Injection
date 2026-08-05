@@ -74,3 +74,30 @@ def test_v2_changes_push_coverage_without_changing_thresholds():
         assert v2[key] == v1[key]
     assert v2["thresholds_changed_from_v1"] is False
     assert len(v2["scenarios"][1]["deterministic_push_schedule"]) == 2
+
+
+def test_env_step_evaluation_changes_only_conversion_mode_from_v2():
+    v2_path = DEFAULT_TOLERANCES.with_name("transition_parity_tolerances_v2.json")
+    env_step_path = DEFAULT_TOLERANCES.with_name(
+        "transition_parity_env_step_tolerances_v2.json"
+    )
+    v2 = json.loads(v2_path.read_text(encoding="utf-8"))
+    env_step = json.loads(env_step_path.read_text(encoding="utf-8"))
+
+    metadata_keys = {
+        "declaration_id",
+        "supersedes_for_push_coverage",
+        "inherits_thresholds_from",
+        "declared_at",
+        "declared_before_v2_measurement",
+        "declared_before_measurement",
+        "thresholds_changed_from_v1",
+        "thresholds_changed_from_v2",
+        "conversion_mode_under_test",
+        "acceptance_rule",
+    }
+    assert {
+        key: value for key, value in env_step.items() if key not in metadata_keys
+    } == {key: value for key, value in v2.items() if key not in metadata_keys}
+    assert env_step["conversion_mode_under_test"] == "env_step_lpf_inverse_v1"
+    assert env_step["thresholds_changed_from_v2"] is False

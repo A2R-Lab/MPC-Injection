@@ -65,3 +65,8 @@ steps 39 and 99. All numeric, exact, clipping, saturation, seed, and horizon
 tolerances are unchanged from v1. The unchanged direct path must be measured
 again under v2 before the conditional environment-step mapping is evaluated
 under the same v2 contract.
+
+The conditional mapping evaluation uses
+`transition_parity_env_step_tolerances_v2.json`. It changes only the declared
+conversion mode to `env_step_lpf_inverse_v1`; every scenario, seed, horizon,
+push, numeric, exact, clipping, and saturation threshold is identical to v2.
