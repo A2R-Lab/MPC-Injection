@@ -70,3 +70,33 @@ The conditional mapping evaluation uses
 `transition_parity_env_step_tolerances_v2.json`. It changes only the declared
 conversion mode to `env_step_lpf_inverse_v1`; every scenario, seed, horizon,
 push, numeric, exact, clipping, and saturation threshold is identical to v2.
+
+## Measured decision
+
+The v2 actual-MPX direct-torque report failed. Nominal one-step maximum
+disagreement was `0.0600846` for qpos and `4.24142` for qvel; nominal
+full-rollout maxima were `0.180062` and `6.22611`. Under DR, the source fell
+after 127 control steps and full-rollout maxima reached `0.991056` for qpos and
+`10.9049` for qvel. The deterministic pushes occurred at steps 39 and 99 with
+no event mismatch. Source action conversion also exceeded its limits:
+3.95833% clipped elements and `1.20508` maximum overshoot nominally, and
+16.4698% / `2.96550` under DR. The retained machine-readable evidence is
+`transition_parity_baseline_report_v2.json`.
+
+The conditional environment-step source then completed both 160-step actual-
+MPX rollouts without a fall and replayed all state, observation, applied-
+torque, discrete, saturation-mask, and deterministic-push fields within the
+frozen tolerances. State, observation, torque, and push disagreements were
+exactly zero; reward max/RMS disagreement was at most `5.80609e-8` /
+`3.39942e-8`. It still failed the unchanged action-conversion limits: nominal
+clipping was 13.3854% with `3.18516` maximum overshoot, and DR clipping was
+23.4375% with `4.81915` maximum overshoot, versus limits of 1% and `0.05`.
+The exact report is `transition_parity_env_step_report_v2.json`.
+
+Therefore neither conversion is qualified for accepted direct-transition
+data. The legacy direct-torque implementation remains available under its
+explicit mode for compatibility and diagnostics; the environment-step mapping
+is retained as a separately named evaluated candidate, but it does not replace
+the default. Per the gated plan, gait calibration, nominal bound acceptance,
+and rendered candidate generation are blocked pending an explicit environment
+action-interface decision. The frozen thresholds were not changed.
