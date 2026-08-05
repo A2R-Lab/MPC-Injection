@@ -18,6 +18,10 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
+from mpc_rl.envs.action_interfaces import (
+    DEFAULT_ACTION_INTERFACE_ID,
+    MPX_BOUND_ACTION_INTERFACE_ID,
+)
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.common import QuadrupedTensorboardCallback
 from mpc_rl.train import AllConfig, create_callbacks, create_model, make_quadruped_env
@@ -49,6 +53,7 @@ def _build_cfg(algorithm: str) -> AllConfig:
         random_select=True,
         data_dir="",
         quadruped_mpc_replay_mode="direct",
+        quadruped_action_interface=DEFAULT_ACTION_INTERFACE_ID,
         use_go2_sysid=True,
         cheetah3_speed_goal=3.0,
     )
@@ -132,6 +137,21 @@ def test_make_quadruped_env_go2_can_disable_sysid_joint_dynamics():
     try:
         with pytest.raises(AssertionError, match="Go2 sysID joint dynamics"):
             assert_go2_sysid_joint_dynamics(env.unwrapped.mjModel)
+    finally:
+        env.close()
+
+
+def test_make_quadruped_env_uses_selected_mpx_bound_action_interface():
+    env = make_quadruped_env(
+        robot="go2",
+        domain_rand_cfg=DomainRandomizationConfig.disabled(),
+        simple_reward=True,
+        action_interface_id=MPX_BOUND_ACTION_INTERFACE_ID,
+    )
+    try:
+        assert env.unwrapped.action_scale == 1.0
+        assert env.unwrapped.action_lpf_cutoff_hz is None
+        assert env.unwrapped.action_lpf_alpha == 1.0
     finally:
         env.close()
 

@@ -15,6 +15,12 @@ import numpy as np
 
 import mpx.config.config_go2 as config
 import mpx.utils.mpc_wrapper as mpc_wrapper
+from mpc_rl.envs.action_interfaces import (
+    DEFAULT_ACTION_INTERFACE_ID,
+    MPX_BOUND_ACTION_INTERFACE_ID,
+    resolve_action_interface,
+    validate_action_interface_metadata,
+)
 from mpc_rl.envs.domain_randomization import (
     DomainRandomizationConfig,
     extract_startup_domain_rand_patch,
@@ -36,6 +42,18 @@ DEFAULT_REPORT = (
     / "docs"
     / "mpx_bound_milestone_reports"
     / "transition_parity_baseline_report.json"
+)
+MPX_BOUND_ACTION_INTERFACE_TOLERANCES = (
+    REPO_ROOT
+    / "docs"
+    / "mpx_bound_milestone_reports"
+    / "transition_parity_env_step_scale1_no_lpf_tolerances_v3.json"
+)
+MPX_BOUND_ACTION_INTERFACE_REPORT = (
+    REPO_ROOT
+    / "docs"
+    / "mpx_bound_milestone_reports"
+    / "transition_parity_env_step_scale1_no_lpf_report_v3.json"
 )
 
 
@@ -121,7 +139,9 @@ def _deterministic_push_schedule(scenario: dict) -> dict[int, np.ndarray]:
 def _make_replay_env(
     domain_rand_config_type: str,
     deterministic_push_schedule: dict[int, np.ndarray],
+    action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
 ) -> QuadrupedVelocityTrackingEnv:
+    action_interface = resolve_action_interface(action_interface_id)
     _, domain_rand_cfg = resolve_startup_domain_rand_config(
         domain_rand_config_type
     )
@@ -136,6 +156,7 @@ def _make_replay_env(
         use_go2_sysid=True,
         enable_substep_diagnostics=True,
         deterministic_push_schedule=deterministic_push_schedule,
+        **action_interface.env_kwargs(),
     )
 
 
@@ -146,9 +167,27 @@ def _replay_saved_actions(
     deterministic_push_schedule: dict[int, np.ndarray],
     seed: int,
     control_steps: int,
+    action_interface_id: str | None = None,
 ) -> dict:
+    recorded_interface_id = (
+        str(np.asarray(trajectory["action_interface_id"]).item())
+        if "action_interface_id" in trajectory
+        else DEFAULT_ACTION_INTERFACE_ID
+    )
+    resolved_interface_id = action_interface_id or recorded_interface_id
+    if action_interface_id is not None and recorded_interface_id != action_interface_id:
+        raise ValueError(
+            "parity replay action-interface mismatch: "
+            f"trajectory={recorded_interface_id!r}, declaration={action_interface_id!r}"
+        )
+    if "schema_version" in trajectory:
+        validate_action_interface_metadata(
+            trajectory, expected_interface_id=resolved_interface_id
+        )
     env = _make_replay_env(
-        domain_rand_config_type, deterministic_push_schedule
+        domain_rand_config_type,
+        deterministic_push_schedule,
+        resolved_interface_id,
     )
     try:
         patch = extract_startup_domain_rand_patch(trajectory)
@@ -352,6 +391,94 @@ def _compare_horizon(
     }
 
 
+def _scenario_conversion_limits(tolerances: dict, scenario_name: str) -> dict:
+    """Resolve legacy-global or new scenario-specific clipping limits."""
+    per_scenario = tolerances.get(
+        "generation_action_conversion_limits_by_scenario"
+    )
+    if per_scenario is None:
+        return tolerances["generation_action_conversion_limits"]
+    try:
+        return per_scenario[scenario_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"no generation action-conversion limits declared for {scenario_name!r}"
+        ) from exc
+
+
+def _per_joint_action_diagnostics(trajectory: dict) -> list[dict]:
+    """Report raw-action range and clipping separately for every joint."""
+    raw_actions = np.asarray(trajectory["raw_actions"], dtype=np.float64)
+    clipping_mask = np.asarray(trajectory["action_clipping_mask"], dtype=bool)
+    clipping_magnitude = np.asarray(
+        trajectory["action_clipping_magnitude"], dtype=np.float64
+    )
+    joint_names = np.asarray(
+        trajectory.get(
+            "joint_names",
+            np.asarray(
+                [f"action_{index}" for index in range(raw_actions.shape[1])]
+            ),
+        )
+    ).astype(str)
+
+    diagnostics = []
+    for joint_index, joint_name in enumerate(joint_names.tolist()):
+        joint_raw = raw_actions[:, joint_index]
+        joint_mask = clipping_mask[:, joint_index]
+        joint_magnitude = clipping_magnitude[:, joint_index]
+        diagnostics.append(
+            {
+                "action_index": joint_index,
+                "joint_name": joint_name,
+                "element_count": int(joint_raw.size),
+                "clipped_element_count": int(np.count_nonzero(joint_mask)),
+                "clipped_element_fraction": (
+                    float(np.mean(joint_mask)) if joint_mask.size else 0.0
+                ),
+                "max_clip_magnitude": (
+                    float(np.max(joint_magnitude))
+                    if joint_magnitude.size
+                    else 0.0
+                ),
+                "max_abs_raw_action": (
+                    float(np.max(np.abs(joint_raw))) if joint_raw.size else 0.0
+                ),
+            }
+        )
+    return diagnostics
+
+
+def _per_joint_torque_diagnostics(trajectory: dict) -> list[dict]:
+    """Report source torque saturation separately for every action joint."""
+    saturation_mask = np.asarray(trajectory["torque_saturation_mask"], dtype=bool)
+    saturation_magnitude = np.asarray(
+        trajectory["torque_saturation_magnitude"], dtype=np.float64
+    )
+    joint_names = np.asarray(trajectory["joint_names"]).astype(str)
+    diagnostics = []
+    for joint_index, joint_name in enumerate(joint_names.tolist()):
+        joint_mask = saturation_mask[..., joint_index]
+        joint_magnitude = saturation_magnitude[..., joint_index]
+        diagnostics.append(
+            {
+                "action_index": joint_index,
+                "joint_name": joint_name,
+                "element_count": int(joint_mask.size),
+                "saturated_element_count": int(np.count_nonzero(joint_mask)),
+                "saturated_element_fraction": (
+                    float(np.mean(joint_mask)) if joint_mask.size else 0.0
+                ),
+                "max_saturation_magnitude": (
+                    float(np.max(joint_magnitude))
+                    if joint_magnitude.size
+                    else 0.0
+                ),
+            }
+        )
+    return diagnostics
+
+
 def _measure_scenario(
     scenario: dict,
     tolerances: dict,
@@ -360,6 +487,9 @@ def _measure_scenario(
 ) -> dict:
     seed = int(tolerances["rollout_seed"])
     requested_steps = int(tolerances["short_rollout_control_steps"])
+    action_interface_id = tolerances.get(
+        "action_interface_id", DEFAULT_ACTION_INTERFACE_ID
+    )
     push_schedule = _deterministic_push_schedule(scenario)
     trajectory = generate_trajectory(
         seed=seed,
@@ -371,6 +501,7 @@ def _measure_scenario(
         render=False,
         use_go2_sysid=True,
         deterministic_push_schedule=push_schedule,
+        action_interface_id=action_interface_id,
         action_conversion_mode=tolerances["conversion_mode_under_test"],
     )
 
@@ -380,6 +511,7 @@ def _measure_scenario(
         deterministic_push_schedule=push_schedule,
         seed=seed,
         control_steps=int(tolerances["one_step_control_steps"]),
+        action_interface_id=action_interface_id,
     )
     full_replay = _replay_saved_actions(
         trajectory,
@@ -387,6 +519,7 @@ def _measure_scenario(
         deterministic_push_schedule=push_schedule,
         seed=seed,
         control_steps=requested_steps,
+        action_interface_id=action_interface_id,
     )
     one_step = _compare_horizon(
         trajectory,
@@ -399,9 +532,12 @@ def _measure_scenario(
     )
 
     actions = np.asarray(trajectory["actions"])
+    raw_actions = np.asarray(trajectory["raw_actions"])
     clipping_mask = np.asarray(trajectory["action_clipping_mask"])
     clipping_magnitude = np.asarray(trajectory["action_clipping_magnitude"])
-    conversion_limits = tolerances["generation_action_conversion_limits"]
+    conversion_limits = _scenario_conversion_limits(
+        tolerances, scenario["name"]
+    )
     clipped_fraction = float(np.mean(clipping_mask)) if clipping_mask.size else 0.0
     max_clip_magnitude = (
         float(np.max(clipping_magnitude)) if clipping_magnitude.size else 0.0
@@ -459,12 +595,27 @@ def _measure_scenario(
         "generation_action_conversion": {
             "clipped_element_fraction": clipped_fraction,
             "max_clip_magnitude": max_clip_magnitude,
+            "max_abs_raw_action": (
+                float(np.max(np.abs(raw_actions))) if raw_actions.size else 0.0
+            ),
             "action_out_of_range_count": action_out_of_range_count,
             "limits": conversion_limits,
+            "by_joint": _per_joint_action_diagnostics(trajectory),
             "passed": conversion_pass,
         },
         "source_torque_saturation_fraction": float(
             np.mean(np.asarray(trajectory["torque_saturation_mask"]))
+        ),
+        "source_max_torque_saturation_magnitude": float(
+            np.max(np.asarray(trajectory["torque_saturation_magnitude"]))
+        ),
+        "source_torque_saturation_by_joint": _per_joint_torque_diagnostics(
+            trajectory
+        ),
+        "source_non_foot_ground_contact_count": int(
+            np.count_nonzero(
+                np.asarray(trajectory["non_foot_ground_contact_substeps"])
+            )
         ),
         "source_push_event_steps": source_push_events.astype(int).tolist(),
         "push_requirement_pass": push_requirement_pass,
@@ -488,6 +639,26 @@ def run_parity_measurement(
 ) -> dict:
     tolerance_bytes = tolerances_path.read_bytes()
     tolerances = json.loads(tolerance_bytes)
+    action_interface = resolve_action_interface(
+        tolerances.get("action_interface_id", DEFAULT_ACTION_INTERFACE_ID)
+    )
+    if (
+        "action_interface" in tolerances
+        and tolerances["action_interface"] != action_interface.to_dict()
+    ):
+        raise ValueError(
+            "predeclared action_interface does not match the repository's "
+            f"versioned definition for {action_interface.interface_id!r}"
+        )
+    required_mode = action_interface.required_mpx_conversion_mode
+    if (
+        required_mode is not None
+        and tolerances["conversion_mode_under_test"] != required_mode
+    ):
+        raise ValueError(
+            f"predeclared action interface {action_interface.interface_id!r} "
+            f"requires conversion mode {required_mode!r}"
+        )
     controller = mpc_wrapper.MPCControllerWrapper(
         config,
         use_go2_sysid=True,
@@ -510,6 +681,7 @@ def run_parity_measurement(
         "declaration_id": tolerances["declaration_id"],
         "tolerances_sha256": hashlib.sha256(tolerance_bytes).hexdigest(),
         "conversion_mode": tolerances["conversion_mode_under_test"],
+        "action_interface": action_interface.to_dict(),
         "root_commit": _git_commit(REPO_ROOT),
         "mpx_commit": _git_commit(REPO_ROOT / "deps" / "mpx"),
         "primal_dual_ilqr_commit": _git_commit(
@@ -528,22 +700,38 @@ def run_parity_measurement(
             / "go2.xml"
         ),
         "qrot_roll_cost": float(np.asarray(config.Qrot)[0, 0]),
+        "implementation_sha256": {
+            relative_path: _sha256(REPO_ROOT / relative_path)
+            for relative_path in (
+                "mpc_rl/envs/action_interfaces.py",
+                "mpc_rl/envs/velocity_tracking_env.py",
+                "mpc_rl/planner/gen_traj_data_mpx_dr.py",
+                "mpc_rl/planner/check_mpx_transition_parity.py",
+                "mpc_rl/common/mpc_inject_callbacks.py",
+                "mpc_rl/train.py",
+            )
+        },
         "tolerances": tolerances,
         "scenarios": scenarios,
         "passed": passed,
         "decision": (
-            "preserve_existing_transition_path"
+            "accept_mpx_bound_action_interface"
             if passed
-            and tolerances["conversion_mode_under_test"]
-            == "inferred_action_direct_torque_v1"
+            and action_interface.interface_id == MPX_BOUND_ACTION_INTERFACE_ID
             else (
-                "use_env_step_transition_path"
+                "preserve_existing_transition_path"
                 if passed
+                and tolerances["conversion_mode_under_test"]
+                == "inferred_action_direct_torque_v1"
                 else (
-                    "evaluate_conditional_env_step_mapping"
-                    if tolerances["conversion_mode_under_test"]
-                    == "inferred_action_direct_torque_v1"
-                    else "stop_and_decide_action_interface"
+                    "use_env_step_transition_path"
+                    if passed
+                    else (
+                        "evaluate_conditional_env_step_mapping"
+                        if tolerances["conversion_mode_under_test"]
+                        == "inferred_action_direct_torque_v1"
+                        else "stop_and_decide_action_interface"
+                    )
                 )
             )
         ),

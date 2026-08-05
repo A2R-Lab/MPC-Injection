@@ -101,6 +101,56 @@ the default. Per the gated plan, gait calibration, nominal bound acceptance,
 and rendered candidate generation are blocked pending an explicit environment
 action-interface decision. The frozen thresholds were not changed.
 
+## Accepted opt-in action interface
+
+The subsequent user-approved interface is named
+`mpx_bound_scale_1_no_lpf_v1`. It keeps the 12-dimensional normalized action
+space and actuator limits unchanged, uses `action_scale=1.0`, disables the
+absolute-target LPF (`action_lpf_cutoff_hz=None`, alpha 1), converts MPX output
+with `q_target = q_des + tau_ff / kp_realized`, and advances generation only
+through `env.step(raw_action)`. The scale-0.5/5-Hz interface remains the default
+for existing policies and unrelated generation.
+
+Before measurement, the machine-readable v3 declaration froze all v2 numeric,
+exact, replay-clipping, saturation-mask, scenario, seed, horizon, and push
+tolerances. It changed only the selected action interface and source-conversion
+acceptance: nominal clipping remains disallowed; deterministic-DR clipping may
+cover at most 2.00% of action elements with at most 0.86 normalized clip
+magnitude. This narrowly encodes the user's acceptance of the prior diagnostic
+observation rather than removing clipping validation. The declaration is
+`transition_parity_env_step_scale1_no_lpf_tolerances_v3.json`.
+
+The official v3 report
+`transition_parity_env_step_scale1_no_lpf_report_v3.json` passed every declared
+criterion. Both nominal and deterministic-DR sources completed all 160 control
+steps with no fall or non-foot ground contact. Nominal action clipping and
+torque saturation were zero, with maximum absolute raw action `0.975267`.
+Deterministic DR clipped `1.927083%` of action elements, with maximum raw action
+`1.807669` and maximum normalized clip magnitude `0.807669`; source torque
+saturation covered `0.052083%` of joint substeps, with maximum requested-torque
+overshoot `1.260413` N*m. The report retains scenario- and joint-level clipping
+and saturation diagnostics.
+
+State, observation, applied-torque, push, termination, truncation, and replay
+clipping comparisons passed for one step and the full rollout in both
+scenarios. State, observation, applied-torque, and push disagreement was zero;
+the largest full-rollout reward disagreement was `5.96017e-8`. The deterministic
+pushes matched at control steps 39 and 99. G2 is therefore passed for this
+explicit interface only. This unlocks the next bounded gait diagnostic and
+calibration work; it does not establish G3, approve a production bound, or
+authorize bulk generation or training.
+
+The permitted post-G2 deterministic diagnostic then routed the retained
+`bound_front_first`, duty-0.5, 3-Hz, 0.03-m, fixed-0.1-m/s configuration through
+this environment-step interface for 150 control steps. It completed without a
+fall, termination, or non-foot contact. Planned front/rear pair agreement was
+1.0; measured substep agreement was `0.961667` front and `0.973333` rear.
+Action clipping was `1.166667%` with `0.537424` maximum normalized magnitude;
+torque saturation was `0.652778%` with `5.906025` N*m maximum requested
+overshoot. All-four support occupied `60.5%` of substeps and no flight was
+measured. The exact diagnostic is `bound_env_step_diagnostic_v1.json`. It is a
+short nominal commissioning result, not a frozen classifier result or G3 pass.
+
 ## Action range is not actuator range
 
 The training action is a normalized joint-position residual in `[-1, 1]`, with

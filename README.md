@@ -116,6 +116,16 @@ To train a quadruped velocity-tracking policy use:
 python mpc_rl/train.py --env_name quadruped-velocity_tracking --algorithm SAC --total_timesteps 5000000 --num_envs 512 --seed 1 --learning_starts 50000 --save_replay_buffer_checkpoints=False --save_replay_buffer_final=False --domain_rand=True
 ```
 
+Quadruped environments retain the existing
+`residual_position_scale_0p5_lpf_5hz_v1` action interface by default. The
+MPX bounding-data path can explicitly select
+`--quadruped_action_interface=mpx_bound_scale_1_no_lpf_v1`; this uses a
+1-radian residual scale with no action-target LPF. Schema-v2 direct-transition
+loading validates that the dataset and training interface match. The accepted
+transition-parity result is documented in `docs/mpx_transition_parity.md`.
+Passing this transition gate does not by itself approve bulk bound-data
+generation or training.
+
 Test a trained quadruped model locally with:
 
 ```bash
@@ -208,6 +218,7 @@ This will load the existing model and normalization statistics, then continue tr
 - `--task`: Task name. Optional; parsed from `--env_name` if not provided.
 - `--robot`: Quadruped robot model for quadruped environments. Default: `go2`
 - `--use_go2_sysid`: Apply the identified Go2 joint-dynamics patch for quadruped environments and MPX controllers. Default: `True`
+- `--quadruped_action_interface`: Versioned quadruped action interface. Default: `residual_position_scale_0p5_lpf_5hz_v1`; opt-in MPX bound interface: `mpx_bound_scale_1_no_lpf_v1`
 - `--max_episode_steps`: Maximum episode length. Default: `1000`
 - `--cheetah3_speed_goal`: Forward speed target for cheetah3 reward. Default: `3.0`
 

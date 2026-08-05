@@ -47,6 +47,7 @@ from scipy.spatial.transform import Rotation
 from gym_quadruped.robot_cfgs import RobotConfig, get_robot_config
 from gym_quadruped.utils.mujoco.terrain import generate_terrain
 
+from mpc_rl.envs.action_interfaces import compute_action_lpf_alpha
 from mpc_rl.envs.domain_randomization import (
     DomainRandomizationConfig,
     apply_startup_domain_rand_patch as apply_startup_domain_rand_patch_to_model,
@@ -676,12 +677,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     @staticmethod
     def _compute_lpf_alpha(cutoff_hz: float | None, dt: float) -> np.float64:
         """Return first-order LPF alpha for y += alpha * (x - y)."""
-        if cutoff_hz is None or cutoff_hz <= 0.0:
-            return np.float64(1.0)
-        if dt <= 0.0:
-            raise ValueError(f"LPF timestep must be positive, got {dt}")
-        alpha = 1.0 - np.exp(-2.0 * np.pi * float(cutoff_hz) * float(dt))
-        return np.float64(np.clip(alpha, 0.0, 1.0))
+        return compute_action_lpf_alpha(cutoff_hz, dt)
 
     @staticmethod
     def _validate_push_schedule(

@@ -11,6 +11,12 @@ from mpc_rl.envs.cheetah3_env import (
     Cheetah3Env,
     DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL,
 )
+from mpc_rl.envs.action_interfaces import (
+    DEFAULT_ACTION_INTERFACE_ID,
+    MPX_BOUND_ACTION_INTERFACE_ID,
+    resolve_action_interface,
+    validate_action_interface_metadata,
+)
 from mpc_rl.envs.domain_randomization import (
     extract_startup_domain_rand_patch,
     resolve_startup_domain_rand_config,
@@ -88,6 +94,25 @@ def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
 def _quadruped_traj_has_direct_transitions(traj_data) -> bool:
     """Return True when a quadruped trajectory file stores direct RL transitions."""
     return all(key in traj_data for key in _QUADRUPED_DIRECT_TRANSITION_KEYS)
+
+
+def _validate_quadruped_direct_action_interface(
+    traj_data,
+    *,
+    expected_action_interface_id: str | None,
+):
+    """Validate schema-v2 action metadata while retaining legacy compatibility."""
+    if "schema_version" not in traj_data:
+        if expected_action_interface_id == MPX_BOUND_ACTION_INTERFACE_ID:
+            raise ValueError(
+                "the opt-in MPX bound action interface requires schema-v2 "
+                "direct-transition metadata; this file is legacy/unversioned"
+            )
+        return None
+    return validate_action_interface_metadata(
+        traj_data,
+        expected_interface_id=expected_action_interface_id,
+    )
 
 
 def _quadruped_traj_has_torque_replay_data(traj_data) -> bool:
@@ -537,6 +562,7 @@ class PercentMPCInjectCallback(BaseCallback):
         robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
         use_go2_sysid: bool=True,             # Whether quadruped temp envs should apply the Go2 sysID patch
         expected_dr_config_type: str | None = None,  # Expected DR preset for loaded quadruped demos
+        expected_action_interface_id: str | None = None,
         quadruped_mpc_replay_mode: str="direct",  # direct, torque_saved_pd, or torque_current_pd
         cheetah3_speed_goal: float=CHEETAH3_DEFAULT_SPEED_GOAL,
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
@@ -554,6 +580,9 @@ class PercentMPCInjectCallback(BaseCallback):
         self.robot = robot
         self.use_go2_sysid = use_go2_sysid
         self.expected_dr_config_type = expected_dr_config_type
+        self.expected_action_interface_id = expected_action_interface_id
+        if expected_action_interface_id is not None:
+            resolve_action_interface(expected_action_interface_id)
         self.quadruped_mpc_replay_mode = quadruped_mpc_replay_mode
         self.cheetah3_speed_goal = float(cheetah3_speed_goal)
         self._warned_dr_mismatch = False
@@ -586,7 +615,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 raise FileNotFoundError(f"Data directory not found: {data_dir}")
             
             # Get all available trajectory files
-            self.available_files = list(self.data_dir.glob("*.npz"))
+            self.available_files = sorted(self.data_dir.glob("*.npz"))
             if len(self.available_files) == 0:
                 raise FileNotFoundError(f"No trajectory files found in {data_dir}")
             
@@ -602,6 +631,10 @@ class PercentMPCInjectCallback(BaseCallback):
             print(f"  Random selection: {random_select}")
         if domain == "quadruped":
             print(f"  Quadruped MPC replay mode: {quadruped_mpc_replay_mode}")
+            print(
+                "  Expected action interface: "
+                f"{expected_action_interface_id or 'legacy-compatible'}"
+            )
         if seed is not None:
             print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}")
@@ -1189,20 +1222,32 @@ class PercentMPCInjectCallback(BaseCallback):
                     try:
                         selected_file = self._select_trajectory_file()
                         
-                        # Load the MPC trajectory data
-                        traj_data = np.load(selected_file, allow_pickle=True)
-                        if is_quadruped:
-                            self._maybe_warn_sysid_mismatch(traj_data)
-                        qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
-                        qvel = traj_data['qvel']
+                        # New quadruped direct-transition files are loaded
+                        # pickle-free. Legacy torque replay keeps its isolated
+                        # compatibility path.
+                        traj_data = np.load(
+                            selected_file,
+                            allow_pickle=not is_quadruped,
+                        )
                         quadruped_has_direct_transitions = (
-                            is_quadruped and _quadruped_traj_has_direct_transitions(traj_data)
+                            is_quadruped
+                            and _quadruped_traj_has_direct_transitions(traj_data)
                         )
                         quadruped_force_torque_replay = (
                             is_quadruped
                             and self.quadruped_mpc_replay_mode
                             in {"torque_saved_pd", "torque_current_pd"}
                         )
+                        if is_quadruped and (
+                            quadruped_force_torque_replay
+                            or not quadruped_has_direct_transitions
+                        ):
+                            traj_data.close()
+                            traj_data = np.load(selected_file, allow_pickle=True)
+                        if is_quadruped:
+                            self._maybe_warn_sysid_mismatch(traj_data)
+                        qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
+                        qvel = traj_data['qvel']
                         if quadruped_force_torque_replay:
                             if not _quadruped_traj_has_torque_replay_data(traj_data):
                                 missing = [
@@ -1218,6 +1263,13 @@ class PercentMPCInjectCallback(BaseCallback):
                             quadruped_has_direct_transitions = False
 
                         if is_quadruped:
+                            if quadruped_has_direct_transitions:
+                                _validate_quadruped_direct_action_interface(
+                                    traj_data,
+                                    expected_action_interface_id=(
+                                        self.expected_action_interface_id
+                                    ),
+                                )
                             traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)
                             self._maybe_warn_dr_mismatch(traj_domain_rand_patch)
                             if not quadruped_has_direct_transitions:

@@ -19,6 +19,16 @@ jax.config.update(
 
 import mpx.config.config_go2 as config
 import mpx.utils.mpc_wrapper as mpc_wrapper
+from mpc_rl.envs.action_interfaces import (
+    ACTION_INTERFACES,
+    DEFAULT_ACTION_INTERFACE_ID,
+    ENV_STEP_LPF_INVERSE_MODE,
+    INFERRED_ACTION_DIRECT_TORQUE_MODE,
+    MPX_BOUND_ACTION_INTERFACE_ID,
+    MPX_BOUND_ENV_STEP_MODE,
+    action_interface_metadata,
+    resolve_action_interface,
+)
 from mpc_rl.envs.domain_randomization import (
     STARTUP_DOMAIN_RAND_PRESET_NAMES,
     resolve_startup_domain_rand_config,
@@ -36,15 +46,86 @@ jax.default_device(gpu_device)
 
 
 DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET = "sysid_dyn20_mjlab"
-INFERRED_ACTION_DIRECT_TORQUE_MODE = "inferred_action_direct_torque_v1"
-ENV_STEP_LPF_INVERSE_MODE = "env_step_lpf_inverse_v1"
 ACTION_CONVERSION_MODES = (
     INFERRED_ACTION_DIRECT_TORQUE_MODE,
     ENV_STEP_LPF_INVERSE_MODE,
+    MPX_BOUND_ENV_STEP_MODE,
 )
 # Keep the historical behavior as the default until the conditional mapping
 # has passed its predeclared actual-MPX parity gate.
 DEFAULT_ACTION_CONVERSION_MODE = INFERRED_ACTION_DIRECT_TORQUE_MODE
+
+
+def _resolve_action_configuration(
+    action_interface_id: str,
+    action_conversion_mode: str | None,
+):
+    """Resolve and validate the coupled environment/generator action contract."""
+    action_interface = resolve_action_interface(action_interface_id)
+    if action_conversion_mode is None:
+        action_conversion_mode = (
+            action_interface.required_mpx_conversion_mode
+            or DEFAULT_ACTION_CONVERSION_MODE
+        )
+    if action_conversion_mode not in ACTION_CONVERSION_MODES:
+        raise ValueError(
+            f"action_conversion_mode must be one of {ACTION_CONVERSION_MODES}, "
+            f"got {action_conversion_mode!r}"
+        )
+    required_mode = action_interface.required_mpx_conversion_mode
+    if required_mode is not None and action_conversion_mode != required_mode:
+        raise ValueError(
+            f"action interface {action_interface.interface_id!r} requires "
+            f"action_conversion_mode={required_mode!r}, got "
+            f"{action_conversion_mode!r}"
+        )
+    if (
+        action_conversion_mode == MPX_BOUND_ENV_STEP_MODE
+        and action_interface.interface_id != MPX_BOUND_ACTION_INTERFACE_ID
+    ):
+        raise ValueError(
+            f"action_conversion_mode={MPX_BOUND_ENV_STEP_MODE!r} requires "
+            f"action_interface_id={MPX_BOUND_ACTION_INTERFACE_ID!r}"
+        )
+    return action_interface, action_conversion_mode
+
+
+def _actuated_joint_names(env: QuadrupedVelocityTrackingEnv) -> np.ndarray:
+    """Return actuator joint names in the 12D action order."""
+    names = []
+    for actuator_index in range(env.num_joints):
+        joint_id = int(env.mjModel.actuator_trnid[actuator_index, 0])
+        joint_name = mujoco.mj_id2name(
+            env.mjModel, mujoco.mjtObj.mjOBJ_JOINT, joint_id
+        )
+        names.append(joint_name or f"joint_{joint_id}")
+    return np.asarray(names, dtype="<U64")
+
+
+def _controller_gait_metadata(mpc) -> dict:
+    """Return pickle-free effective gait metadata when the controller exposes it."""
+    gait_parameters = getattr(mpc, "gait_parameters", None)
+    if gait_parameters is None:
+        return {
+            "gait_name": "unspecified",
+            "gait_initial_phase": np.asarray(config.timer_t, dtype=np.float64),
+            "gait_duty_factor": float(getattr(mpc, "duty_factor", config.duty_factor)),
+            "gait_step_frequency_hz": float(config.step_freq),
+            "gait_step_height_m": float(config.step_height),
+            "contact_order": np.asarray(config.contact_frame, dtype="<U16"),
+        }
+    return {
+        "gait_name": str(gait_parameters["gait_name"]),
+        "gait_initial_phase": np.asarray(
+            gait_parameters["initial_phase"], dtype=np.float64
+        ),
+        "gait_duty_factor": float(gait_parameters["duty_factor"]),
+        "gait_step_frequency_hz": float(
+            gait_parameters["step_frequency_hz"]
+        ),
+        "gait_step_height_m": float(gait_parameters["step_height_m"]),
+        "contact_order": np.asarray(config.contact_frame, dtype="<U16"),
+    }
 
 
 def _go2_sysid_signature_vector() -> np.ndarray:
@@ -392,14 +473,14 @@ def generate_trajectory(
     render=False,
     use_go2_sysid=True,
     deterministic_push_schedule=None,
-    action_conversion_mode=DEFAULT_ACTION_CONVERSION_MODE,
+    fixed_command=None,
+    action_interface_id=DEFAULT_ACTION_INTERFACE_ID,
+    action_conversion_mode=None,
 ):
     """Generate one MPX-controlled trajectory inside the RL quadruped env."""
-    if action_conversion_mode not in ACTION_CONVERSION_MODES:
-        raise ValueError(
-            f"action_conversion_mode must be one of {ACTION_CONVERSION_MODES}, "
-            f"got {action_conversion_mode!r}"
-        )
+    action_interface, action_conversion_mode = _resolve_action_configuration(
+        action_interface_id, action_conversion_mode
+    )
     rng = np.random.RandomState(seed)
     dr_seed = seed + dr_seed_offset
     dr_rng = np.random.RandomState(dr_seed)
@@ -422,6 +503,7 @@ def generate_trajectory(
         use_go2_sysid=use_go2_sysid,
         enable_substep_diagnostics=True,
         deterministic_push_schedule=deterministic_push_schedule,
+        **action_interface.env_kwargs(),
     )
 
     own_mpc = mpc is None
@@ -432,7 +514,13 @@ def generate_trajectory(
             dr_seed=dr_seed,
         )
         env.apply_startup_domain_rand_bundle(dr_bundle)
-        commands = sample_commands(rng)
+        if fixed_command is None:
+            commands = sample_commands(rng)
+        else:
+            commands = np.asarray(fixed_command, dtype=np.float64)
+            if commands.shape != (3,) or not np.all(np.isfinite(commands)):
+                raise ValueError("fixed_command must be a finite vector with shape (3,)")
+            commands = commands.copy()
         env.set_commands(
             vx=float(commands[0]),
             vy=float(commands[1]),
@@ -465,6 +553,7 @@ def generate_trajectory(
                 print(f"[Seed {seed}] JIT compilation done in {timer() - compile_start:.1f}s")
 
         mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
+        gait_metadata = _controller_gait_metadata(mpc)
         total_command = _configure_mpc_duty_factor(commands, mpc)
 
         nq = env.mjModel.nq
@@ -494,6 +583,7 @@ def generate_trajectory(
         truncated_ctrl_traj = []
         commands_ctrl_traj = []
         measured_contacts_ctrl_traj = []
+        planned_contact_schedule_ctrl_traj = []
         next_qpos_ctrl_traj = []
         next_qvel_ctrl_traj = []
         requested_torques_ctrl_traj = []
@@ -520,6 +610,7 @@ def generate_trajectory(
                 f"vy={commands[1]:.2f}, wz={commands[2]:.2f}"
             )
             print(f"  Initial total command: {total_command:.3f}")
+            print(f"  Action interface: {action_interface.interface_id}")
             print(f"  Action conversion: {action_conversion_mode}")
 
         viewer = None
@@ -534,7 +625,11 @@ def generate_trajectory(
         completed_control_steps = 0
 
         for ctrl_step in range(episode_length):
-            if steps_since_resample >= env.command_resample_interval and ctrl_step > 0:
+            if (
+                fixed_command is None
+                and steps_since_resample >= env.command_resample_interval
+                and ctrl_step > 0
+            ):
                 commands = sample_commands(rng)
                 steps_since_resample = 0
                 total_command = _configure_mpc_duty_factor(commands, mpc)
@@ -573,6 +668,10 @@ def generate_trajectory(
 
             tau_mpx = np.asarray(tau_mpx, dtype=np.float64)
             q_des = np.asarray(q_des, dtype=np.float64)
+            if getattr(mpc, "enable_planned_contact_diagnostics", False):
+                planned_contact_schedule_ctrl_traj.append(
+                    np.asarray(mpc.planned_contact_schedule, dtype=np.int8)
+                )
 
             sim_idx_start = ctrl_step * sim_steps_per_ctrl
             if action_conversion_mode == INFERRED_ACTION_DIRECT_TORQUE_MODE:
@@ -592,10 +691,6 @@ def generate_trajectory(
                     env, tau_mpx, q_des
                 )
             action = np.clip(raw_action, -1.0, 1.0).astype(np.float64)
-            raw_actions_traj.append(raw_action.copy())
-            actions_traj.append(action.copy())
-            action_clipping_mask_traj.append(raw_action != action)
-            action_clipping_magnitude_traj.append(np.abs(raw_action - action))
 
             if action_conversion_mode == INFERRED_ACTION_DIRECT_TORQUE_MODE:
                 (
@@ -649,6 +744,32 @@ def generate_trajectory(
                     sim_idx_start=sim_idx_start,
                     viewer=viewer,
                 )
+
+            if action_conversion_mode == INFERRED_ACTION_DIRECT_TORQUE_MODE:
+                recorded_raw_action = raw_action
+                recorded_action = action
+                recorded_clipping_mask = raw_action != action
+                recorded_clipping_magnitude = np.abs(raw_action - action)
+            else:
+                recorded_raw_action = np.asarray(
+                    step_diagnostics["raw_action"], dtype=np.float64
+                )
+                recorded_action = np.asarray(
+                    step_diagnostics["clipped_action"], dtype=np.float64
+                )
+                recorded_clipping_mask = np.asarray(
+                    step_diagnostics["action_clipping_mask"], dtype=bool
+                )
+                recorded_clipping_magnitude = np.asarray(
+                    step_diagnostics["action_clipping_magnitude"],
+                    dtype=np.float64,
+                )
+            raw_actions_traj.append(recorded_raw_action.copy())
+            actions_traj.append(recorded_action.copy())
+            action_clipping_mask_traj.append(recorded_clipping_mask.copy())
+            action_clipping_magnitude_traj.append(
+                recorded_clipping_magnitude.copy()
+            )
 
             next_policy_obs_traj.append(next_obs["policy"].copy())
             next_privileged_obs_traj.append(next_obs["privileged"].copy())
@@ -753,6 +874,14 @@ def generate_trajectory(
             "measured_contacts_ctrl": np.asarray(
                 measured_contacts_ctrl_traj, dtype=bool
             ),
+            "planned_contact_schedule_ctrl": (
+                np.asarray(planned_contact_schedule_ctrl_traj, dtype=np.int8)
+                if planned_contact_schedule_ctrl_traj
+                else np.zeros(
+                    (completed_control_steps, 0, config.n_contact),
+                    dtype=np.int8,
+                )
+            ),
             "next_qpos_ctrl": np.asarray(next_qpos_ctrl_traj, dtype=np.float64),
             "next_qvel_ctrl": np.asarray(next_qvel_ctrl_traj, dtype=np.float64),
             "requested_torques_ctrl": np.asarray(
@@ -790,7 +919,11 @@ def generate_trajectory(
             "base_body_id": int(env._base_body_id),
             "dr_summary_geom_friction": float(dr_summary_geom_friction),
             "default_joint_pos": env.default_joint_pos.copy(),
-            "action_scale": float(env.action_scale),
+            "joint_names": _actuated_joint_names(env),
+            **action_interface_metadata(
+                action_interface,
+                action_lpf_alpha=float(env.action_lpf_alpha),
+            ),
             "sim_dt": float(env.sim_dt),
             "control_dt": float(env.control_dt),
             "episode_length": int(episode_length),
@@ -798,6 +931,13 @@ def generate_trajectory(
             "completed_sim_steps": int(completed_control_steps * sim_steps_per_ctrl),
             "fell": bool(fell),
             "failure_reason": failure_reason,
+            "fixed_command_enabled": bool(fixed_command is not None),
+            "fixed_command": (
+                np.asarray(commands, dtype=np.float64)
+                if fixed_command is not None
+                else np.zeros(3, dtype=np.float64)
+            ),
+            **gait_metadata,
             "action_conversion_mode": action_conversion_mode,
             "controller_delay_steps": 0,
             "controller_delay_s": 0.0,
@@ -829,9 +969,13 @@ def gen_traj_quadruped_dr(
     manifest_filename="generation_manifest.jsonl",
     mpc=None,
     use_go2_sysid=True,
-    action_conversion_mode=DEFAULT_ACTION_CONVERSION_MODE,
+    action_interface_id=DEFAULT_ACTION_INTERFACE_ID,
+    action_conversion_mode=None,
 ):
     """Generate quadruped MPC trajectories with startup DR matched to the RL env."""
+    action_interface, action_conversion_mode = _resolve_action_configuration(
+        action_interface_id, action_conversion_mode
+    )
     resolved_dr_type, _ = resolve_startup_domain_rand_config(domain_rand_config_type)
 
     if output_dir is None:
@@ -852,6 +996,7 @@ def gen_traj_quadruped_dr(
         print(f"  Max attempts: {'unlimited' if max_attempts is None else max_attempts}")
         print(f"  Output: {output_dir}")
         print(f"  Manifest: {manifest_path}")
+        print(f"  Action interface: {action_interface.interface_id}")
         print(f"  Action conversion: {action_conversion_mode}")
         print()
 
@@ -902,6 +1047,7 @@ def gen_traj_quadruped_dr(
             verbose=verbose,
             render=render,
             use_go2_sysid=use_go2_sysid,
+            action_interface_id=action_interface.interface_id,
             action_conversion_mode=action_conversion_mode,
         )
 
@@ -921,6 +1067,7 @@ def gen_traj_quadruped_dr(
             "action_conversion_mode": str(
                 traj_data["action_conversion_mode"]
             ),
+            "action_interface_id": str(traj_data["action_interface_id"]),
             "dr_summary": _summarize_dr_bundle(
                 int(traj_data["base_body_id"]),
                 extract_dr_bundle_from_traj(traj_data),
@@ -1031,12 +1178,24 @@ def main():
         help="Per-process manifest filename inside the output directory",
     )
     parser.add_argument(
+        "--action-interface",
+        dest="action_interface_id",
+        choices=tuple(ACTION_INTERFACES),
+        default=DEFAULT_ACTION_INTERFACE_ID,
+        help=(
+            "Versioned quadruped action interface. The default preserves the "
+            "existing 0.5-radian/5-Hz behavior; the MPX bound interface is "
+            "opt-in."
+        ),
+    )
+    parser.add_argument(
         "--action-conversion-mode",
         choices=ACTION_CONVERSION_MODES,
-        default=DEFAULT_ACTION_CONVERSION_MODE,
+        default=None,
         help=(
-            "MPX-to-rollout conversion mode. The historical direct-torque mode "
-            "remains the default until the env-step mapping passes its gate."
+            "Optional explicit MPX-to-rollout conversion mode. When omitted, "
+            "the selected action interface chooses its required mode; the "
+            "legacy interface retains the historical direct-torque default."
         ),
     )
     parser.add_argument(
@@ -1067,6 +1226,7 @@ def main():
         dr_seed_offset=args.dr_seed_offset,
         manifest_filename=args.manifest_filename,
         use_go2_sysid=args.use_go2_sysid,
+        action_interface_id=args.action_interface_id,
         action_conversion_mode=args.action_conversion_mode,
     )
 
