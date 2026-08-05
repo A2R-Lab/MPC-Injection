@@ -446,6 +446,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
             self.mjData.ctrl[:] = torques
             mujoco.mj_step(self.mjModel, self.mjData)
+            self._after_physics_substep()
 
         self._step_count += 1
         self._steps_since_command_resample += 1
@@ -993,6 +994,15 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
                     contacts[foot_id_to_idx[other_geom]] = True
 
         return contacts
+
+    def _after_physics_substep(self) -> None:
+        """Optional task hook invoked after every MuJoCo physics step.
+
+        Velocity tracking intentionally leaves this as a no-op. Tasks that
+        need physics-rate safety bookkeeping (for example barrel rolls) can
+        override it without copying the control loop.
+        """
+        return None
 
     def _get_foot_positions(self) -> np.ndarray:
         """Get world-frame positions of all feet. Shape (num_feet, 3)."""
