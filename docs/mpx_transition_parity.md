@@ -100,3 +100,32 @@ is retained as a separately named evaluated candidate, but it does not replace
 the default. Per the gated plan, gait calibration, nominal bound acceptance,
 and rendered candidate generation are blocked pending an explicit environment
 action-interface decision. The frozen thresholds were not changed.
+
+## Action range is not actuator range
+
+The training action is a normalized joint-position residual in `[-1, 1]`, with
+the default `action_scale=0.5` radians and a 5 Hz absolute-target low-pass
+filter. It is not a normalized torque command. The failed environment-step
+candidate clipped that action conversion on 13.3854% of nominal and 23.4375%
+of DR elements, while its applied actuator-torque saturation fraction was zero
+in both scenarios. Increasing actuator torque limits therefore cannot repair
+this parity failure. Increasing `action_scale` would be an action-interface
+change and must be predeclared, checked against joint and actuator limits, and
+revalidated rather than inferred from a successful replay after clipping.
+
+The interactive direct-torque controller diagnostic gives a separate result.
+The untouched 2 Hz / 0.065 m `bound_front_first` configuration produced seven
+non-foot-contact resets, 2.375% actuator-limit saturation, and a maximum
+requested-torque overshoot of 23.849306 N*m in three seconds. A single
+process-local roll-cost trial at 10,000 did not improve the five-reset nominal
+result, so the committed roll cost remains 5,000.
+
+A subsequent bounding-only commissioning check retained
+`bound_front_first`, duty factor 0.5, 3 Hz, 0.03 m step height, `Kp=10`,
+`Kd=2`, and a forward-only 0--0.1 m/s viewer range. One 10-second matched-sysID
+run completed without a reset and showed measured front-pair and rear-pair
+support; rendered inspection visibly showed the beginning of bounding. A
+60-second rendered run still accumulated three safety resets and 1.261111%
+actuator saturation, so this remains a short-horizon visualization candidate,
+not a working production bound or accepted trajectory source. Exact trial
+evidence is recorded in `interactive_controller_diagnostic.json`.
