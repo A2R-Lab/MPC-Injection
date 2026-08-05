@@ -371,6 +371,7 @@ def _measure_scenario(
         render=False,
         use_go2_sysid=True,
         deterministic_push_schedule=push_schedule,
+        action_conversion_mode=tolerances["conversion_mode_under_test"],
     )
 
     one_step_replay = _replay_saved_actions(
@@ -533,7 +534,18 @@ def run_parity_measurement(
         "decision": (
             "preserve_existing_transition_path"
             if passed
-            else "evaluate_conditional_env_step_mapping"
+            and tolerances["conversion_mode_under_test"]
+            == "inferred_action_direct_torque_v1"
+            else (
+                "use_env_step_transition_path"
+                if passed
+                else (
+                    "evaluate_conditional_env_step_mapping"
+                    if tolerances["conversion_mode_under_test"]
+                    == "inferred_action_direct_torque_v1"
+                    else "stop_and_decide_action_interface"
+                )
+            )
         ),
     }
 

@@ -36,6 +36,15 @@ jax.default_device(gpu_device)
 
 
 DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET = "sysid_dyn20_mjlab"
+INFERRED_ACTION_DIRECT_TORQUE_MODE = "inferred_action_direct_torque_v1"
+ENV_STEP_LPF_INVERSE_MODE = "env_step_lpf_inverse_v1"
+ACTION_CONVERSION_MODES = (
+    INFERRED_ACTION_DIRECT_TORQUE_MODE,
+    ENV_STEP_LPF_INVERSE_MODE,
+)
+# Keep the historical behavior as the default until the conditional mapping
+# has passed its predeclared actual-MPX parity gate.
+DEFAULT_ACTION_CONVERSION_MODE = INFERRED_ACTION_DIRECT_TORQUE_MODE
 
 
 def _go2_sysid_signature_vector() -> np.ndarray:
@@ -83,6 +92,128 @@ def _inverse_pd_residual_action(
     """Recover the RL residual action whose PD torques match the first applied torque."""
     raw_action = _inverse_pd_raw_residual_action(env, tau_applied_first)
     return np.clip(raw_action, -1.0, 1.0).astype(np.float64)
+
+
+def _mpx_to_env_step_raw_action(
+    env: QuadrupedVelocityTrackingEnv,
+    tau_ff: np.ndarray,
+    q_des: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Map MPX feedforward/position output through the environment action API.
+
+    The desired filtered target preserves the MPX feedforward term under the
+    environment's realized proportional gains. The raw target then inverts the
+    first-order target LPF for one control step. Action and torque clipping are
+    deliberately left to ``env.step`` and its diagnostics.
+    """
+    tau_ff = np.asarray(tau_ff, dtype=np.float64)
+    q_des = np.asarray(q_des, dtype=np.float64)
+    expected_shape = (env.num_joints,)
+    if tau_ff.shape != expected_shape or q_des.shape != expected_shape:
+        raise ValueError(
+            "MPX tau_ff and q_des must both have shape "
+            f"{expected_shape}, got {tau_ff.shape} and {q_des.shape}"
+        )
+    if not np.all(np.isfinite(tau_ff)) or not np.all(np.isfinite(q_des)):
+        raise ValueError("MPX tau_ff and q_des must contain only finite values")
+
+    kp = np.asarray(env.kp, dtype=np.float64)
+    alpha = float(env.action_lpf_alpha)
+    action_scale = float(env.action_scale)
+    if kp.shape != expected_shape or not np.all(np.isfinite(kp)):
+        raise ValueError("environment realized Kp must be a finite per-joint vector")
+    if np.any(kp == 0.0):
+        raise ValueError("environment realized Kp must be nonzero")
+    if not np.isfinite(alpha) or alpha <= 0.0:
+        raise ValueError("environment action LPF alpha must be finite and positive")
+    if not np.isfinite(action_scale) or action_scale == 0.0:
+        raise ValueError("environment action_scale must be finite and nonzero")
+
+    previous_filtered_target = np.asarray(
+        env._filtered_q_target, dtype=np.float64
+    )
+    desired_filtered_target = q_des + tau_ff / kp
+    raw_q_target = previous_filtered_target + (
+        desired_filtered_target - previous_filtered_target
+    ) / alpha
+    raw_action = (raw_q_target - env.default_joint_pos) / action_scale
+    return (
+        raw_action.astype(np.float64),
+        desired_filtered_target.astype(np.float64),
+        raw_q_target.astype(np.float64),
+    )
+
+
+def _rollout_control_step_with_env_action(
+    env: QuadrupedVelocityTrackingEnv,
+    *,
+    raw_action: np.ndarray,
+    tau_mpx: np.ndarray,
+    q_des: np.ndarray,
+    qpos_traj: np.ndarray,
+    qvel_traj: np.ndarray,
+    time_traj: np.ndarray,
+    tau_applied_traj: np.ndarray,
+    tau_mpx_traj: np.ndarray,
+    q_des_traj: np.ndarray,
+    commands_traj: np.ndarray,
+    commands: np.ndarray,
+    sim_idx_start: int,
+    viewer=None,
+):
+    """Advance one exact environment transition and copy substep telemetry."""
+    next_obs, reward, terminated, truncated, info = env.step(raw_action)
+    diagnostics = info.get("substep_diagnostics")
+    if diagnostics is None:
+        raise RuntimeError(
+            "env-step trajectory generation requires substep diagnostics"
+        )
+
+    completed_substeps = env.decimation
+    sim_slice = slice(
+        sim_idx_start + 1, sim_idx_start + completed_substeps + 1
+    )
+    qpos_traj[:, sim_slice] = np.asarray(diagnostics["qpos"]).T
+    qvel_traj[:, sim_slice] = np.asarray(diagnostics["qvel"]).T
+    time_traj[sim_slice] = np.asarray(diagnostics["time"])
+    tau_applied_traj[:, sim_idx_start : sim_idx_start + completed_substeps] = (
+        np.asarray(diagnostics["applied_torques"]).T
+    )
+    tau_mpx_traj[:, sim_idx_start : sim_idx_start + completed_substeps] = (
+        np.asarray(tau_mpx, dtype=np.float64)[:, None]
+    )
+    q_des_traj[:, sim_idx_start : sim_idx_start + completed_substeps] = (
+        np.asarray(q_des, dtype=np.float64)[:, None]
+    )
+    commands_traj[:, sim_idx_start : sim_idx_start + completed_substeps] = (
+        np.asarray(commands, dtype=np.float64)[:, None]
+    )
+
+    non_foot_ground_contact = None
+    contact_steps = np.flatnonzero(diagnostics["non_foot_ground_contact"])
+    if contact_steps.size:
+        first_substep = int(contact_steps[0])
+        non_foot_ground_contact = (
+            str(diagnostics["non_foot_ground_contact_body"][first_substep]),
+            str(diagnostics["non_foot_ground_contact_detail"][first_substep]),
+        )
+
+    viewer_closed = False
+    if viewer is not None:
+        viewer.sync()
+        time.sleep(env.control_dt)
+        viewer_closed = not viewer.is_running()
+
+    return (
+        next_obs,
+        float(reward),
+        bool(terminated),
+        bool(truncated),
+        info,
+        viewer_closed,
+        non_foot_ground_contact,
+        diagnostics,
+    )
 
 
 def _rollout_control_step_with_torques(
@@ -261,8 +392,14 @@ def generate_trajectory(
     render=False,
     use_go2_sysid=True,
     deterministic_push_schedule=None,
+    action_conversion_mode=DEFAULT_ACTION_CONVERSION_MODE,
 ):
     """Generate one MPX-controlled trajectory inside the RL quadruped env."""
+    if action_conversion_mode not in ACTION_CONVERSION_MODES:
+        raise ValueError(
+            f"action_conversion_mode must be one of {ACTION_CONVERSION_MODES}, "
+            f"got {action_conversion_mode!r}"
+        )
     rng = np.random.RandomState(seed)
     dr_seed = seed + dr_seed_offset
     dr_rng = np.random.RandomState(dr_seed)
@@ -283,6 +420,7 @@ def generate_trajectory(
         apply_startup_domain_rand_on_init=False,
         simple_reward=True,
         use_go2_sysid=use_go2_sysid,
+        enable_substep_diagnostics=True,
         deterministic_push_schedule=deterministic_push_schedule,
     )
 
@@ -382,6 +520,7 @@ def generate_trajectory(
                 f"vy={commands[1]:.2f}, wz={commands[2]:.2f}"
             )
             print(f"  Initial total command: {total_command:.3f}")
+            print(f"  Action conversion: {action_conversion_mode}")
 
         viewer = None
         if render:
@@ -436,51 +575,86 @@ def generate_trajectory(
             q_des = np.asarray(q_des, dtype=np.float64)
 
             sim_idx_start = ctrl_step * sim_steps_per_ctrl
-            q_current = env.mjData.qpos[7 : 7 + n_joints].copy()
-            dq_current = env.mjData.qvel[6 : 6 + n_joints].copy()
-            tau_feedback_first = 10.0 * (q_des - q_current) - 2.0 * dq_current
-            tau_applied_first = np.clip(
-                tau_mpx + tau_feedback_first,
-                env.torque_limits[:, 0],
-                env.torque_limits[:, 1],
-            )
-            raw_action = _inverse_pd_raw_residual_action(env, tau_applied_first)
-            action = _inverse_pd_residual_action(env, tau_applied_first)
+            if action_conversion_mode == INFERRED_ACTION_DIRECT_TORQUE_MODE:
+                q_current = env.mjData.qpos[7 : 7 + n_joints].copy()
+                dq_current = env.mjData.qvel[6 : 6 + n_joints].copy()
+                tau_feedback_first = 10.0 * (q_des - q_current) - 2.0 * dq_current
+                tau_applied_first = np.clip(
+                    tau_mpx + tau_feedback_first,
+                    env.torque_limits[:, 0],
+                    env.torque_limits[:, 1],
+                )
+                raw_action = _inverse_pd_raw_residual_action(
+                    env, tau_applied_first
+                )
+            else:
+                raw_action, _, _ = _mpx_to_env_step_raw_action(
+                    env, tau_mpx, q_des
+                )
+            action = np.clip(raw_action, -1.0, 1.0).astype(np.float64)
             raw_actions_traj.append(raw_action.copy())
             actions_traj.append(action.copy())
             action_clipping_mask_traj.append(raw_action != action)
             action_clipping_magnitude_traj.append(np.abs(raw_action - action))
 
-            (
-                next_obs,
-                reward,
-                terminated,
-                _,
-                viewer_closed,
-                non_foot_ground_contact,
-                step_diagnostics,
-            ) = _rollout_control_step_with_torques(
-                env,
-                action=action,
-                tau_mpx=tau_mpx,
-                q_des=q_des,
-                qpos_traj=qpos_traj,
-                qvel_traj=qvel_traj,
-                time_traj=time_traj,
-                tau_applied_traj=tau_applied_traj,
-                tau_mpx_traj=tau_mpx_traj,
-                q_des_traj=q_des_traj,
-                commands_traj=commands_traj,
-                commands=commands,
-                sim_idx_start=sim_idx_start,
-                viewer=viewer,
-            )
+            if action_conversion_mode == INFERRED_ACTION_DIRECT_TORQUE_MODE:
+                (
+                    next_obs,
+                    reward,
+                    terminated,
+                    _,
+                    viewer_closed,
+                    non_foot_ground_contact,
+                    step_diagnostics,
+                ) = _rollout_control_step_with_torques(
+                    env,
+                    action=action,
+                    tau_mpx=tau_mpx,
+                    q_des=q_des,
+                    qpos_traj=qpos_traj,
+                    qvel_traj=qvel_traj,
+                    time_traj=time_traj,
+                    tau_applied_traj=tau_applied_traj,
+                    tau_mpx_traj=tau_mpx_traj,
+                    q_des_traj=q_des_traj,
+                    commands_traj=commands_traj,
+                    commands=commands,
+                    sim_idx_start=sim_idx_start,
+                    viewer=viewer,
+                )
+                truncated = False
+            else:
+                (
+                    next_obs,
+                    reward,
+                    terminated,
+                    truncated,
+                    _,
+                    viewer_closed,
+                    non_foot_ground_contact,
+                    step_diagnostics,
+                ) = _rollout_control_step_with_env_action(
+                    env,
+                    raw_action=raw_action,
+                    tau_mpx=tau_mpx,
+                    q_des=q_des,
+                    qpos_traj=qpos_traj,
+                    qvel_traj=qvel_traj,
+                    time_traj=time_traj,
+                    tau_applied_traj=tau_applied_traj,
+                    tau_mpx_traj=tau_mpx_traj,
+                    q_des_traj=q_des_traj,
+                    commands_traj=commands_traj,
+                    commands=commands,
+                    sim_idx_start=sim_idx_start,
+                    viewer=viewer,
+                )
 
             next_policy_obs_traj.append(next_obs["policy"].copy())
             next_privileged_obs_traj.append(next_obs["privileged"].copy())
             rewards_traj.append(reward)
             terminated_ctrl_traj.append(terminated)
-            truncated_ctrl_traj.append(False)
+            truncated_ctrl_traj.append(truncated)
             next_qpos_ctrl_traj.append(env.mjData.qpos.copy())
             next_qvel_ctrl_traj.append(env.mjData.qvel.copy())
             requested_torques_ctrl_traj.append(
@@ -624,6 +798,7 @@ def generate_trajectory(
             "completed_sim_steps": int(completed_control_steps * sim_steps_per_ctrl),
             "fell": bool(fell),
             "failure_reason": failure_reason,
+            "action_conversion_mode": action_conversion_mode,
             "controller_delay_steps": 0,
             "controller_delay_s": 0.0,
             "go2_sysid_expected_vector": _go2_sysid_signature_vector(),
@@ -654,6 +829,7 @@ def gen_traj_quadruped_dr(
     manifest_filename="generation_manifest.jsonl",
     mpc=None,
     use_go2_sysid=True,
+    action_conversion_mode=DEFAULT_ACTION_CONVERSION_MODE,
 ):
     """Generate quadruped MPC trajectories with startup DR matched to the RL env."""
     resolved_dr_type, _ = resolve_startup_domain_rand_config(domain_rand_config_type)
@@ -676,6 +852,7 @@ def gen_traj_quadruped_dr(
         print(f"  Max attempts: {'unlimited' if max_attempts is None else max_attempts}")
         print(f"  Output: {output_dir}")
         print(f"  Manifest: {manifest_path}")
+        print(f"  Action conversion: {action_conversion_mode}")
         print()
 
     shared_mpc = mpc
@@ -725,6 +902,7 @@ def gen_traj_quadruped_dr(
             verbose=verbose,
             render=render,
             use_go2_sysid=use_go2_sysid,
+            action_conversion_mode=action_conversion_mode,
         )
 
         manifest_record = {
@@ -740,6 +918,9 @@ def gen_traj_quadruped_dr(
             "completed_sim_steps": int(traj_data["completed_sim_steps"]),
             "controller_delay_steps": int(traj_data["controller_delay_steps"]),
             "controller_delay_s": float(traj_data["controller_delay_s"]),
+            "action_conversion_mode": str(
+                traj_data["action_conversion_mode"]
+            ),
             "dr_summary": _summarize_dr_bundle(
                 int(traj_data["base_body_id"]),
                 extract_dr_bundle_from_traj(traj_data),
@@ -850,6 +1031,15 @@ def main():
         help="Per-process manifest filename inside the output directory",
     )
     parser.add_argument(
+        "--action-conversion-mode",
+        choices=ACTION_CONVERSION_MODES,
+        default=DEFAULT_ACTION_CONVERSION_MODE,
+        help=(
+            "MPX-to-rollout conversion mode. The historical direct-torque mode "
+            "remains the default until the env-step mapping passes its gate."
+        ),
+    )
+    parser.add_argument(
         "--use_go2_sysid",
         dest="use_go2_sysid",
         action="store_true",
@@ -877,6 +1067,7 @@ def main():
         dr_seed_offset=args.dr_seed_offset,
         manifest_filename=args.manifest_filename,
         use_go2_sysid=args.use_go2_sysid,
+        action_conversion_mode=args.action_conversion_mode,
     )
 
 
