@@ -65,74 +65,24 @@ def _configure_mpc_duty_factor(commands: np.ndarray, mpc) -> float:
     return float(total_command)
 
 
-def _geom_body_label(mj_model: mujoco.MjModel, geom_id: int) -> str:
-    """Return a compact geom/body label for contact rejection messages."""
-    geom_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-    body_id = int(mj_model.geom_bodyid[geom_id])
-    body_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, body_id)
-    geom_label = geom_name if geom_name else f"geom_{geom_id}"
-    body_label = body_name if body_name else f"body_{body_id}"
-    return f"{geom_label}({body_label})"
-
-
-def _body_is_descendant_of(
-    mj_model: mujoco.MjModel,
-    body_id: int,
-    root_body_id: int,
-) -> bool:
-    """Return whether body_id is root_body_id or belongs to its body subtree."""
-    while body_id != 0:
-        if body_id == root_body_id:
-            return True
-        body_id = int(mj_model.body_parentid[body_id])
-    return False
-
-
-def _find_non_foot_ground_contact(
-    env: QuadrupedVelocityTrackingEnv,
-) -> tuple[str, str] | None:
-    """Return contact details if a non-foot geom touches a world-body ground geom."""
-    for contact_idx in range(env.mjData.ncon):
-        contact = env.mjData.contact[contact_idx]
-        geom1, geom2 = int(contact.geom1), int(contact.geom2)
-        body1 = int(env.mjModel.geom_bodyid[geom1])
-        body2 = int(env.mjModel.geom_bodyid[geom2])
-
-        if body1 == 0 and body2 == 0:
-            continue
-        if body1 != 0 and body2 != 0:
-            continue
-
-        ground_geom = geom1 if body1 == 0 else geom2
-        robot_geom = geom2 if body1 == 0 else geom1
-        if robot_geom in env._foot_geom_id_set:
-            continue
-
-        robot_body_id = int(env.mjModel.geom_bodyid[robot_geom])
-        if not _body_is_descendant_of(
-            env.mjModel, robot_body_id, int(env._base_body_id)
-        ):
-            continue
-
-        robot_body_name = mujoco.mj_id2name(
-            env.mjModel, mujoco.mjtObj.mjOBJ_BODY, robot_body_id
-        )
-        detail = (
-            f"{_geom_body_label(env.mjModel, robot_geom)} touched "
-            f"{_geom_body_label(env.mjModel, ground_geom)}"
-        )
-        return (robot_body_name or f"body_{robot_body_id}", detail)
-
-    return None
-
-
-def _inverse_pd_residual_action(env: QuadrupedVelocityTrackingEnv, tau_applied_first: np.ndarray) -> np.ndarray:
-    """Recover the RL residual action whose PD torques match the first applied torque."""
+def _inverse_pd_raw_residual_action(
+    env: QuadrupedVelocityTrackingEnv, tau_applied_first: np.ndarray
+) -> np.ndarray:
+    """Recover the unclipped inverse-PD residual action."""
     q_current = env.mjData.qpos[7 : 7 + env.num_joints].copy()
     dq_current = env.mjData.qvel[6 : 6 + env.num_joints].copy()
     q_target = q_current + (tau_applied_first + env.kd * dq_current) / env.kp
-    action = (q_target - env.default_joint_pos) / env.action_scale
-    return np.clip(action, -1.0, 1.0).astype(np.float64)
+    return ((q_target - env.default_joint_pos) / env.action_scale).astype(
+        np.float64
+    )
+
+
+def _inverse_pd_residual_action(
+    env: QuadrupedVelocityTrackingEnv, tau_applied_first: np.ndarray
+) -> np.ndarray:
+    """Recover the RL residual action whose PD torques match the first applied torque."""
+    raw_action = _inverse_pd_raw_residual_action(env, tau_applied_first)
+    return np.clip(raw_action, -1.0, 1.0).astype(np.float64)
 
 
 def _rollout_control_step_with_torques(
@@ -159,6 +109,30 @@ def _rollout_control_step_with_torques(
 
     viewer_closed = False
     non_foot_ground_contact = None
+    diagnostics = {
+        "requested_torques": np.zeros(
+            (env.decimation, env.num_joints), dtype=np.float64
+        ),
+        "applied_torques": np.zeros(
+            (env.decimation, env.num_joints), dtype=np.float64
+        ),
+        "torque_saturation_mask": np.zeros(
+            (env.decimation, env.num_joints), dtype=bool
+        ),
+        "torque_saturation_magnitude": np.zeros(
+            (env.decimation, env.num_joints), dtype=np.float64
+        ),
+        "foot_contacts": np.zeros((env.decimation, env._num_feet), dtype=bool),
+        "non_foot_ground_contact": np.zeros(env.decimation, dtype=bool),
+        "non_foot_ground_contact_body": np.full(
+            env.decimation, "", dtype="<U64"
+        ),
+        "non_foot_ground_contact_detail": np.full(
+            env.decimation, "", dtype="<U256"
+        ),
+        "push_delta_qvel": np.zeros(6, dtype=np.float64),
+        "completed_substeps": 0,
+    }
     for substep in range(env.decimation):
         sim_idx = sim_idx_start + substep
         q_current = env.mjData.qpos[7 : 7 + env.num_joints].copy()
@@ -169,6 +143,15 @@ def _rollout_control_step_with_torques(
             np.asarray(total_tau, dtype=np.float64),
             env.torque_limits[:, 0],
             env.torque_limits[:, 1],
+        )
+        torque_clip_delta = np.asarray(total_tau) - clipped_torques
+        diagnostics["requested_torques"][substep] = total_tau
+        diagnostics["applied_torques"][substep] = clipped_torques
+        diagnostics["torque_saturation_mask"][substep] = (
+            torque_clip_delta != 0.0
+        )
+        diagnostics["torque_saturation_magnitude"][substep] = np.abs(
+            torque_clip_delta
         )
         env._applied_torques = clipped_torques
         tau_applied_traj[:, sim_idx] = clipped_torques
@@ -181,9 +164,15 @@ def _rollout_control_step_with_torques(
         qpos_traj[:, sim_idx + 1] = env.mjData.qpos.copy()
         qvel_traj[:, sim_idx + 1] = env.mjData.qvel.copy()
         time_traj[sim_idx + 1] = env.mjData.time
+        diagnostics["foot_contacts"][substep] = env._get_foot_contacts()
+        diagnostics["completed_substeps"] = substep + 1
 
-        non_foot_ground_contact = _find_non_foot_ground_contact(env)
+        non_foot_ground_contact = env._find_non_foot_ground_contact()
         if non_foot_ground_contact is not None:
+            body_name, detail = non_foot_ground_contact
+            diagnostics["non_foot_ground_contact"][substep] = True
+            diagnostics["non_foot_ground_contact_body"][substep] = body_name
+            diagnostics["non_foot_ground_contact_detail"][substep] = detail
             break
 
         if viewer is not None:
@@ -195,7 +184,9 @@ def _rollout_control_step_with_torques(
 
     env._step_count += 1
     env._steps_since_command_resample += 1
+    base_qvel_before_push = env.mjData.qvel[:6].copy()
     env._maybe_push_robot()
+    diagnostics["push_delta_qvel"] = env.mjData.qvel[:6] - base_qvel_before_push
     env._update_feet_air_time()
 
     joint_vel_current = env.mjData.qvel[6:].copy()
@@ -215,6 +206,7 @@ def _rollout_control_step_with_torques(
         info,
         viewer_closed,
         non_foot_ground_contact,
+        diagnostics,
     )
 
 
@@ -353,10 +345,24 @@ def generate_trajectory(
         next_policy_obs_traj = []
         privileged_obs_traj = []
         next_privileged_obs_traj = []
+        raw_actions_traj = []
         actions_traj = []
+        action_clipping_mask_traj = []
+        action_clipping_magnitude_traj = []
         rewards_traj = []
         terminated_ctrl_traj = []
+        truncated_ctrl_traj = []
         commands_ctrl_traj = []
+        measured_contacts_ctrl_traj = []
+        next_qpos_ctrl_traj = []
+        next_qvel_ctrl_traj = []
+        requested_torques_ctrl_traj = []
+        applied_torques_ctrl_traj = []
+        torque_saturation_mask_traj = []
+        torque_saturation_magnitude_traj = []
+        foot_contacts_substep_traj = []
+        non_foot_ground_contact_substep_traj = []
+        push_delta_qvel_traj = []
 
         steps_since_resample = 0
 
@@ -413,6 +419,7 @@ def generate_trajectory(
                 [commands[0], commands[1], 0.0, 0.0, 0.0, commands[2], config.robot_height]
             )
             contact = env._get_foot_contacts()
+            measured_contacts_ctrl_traj.append(contact.copy())
 
             solve_start = timer()
             tau_mpx, q_des, _ = mpc.run(
@@ -435,8 +442,12 @@ def generate_trajectory(
                 env.torque_limits[:, 0],
                 env.torque_limits[:, 1],
             )
+            raw_action = _inverse_pd_raw_residual_action(env, tau_applied_first)
             action = _inverse_pd_residual_action(env, tau_applied_first)
+            raw_actions_traj.append(raw_action.copy())
             actions_traj.append(action.copy())
+            action_clipping_mask_traj.append(raw_action != action)
+            action_clipping_magnitude_traj.append(np.abs(raw_action - action))
 
             (
                 next_obs,
@@ -445,6 +456,7 @@ def generate_trajectory(
                 _,
                 viewer_closed,
                 non_foot_ground_contact,
+                step_diagnostics,
             ) = _rollout_control_step_with_torques(
                 env,
                 action=action,
@@ -466,6 +478,30 @@ def generate_trajectory(
             next_privileged_obs_traj.append(next_obs["privileged"].copy())
             rewards_traj.append(reward)
             terminated_ctrl_traj.append(terminated)
+            truncated_ctrl_traj.append(False)
+            next_qpos_ctrl_traj.append(env.mjData.qpos.copy())
+            next_qvel_ctrl_traj.append(env.mjData.qvel.copy())
+            requested_torques_ctrl_traj.append(
+                step_diagnostics["requested_torques"].copy()
+            )
+            applied_torques_ctrl_traj.append(
+                step_diagnostics["applied_torques"].copy()
+            )
+            torque_saturation_mask_traj.append(
+                step_diagnostics["torque_saturation_mask"].copy()
+            )
+            torque_saturation_magnitude_traj.append(
+                step_diagnostics["torque_saturation_magnitude"].copy()
+            )
+            foot_contacts_substep_traj.append(
+                step_diagnostics["foot_contacts"].copy()
+            )
+            non_foot_ground_contact_substep_traj.append(
+                step_diagnostics["non_foot_ground_contact"].copy()
+            )
+            push_delta_qvel_traj.append(
+                step_diagnostics["push_delta_qvel"].copy()
+            )
             obs = next_obs
             completed_control_steps = ctrl_step + 1
 
@@ -523,10 +559,44 @@ def generate_trajectory(
             "next_policy_obs": np.asarray(next_policy_obs_traj, dtype=np.float64),
             "privileged_obs": np.asarray(privileged_obs_traj, dtype=np.float64),
             "next_privileged_obs": np.asarray(next_privileged_obs_traj, dtype=np.float64),
+            "raw_actions": np.asarray(raw_actions_traj, dtype=np.float64),
             "actions": np.asarray(actions_traj, dtype=np.float64),
+            "action_clipping_mask": np.asarray(
+                action_clipping_mask_traj, dtype=bool
+            ),
+            "action_clipping_magnitude": np.asarray(
+                action_clipping_magnitude_traj, dtype=np.float64
+            ),
             "rewards": np.asarray(rewards_traj, dtype=np.float32),
             "terminated_ctrl": np.asarray(terminated_ctrl_traj, dtype=bool),
+            "truncated_ctrl": np.asarray(truncated_ctrl_traj, dtype=bool),
             "commands_ctrl": np.asarray(commands_ctrl_traj, dtype=np.float64),
+            "measured_contacts_ctrl": np.asarray(
+                measured_contacts_ctrl_traj, dtype=bool
+            ),
+            "next_qpos_ctrl": np.asarray(next_qpos_ctrl_traj, dtype=np.float64),
+            "next_qvel_ctrl": np.asarray(next_qvel_ctrl_traj, dtype=np.float64),
+            "requested_torques_ctrl": np.asarray(
+                requested_torques_ctrl_traj, dtype=np.float64
+            ),
+            "applied_torques_ctrl": np.asarray(
+                applied_torques_ctrl_traj, dtype=np.float64
+            ),
+            "torque_saturation_mask": np.asarray(
+                torque_saturation_mask_traj, dtype=bool
+            ),
+            "torque_saturation_magnitude": np.asarray(
+                torque_saturation_magnitude_traj, dtype=np.float64
+            ),
+            "foot_contacts_substeps": np.asarray(
+                foot_contacts_substep_traj, dtype=bool
+            ),
+            "non_foot_ground_contact_substeps": np.asarray(
+                non_foot_ground_contact_substep_traj, dtype=bool
+            ),
+            "push_delta_qvel": np.asarray(
+                push_delta_qvel_traj, dtype=np.float64
+            ),
             "seed": seed,
             "dr_seed": dr_seed,
             "base_body_id": int(env._base_body_id),

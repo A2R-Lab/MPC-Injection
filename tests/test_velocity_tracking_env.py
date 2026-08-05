@@ -398,6 +398,156 @@ class TestActionLowPassFilter:
             env.close()
 
 
+class TestSubstepDiagnostics:
+    """Verify opt-in diagnostics cover the exact environment control loop."""
+
+    def test_diagnostics_are_disabled_by_default(self, env):
+        env.reset(seed=42)
+
+        _, _, _, _, info = env.step(np.zeros(env.num_joints))
+
+        assert "substep_diagnostics" not in info
+        assert env._last_substep_diagnostics is None
+
+    def test_diagnostics_capture_clipping_torque_contacts_and_state(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(
+                enable=False, push_robots=False
+            ),
+            enable_substep_diagnostics=True,
+        )
+        try:
+            env.reset(seed=42)
+            env.torque_limits[:] = np.array([-0.01, 0.01])
+
+            _, _, _, _, info = env.step(np.full(env.num_joints, 2.0))
+            diagnostics = info["substep_diagnostics"]
+
+            np.testing.assert_array_equal(
+                diagnostics["clipped_action"], np.ones(env.num_joints)
+            )
+            assert np.all(diagnostics["action_clipping_mask"])
+            np.testing.assert_allclose(
+                diagnostics["action_clipping_magnitude"],
+                np.ones(env.num_joints),
+            )
+            assert diagnostics["requested_torques"].shape == (
+                env.decimation,
+                env.num_joints,
+            )
+            assert diagnostics["applied_torques"].shape == (
+                env.decimation,
+                env.num_joints,
+            )
+            assert diagnostics["torque_saturation_mask"].shape == (
+                env.decimation,
+                env.num_joints,
+            )
+            assert np.any(diagnostics["torque_saturation_mask"])
+            np.testing.assert_allclose(
+                diagnostics["torque_saturation_magnitude"],
+                np.abs(
+                    diagnostics["requested_torques"]
+                    - diagnostics["applied_torques"]
+                ),
+            )
+            assert diagnostics["foot_contacts"].shape == (
+                env.decimation,
+                4,
+            )
+            assert diagnostics["non_foot_ground_contact"].shape == (
+                env.decimation,
+            )
+            assert diagnostics["qpos"].shape == (
+                env.decimation,
+                env.mjModel.nq,
+            )
+            assert diagnostics["qvel"].shape == (
+                env.decimation,
+                env.mjModel.nv,
+            )
+            assert diagnostics["time"].shape == (env.decimation,)
+            assert diagnostics["push_delta_qvel"].shape == (6,)
+            np.testing.assert_array_equal(
+                diagnostics["applied_torques"][-1], info["applied_torques"]
+            )
+        finally:
+            env.close()
+
+    def test_transient_non_foot_contact_is_retained(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            enable_substep_diagnostics=True,
+        )
+        try:
+            env.reset(seed=42)
+            contacts = iter(
+                [None, ("base", "base touched ground"), None, None]
+            )
+            env._find_non_foot_ground_contact = lambda: next(contacts)
+
+            _, _, _, _, info = env.step(np.zeros(env.num_joints))
+            diagnostics = info["substep_diagnostics"]
+
+            np.testing.assert_array_equal(
+                diagnostics["non_foot_ground_contact"],
+                [False, True, False, False],
+            )
+            assert diagnostics["non_foot_ground_contact_body"][1] == "base"
+            assert (
+                diagnostics["non_foot_ground_contact_detail"][1]
+                == "base touched ground"
+            )
+        finally:
+            env.close()
+
+    def test_enabling_diagnostics_does_not_change_transition(self):
+        common_kwargs = {
+            "robot": "go2",
+            "scene": "flat",
+            "domain_rand_cfg": DomainRandomizationConfig(
+                enable=False, push_robots=False
+            ),
+        }
+        plain_env = QuadrupedVelocityTrackingEnv(**common_kwargs)
+        diagnostic_env = QuadrupedVelocityTrackingEnv(
+            **common_kwargs,
+            enable_substep_diagnostics=True,
+        )
+        try:
+            plain_obs, _ = plain_env.reset(seed=17)
+            diagnostic_obs, _ = diagnostic_env.reset(seed=17)
+            action = np.linspace(-0.8, 0.8, plain_env.num_joints)
+
+            plain_transition = plain_env.step(action)
+            diagnostic_transition = diagnostic_env.step(action)
+
+            np.testing.assert_array_equal(
+                plain_obs["policy"], diagnostic_obs["policy"]
+            )
+            np.testing.assert_array_equal(
+                plain_transition[0]["policy"],
+                diagnostic_transition[0]["policy"],
+            )
+            np.testing.assert_array_equal(
+                plain_transition[0]["privileged"],
+                diagnostic_transition[0]["privileged"],
+            )
+            assert plain_transition[1:4] == diagnostic_transition[1:4]
+            np.testing.assert_array_equal(
+                plain_env.mjData.qpos, diagnostic_env.mjData.qpos
+            )
+            np.testing.assert_array_equal(
+                plain_env.mjData.qvel, diagnostic_env.mjData.qvel
+            )
+        finally:
+            plain_env.close()
+            diagnostic_env.close()
+
+
 class TestNominalPlantAlignment:
     """Ensure the no-DR RL env matches the quadruped MPC plant."""
 
@@ -626,6 +776,16 @@ class TestStartupDomainRandomizationPatch:
         assert "rewards" in dr_disabled
         assert dr_disabled["policy_obs"].shape[0] == 3
         assert dr_disabled["next_policy_obs"].shape[0] == 3
+        assert dr_disabled["raw_actions"].shape == (3, 12)
+        assert dr_disabled["action_clipping_mask"].shape == (3, 12)
+        assert dr_disabled["next_qpos_ctrl"].shape == (3, 19)
+        assert dr_disabled["next_qvel_ctrl"].shape == (3, 18)
+        assert dr_disabled["requested_torques_ctrl"].shape == (3, 4, 12)
+        assert dr_disabled["applied_torques_ctrl"].shape == (3, 4, 12)
+        assert dr_disabled["torque_saturation_mask"].shape == (3, 4, 12)
+        assert dr_disabled["foot_contacts_substeps"].shape == (3, 4, 4)
+        assert dr_disabled["non_foot_ground_contact_substeps"].shape == (3, 4)
+        assert dr_disabled["push_delta_qvel"].shape == (3, 6)
         assert extract_startup_domain_rand_patch(dr_disabled) is not None
 
     def test_dr_replay_matches_saved_rollout_for_short_horizon(self):

@@ -122,6 +122,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         apply_startup_domain_rand_on_init: bool = True,
         # Simplified reward mode (for MPC-injection training)
         simple_reward: bool = False,
+        # Opt-in exact control-loop diagnostics for trajectory validation
+        enable_substep_diagnostics: bool = False,
     ):
         """Initialize the velocity tracking environment.
 
@@ -153,6 +155,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
                 velocity tracking and termination penalty. Used when training
                 with MPC injection (SAC-MPC/TD3-MPC) to provide a cleaner
                 learning signal that aligns better with MPC demonstrations.
+            enable_substep_diagnostics: If True, include action clipping and
+                per-simulation-substep torque, contact, state, and non-foot
+                contact diagnostics in ``info``. Disabled by default.
         """
         super().__init__()
 
@@ -199,6 +204,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Simplified reward mode
         self.simple_reward = simple_reward
+        self.enable_substep_diagnostics = bool(enable_substep_diagnostics)
 
         # Reward configuration
         self.reward_cfg = self._default_reward_cfg()
@@ -352,6 +358,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._raw_q_target = self.default_joint_pos.copy()
         self._filtered_q_target = self.default_joint_pos.copy()
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
+        self._last_substep_diagnostics: dict[str, np.ndarray] | None = None
         self._step_count = 0
         self._steps_since_command_resample = 0
         self._fixed_commands = False  # When True, step() will NOT auto-resample commands
@@ -418,7 +425,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             truncated: Whether the episode was truncated (handled by gymnasium wrapper).
             info: Additional information dictionary.
         """
-        action = np.clip(action, -1.0, 1.0).astype(np.float64)
+        raw_action = np.asarray(action, dtype=np.float64)
+        action = np.clip(raw_action, -1.0, 1.0).astype(np.float64)
 
         # Store previous action for action rate penalty
         self._prev_last_action = self._last_action.copy()
@@ -428,17 +436,61 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._raw_q_target = self.default_joint_pos + self.action_scale * action
         q_target = self._apply_action_lpf(self._raw_q_target)
 
+        substep_diagnostics = None
+        if self.enable_substep_diagnostics:
+            action_clip_delta = raw_action - action
+            substep_diagnostics = {
+                "raw_action": raw_action.copy(),
+                "clipped_action": action.copy(),
+                "action_clipping_mask": action_clip_delta != 0.0,
+                "action_clipping_magnitude": np.abs(action_clip_delta),
+                "raw_q_target": self._raw_q_target.copy(),
+                "filtered_q_target": q_target.copy(),
+                "requested_torques": np.zeros(
+                    (self.decimation, self.num_joints), dtype=np.float64
+                ),
+                "applied_torques": np.zeros(
+                    (self.decimation, self.num_joints), dtype=np.float64
+                ),
+                "torque_saturation_mask": np.zeros(
+                    (self.decimation, self.num_joints), dtype=bool
+                ),
+                "torque_saturation_magnitude": np.zeros(
+                    (self.decimation, self.num_joints), dtype=np.float64
+                ),
+                "foot_contacts": np.zeros(
+                    (self.decimation, self._num_feet), dtype=bool
+                ),
+                "non_foot_ground_contact": np.zeros(self.decimation, dtype=bool),
+                "non_foot_ground_contact_body": np.full(
+                    self.decimation, "", dtype="<U64"
+                ),
+                "non_foot_ground_contact_detail": np.full(
+                    self.decimation, "", dtype="<U256"
+                ),
+                "qpos": np.zeros(
+                    (self.decimation, self.mjModel.nq), dtype=np.float64
+                ),
+                "qvel": np.zeros(
+                    (self.decimation, self.mjModel.nv), dtype=np.float64
+                ),
+                "time": np.zeros(self.decimation, dtype=np.float64),
+                "push_delta_qvel": np.zeros(6, dtype=np.float64),
+            }
+
         # Apply PD control for `decimation` simulation steps
-        for _ in range(self.decimation):
+        for substep in range(self.decimation):
             q_current = self.mjData.qpos[7:]
             dq_current = self.mjData.qvel[6:]
 
             # PD controller: tau = Kp * (q_target - q) + Kd * (0 - dq)
-            torques = self.kp * (q_target - q_current) + self.kd * (0.0 - dq_current)
+            requested_torques = (
+                self.kp * (q_target - q_current) + self.kd * (0.0 - dq_current)
+            )
 
             # Clip torques to actuator limits
             torques = np.clip(
-                torques,
+                requested_torques,
                 self.torque_limits[:, 0],
                 self.torque_limits[:, 1],
             )
@@ -447,11 +499,48 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             self.mjData.ctrl[:] = torques
             mujoco.mj_step(self.mjModel, self.mjData)
 
+            if substep_diagnostics is not None:
+                torque_clip_delta = requested_torques - torques
+                substep_diagnostics["requested_torques"][substep] = (
+                    requested_torques
+                )
+                substep_diagnostics["applied_torques"][substep] = torques
+                substep_diagnostics["torque_saturation_mask"][substep] = (
+                    torque_clip_delta != 0.0
+                )
+                substep_diagnostics["torque_saturation_magnitude"][substep] = (
+                    np.abs(torque_clip_delta)
+                )
+                substep_diagnostics["foot_contacts"][substep] = (
+                    self._get_foot_contacts()
+                )
+                non_foot_contact = self._find_non_foot_ground_contact()
+                if non_foot_contact is not None:
+                    body_name, detail = non_foot_contact
+                    substep_diagnostics["non_foot_ground_contact"][substep] = True
+                    substep_diagnostics["non_foot_ground_contact_body"][substep] = (
+                        body_name
+                    )
+                    substep_diagnostics["non_foot_ground_contact_detail"][substep] = (
+                        detail
+                    )
+                substep_diagnostics["qpos"][substep] = self.mjData.qpos
+                substep_diagnostics["qvel"][substep] = self.mjData.qvel
+                substep_diagnostics["time"][substep] = self.mjData.time
+
         self._step_count += 1
         self._steps_since_command_resample += 1
 
         # Apply random perturbation (push) periodically
+        base_qvel_before_push = None
+        if substep_diagnostics is not None:
+            base_qvel_before_push = self.mjData.qvel[:6].copy()
         self._maybe_push_robot()
+        if substep_diagnostics is not None:
+            substep_diagnostics["push_delta_qvel"] = (
+                self.mjData.qvel[:6] - base_qvel_before_push
+            )
+            self._last_substep_diagnostics = substep_diagnostics
 
         # Update feet air time tracking (also updates swing peak & first_contact)
         self._update_feet_air_time()
@@ -550,6 +639,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._raw_q_target = self.default_joint_pos.copy()
         self._filtered_q_target = self.default_joint_pos.copy()
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
+        self._last_substep_diagnostics = None
         self._feet_air_time = np.zeros(self._num_feet, dtype=np.float64)
         self._feet_contact_time = np.zeros(self._num_feet, dtype=np.float64)
         self._last_foot_contacts = np.zeros(self._num_feet, dtype=bool)
@@ -993,6 +1083,62 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
                     contacts[foot_id_to_idx[other_geom]] = True
 
         return contacts
+
+    def _geom_body_label(self, geom_id: int) -> str:
+        """Return a compact geom/body label for contact diagnostics."""
+        geom_name = mujoco.mj_id2name(
+            self.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+        )
+        body_id = int(self.mjModel.geom_bodyid[geom_id])
+        body_name = mujoco.mj_id2name(
+            self.mjModel, mujoco.mjtObj.mjOBJ_BODY, body_id
+        )
+        geom_label = geom_name if geom_name else f"geom_{geom_id}"
+        body_label = body_name if body_name else f"body_{body_id}"
+        return f"{geom_label}({body_label})"
+
+    def _body_is_descendant_of(self, body_id: int, root_body_id: int) -> bool:
+        """Return whether a body belongs to the requested MuJoCo subtree."""
+        while body_id != 0:
+            if body_id == root_body_id:
+                return True
+            body_id = int(self.mjModel.body_parentid[body_id])
+        return False
+
+    def _find_non_foot_ground_contact(self) -> tuple[str, str] | None:
+        """Return the first robot non-foot/world-ground contact, if present."""
+        for contact_idx in range(self.mjData.ncon):
+            contact = self.mjData.contact[contact_idx]
+            geom1, geom2 = int(contact.geom1), int(contact.geom2)
+            body1 = int(self.mjModel.geom_bodyid[geom1])
+            body2 = int(self.mjModel.geom_bodyid[geom2])
+
+            if body1 == 0 and body2 == 0:
+                continue
+            if body1 != 0 and body2 != 0:
+                continue
+
+            ground_geom = geom1 if body1 == 0 else geom2
+            robot_geom = geom2 if body1 == 0 else geom1
+            if robot_geom in self._foot_geom_id_set:
+                continue
+
+            robot_body_id = int(self.mjModel.geom_bodyid[robot_geom])
+            if not self._body_is_descendant_of(
+                robot_body_id, int(self._base_body_id)
+            ):
+                continue
+
+            robot_body_name = mujoco.mj_id2name(
+                self.mjModel, mujoco.mjtObj.mjOBJ_BODY, robot_body_id
+            )
+            detail = (
+                f"{self._geom_body_label(robot_geom)} touched "
+                f"{self._geom_body_label(ground_geom)}"
+            )
+            return (robot_body_name or f"body_{robot_body_id}", detail)
+
+        return None
 
     def _get_foot_positions(self) -> np.ndarray:
         """Get world-frame positions of all feet. Shape (num_feet, 3)."""
@@ -1777,7 +1923,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     def _get_info(self) -> dict:
         """Return info dictionary with useful debugging information."""
         base_lin_vel_body = self._base_lin_vel_body()
-        return {
+        info = {
             "step_count": self._step_count,
             "commands": self._commands.copy(),
             "base_lin_vel_body": base_lin_vel_body.copy(),
@@ -1792,6 +1938,16 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "swing_peak": self._swing_peak.copy(),
             "reward_components": self._reward_components.copy(),
         }
+        if self.enable_substep_diagnostics:
+            info["substep_diagnostics"] = (
+                None
+                if self._last_substep_diagnostics is None
+                else {
+                    key: value.copy()
+                    for key, value in self._last_substep_diagnostics.items()
+                }
+            )
+        return info
 
     @staticmethod
     def _default_reward_cfg() -> dict[str, float]:
