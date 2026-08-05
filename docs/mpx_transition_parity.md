@@ -50,3 +50,18 @@ disagreement. A path passes only if every one-step and full-rollout criterion
 passes in both scenarios. If it fails, the report is retained and the
 environment-step mapping from the bounding-data plan is evaluated under this
 same declaration ID; the thresholds are not relaxed.
+
+## Push-coverage amendment
+
+The retained v1 baseline report showed that the selected
+`sysid_dyn20_mjlab` preset samples push intervals from 5–10 seconds, while the
+predeclared short rollout is 3.2 seconds. Thus v1 could not exercise a push and
+failed its explicit push-coverage requirement. This setup error does not erase
+the measured transition failures.
+
+`transition_parity_tolerances_v2.json` corrects only the coverage apparatus:
+it predeclares fixed validation-only velocity deltas after zero-based control
+steps 39 and 99. All numeric, exact, clipping, saturation, seed, and horizon
+tolerances are unchanged from v1. The unchanged direct path must be measured
+again under v2 before the conditional environment-step mapping is evaluated
+under the same v2 contract.
