@@ -20,7 +20,10 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "plots" / "body_trajectory_plots"
-FONT_SIZE = 18
+TITLE_FONT_SIZE = 20
+AXIS_LABEL_FONT_SIZE = 23
+TICK_LABEL_FONT_SIZE = 22
+LEGEND_FONT_SIZE = 17
 PURE_RL_COLOR = "#1f77b4"
 MPC_INJECTION_COLOR = "#ff7f0e"
 
@@ -30,13 +33,12 @@ PLOT_TIMESTEP_END = None
 
 plt.rcParams.update(
     {
-        "font.size": FONT_SIZE,
-        "axes.labelsize": FONT_SIZE,
-        "axes.titlesize": FONT_SIZE + 2,
-        "figure.titlesize": FONT_SIZE + 2,
-        "xtick.labelsize": FONT_SIZE - 2,
-        "ytick.labelsize": FONT_SIZE - 2,
-        "legend.fontsize": FONT_SIZE - 1,
+        "axes.labelsize": AXIS_LABEL_FONT_SIZE,
+        "axes.titlesize": TITLE_FONT_SIZE,
+        "figure.titlesize": TITLE_FONT_SIZE,
+        "xtick.labelsize": TICK_LABEL_FONT_SIZE,
+        "ytick.labelsize": TICK_LABEL_FONT_SIZE,
+        "legend.fontsize": LEGEND_FONT_SIZE,
     }
 )
 
@@ -218,7 +220,7 @@ def main() -> None:
         if not trajectory_path.exists():
             raise FileNotFoundError(f"Trajectory file not found: {trajectory_path}")
 
-    fig, ax = plt.subplots(figsize=(6.6, 4.6), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(6.6, 6.5), constrained_layout=True)
     fig.suptitle(
         "Quadruped Average Motor Torque\nMagnitude CDF",
         fontweight="bold",
@@ -240,11 +242,11 @@ def main() -> None:
         )
         print(f"{label}: {summarize_torque_distribution(avg_torque_magnitude)}")
 
-    ax.set_xlabel("Average Motor Torque Magnitude (Nm)")
+    ax.set_xlabel("Avg. Motor Torque Magnitude (Nm)")
     ax.set_ylabel("Empirical CDF")
     ax.set_ylim(0.0, 1.01)
     ax.margins(x=0.01, y=0.02)
-    ax.tick_params(axis="both")
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
     ax.grid(True, alpha=0.25)
     ax.legend(loc="lower right")
 
