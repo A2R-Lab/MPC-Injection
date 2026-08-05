@@ -12,6 +12,61 @@ fallback order if a gate fails.
 This is a plan, not an implementation report. No barrel-roll environment,
 generator, dataset, or trained policy exists in the root project yet.
 
+## Implementation evidence (G0-G5 session)
+
+### G0 — complete
+
+- 2026-08-05 baseline: `conda run --no-capture-output -n mpc-rl pytest -q
+  tests/test_velocity_tracking_env.py tests/test_quadruped_model_architecture.py
+  tests/test_go2_sysid.py` reported `77 passed, 3 failed, 1 skipped`. The
+  failures are the pre-existing reward-weight expectation, stale SAC
+  `policy_kwargs["net_arch"]` expectation, and missing
+  `deploy/sys_id/report.html` fixture.
+- Root was `76c3c9070ae864eb4425a006d8b54904b441af1b`; MPX was
+  `249c7323ab0cd13bea2ddb8ed5f252eb9ccde85c`; nested solver was
+  `273d78dec439ed270af6f9cb8340af801fefd332`; Gym-Quadruped was
+  `6eaa8ea6e0ea6dbe0f37965ed7098b974d6cfbcd`; MuJoCo MPC was
+  `17be7ffb29ecee55b7d48012bcd6526eab49daf9`. Runtime: Python 3.11.13,
+  JAX 0.6.2, and MuJoCo 3.3.6.
+- The pre-existing MPX Go2 config and example rename were committed as
+  `2f6a7e5` before root integration. The unrelated untracked policy tree was
+  not touched.
+
+### G1 — complete
+
+- `conda run --no-capture-output -n mpc-rl pytest -q
+  deps/mpx/tests/test_barrel_roll_config.py` reported `2 passed`.
+- `conda run --no-capture-output -n mpc-rl python
+  deps/mpx/mpx/examples/barrel_roll.py` produced a finite nominal plan:
+  91 iterations, final objective norm squared `545477892.2695315`, final
+  constraint norm squared `4.456622800618131e-06`, and 14.22 s elapsed.
+- No deviations from the frozen one-second schedule or roll direction.
+
+### G2 — complete
+
+- `conda run --no-capture-output -n mpc-rl pytest -q
+  tests/test_barrel_roll_env.py tests/test_velocity_tracking_env.py -k
+  'barrel_roll or disabled_dr_generator or dr_replay_matches or
+  nominal_replay_path or generation_smoke or saved_transition_parity or
+  direct_transition_injection'` reported `9 passed, 54 deselected`.
+- The task is Go2-only and nominal, has 45D/4D observations, fixed 50/200 Hz
+  timing, seeded `[0.00, 0.10]` named-joint spread sampling, quaternion-safe
+  unwrapped roll progress, and the frozen MVP reward/success semantics.
+
+### G3 — blocked (do not advance)
+
+- The first direct commissioning invocation failed before it could execute a
+  physics step: `/home/roy/miniconda3/envs/mpc-rl/bin/python
+  mpc_rl/planner/gen_traj_data_barrel_roll.py --num-trajectories=1
+  --start-seed=0 --max-attempts=1 --output-dir=/tmp/go2_barrel_roll_commission2
+  --manifest-filename=one.jsonl` exited 1 in
+  `MPCControllerWrapper.runOffline()` with
+  `jaxlib._jax.XlaRuntimeError: INTERNAL: cuSolver internal error`.
+- The standalone finite MPX smoke remains successful, so this is an
+  environment/generator process interaction to diagnose before controller
+  execution alignment, schema work, or data generation. No G4-G8 work was
+  launched.
+
 The coordinated feature branches already exist in the current worktree:
 
 - root: `feature/go2-barrel-roll`, created from
