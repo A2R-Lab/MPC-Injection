@@ -682,16 +682,16 @@ data/go2_barrel_roll/v1/
 All values must be numeric or fixed-width Unicode so accepted files load with
 `allow_pickle=False`. Required direct transition arrays:
 
-- `policy_obs`, `next_policy_obs`: `(50, 45)`;
-- `privileged_obs`, `next_privileged_obs`: `(50, 4)`;
-- `actions`: `(50, 12)`;
-- `rewards`: `(50,)`;
-- `terminated_ctrl`, `truncated_ctrl`: `(50,)`.
+- `policy_obs`, `next_policy_obs`: `(70, 45)`;
+- `privileged_obs`, `next_privileged_obs`: `(70, 4)`;
+- `actions`: `(70, 12)`;
+- `rewards`: `(70,)`;
+- `terminated_ctrl`, `truncated_ctrl`: `(70,)`.
 
 Required physics/controller arrays:
 
-- `qpos`: `(19, 201)` and `qvel`: `(18, 201)`;
-- `tau_applied`, `tau_mpx`, `q_des`: `(12, 200)`;
+- `qpos`: `(19, 281)` and `qvel`: `(18, 281)`;
+- `tau_applied`, `tau_mpx`, `q_des`: `(12, 280)`;
 - per-update `X`, `U`, or an equally sufficient finite replanning record;
 - phase, desired roll, measured roll progress, contacts, clipping, saturation,
   and success metrics at their documented rates.
@@ -760,7 +760,7 @@ Training work:
    `velocity_tracking` as its default. Route `barrel_roll` to
    `QuadrupedBarrelRoll-v0` and reject other quadruped task strings.
 2. Force robot Go2, disabled DR, enabled Go2 sysID, the barrel-roll reward, and
-   the 50-step horizon for this task. Fail on incompatible requested options
+   the 70-step horizon for this task. Fail on incompatible requested options
    rather than silently training a different task.
 3. Keep SB3 asymmetric SAC and `TaggedDictReplayBuffer`. The actor remains 45D;
    SAC critic first-layer input becomes `45 + 4 + 12 = 61`.
@@ -783,7 +783,7 @@ without constructing a velocity replay environment.
 
 ### Gate G6: run the 100-trajectory training pilot
 
-Generate 100 accepted trajectories only after G0-G5 pass. This gives 5,000
+Generate 100 accepted trajectories only after G0-G5 pass. This gives 7,000
 distinct direct transitions.
 
 Run one SAC-MPC seed for 100,000 environment steps with production settings
@@ -814,7 +814,7 @@ the pilot before scaling.
 
 ### Gate G7: generate and promote 1,000 accepted trajectories
 
-After the 100k pilot passes, collect 1,000 accepted trajectories (50,000 direct
+After the 100k pilot passes, collect 1,000 accepted trajectories (70,000 direct
 transitions). Run multiple terminals with disjoint, generously separated seed
 ranges and unique manifest names. For example, after the CLI exists, four
 workers can each target 250 successes:
