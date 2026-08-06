@@ -14,8 +14,14 @@ SCHEMA_VERSION = 1
 ROLL_DIRECTION_SIGN = 1.0
 SIM_DT = 0.005
 CONTROL_DT = 0.02
-CONTROL_STEPS = 50
-ROLL_START_TIME = 0.20
+MANEUVER_HORIZON = 1.40
+INITIAL_STANCE_DURATION = 0.20
+LATERAL_SUPPORT_DURATION = 0.20
+FLIGHT_DURATION = 0.35
+LANDING_DURATION = 0.10
+FINAL_STANCE_DURATION = 0.55
+CONTROL_STEPS = int(round(MANEUVER_HORIZON / CONTROL_DT))
+ROLL_START_TIME = INITIAL_STANCE_DURATION
 ROLL_END_TIME = 0.80
 ROLL_TARGET = ROLL_DIRECTION_SIGN * 2.0 * np.pi
 SPREAD_RANGE = (0.0, 0.10)
@@ -45,9 +51,10 @@ REWARD_CONFIG = BarrelRollRewardConfig()
 
 
 def desired_roll_at_time(time_s: float) -> float:
-    """Signed, unwrapped desired roll for the frozen one-second schedule."""
+    """Signed, unwrapped desired roll for the frozen global schedule."""
     phase = np.clip((time_s - ROLL_START_TIME) / (ROLL_END_TIME - ROLL_START_TIME), 0.0, 1.0)
-    return float(ROLL_TARGET * phase)
+    smooth_phase = phase * phase * (3.0 - 2.0 * phase)
+    return float(ROLL_TARGET * smooth_phase)
 
 
 def maneuver_phase_at_time(time_s: float) -> float:
@@ -106,9 +113,20 @@ class RollProgressTracker:
         return float(self.progress)
 
 
-def sample_symmetric_hip_spread(model: mujoco.MjModel, qpos: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, float]:
+def sample_symmetric_hip_spread(
+    model: mujoco.MjModel,
+    qpos: np.ndarray,
+    rng: np.random.Generator,
+    *,
+    spread: float | None = None,
+) -> tuple[np.ndarray, float]:
     """Apply the locked symmetric hip spread using MuJoCo joint addresses."""
-    spread = float(rng.uniform(*SPREAD_RANGE))
+    if spread is None:
+        spread = float(rng.uniform(*SPREAD_RANGE))
+    else:
+        spread = float(spread)
+        if not np.isfinite(spread) or not SPREAD_RANGE[0] <= spread <= SPREAD_RANGE[1]:
+            raise ValueError(f"spread must be within {SPREAD_RANGE}")
     sampled = np.asarray(qpos, dtype=np.float64).copy()
     signs = (1.0, 1.0, -1.0, -1.0)
     for name, sign in zip(HIP_JOINT_NAMES, signs, strict=True):

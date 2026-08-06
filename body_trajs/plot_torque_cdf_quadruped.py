@@ -26,6 +26,7 @@ TICK_LABEL_FONT_SIZE = 22
 LEGEND_FONT_SIZE = 17
 PURE_RL_COLOR = "#1f77b4"
 MPC_INJECTION_COLOR = "#ff7f0e"
+AMP_MPC_COLOR = "#2ca02c"
 
 # Edit these to choose which rollout timesteps to include in the CDF.
 PLOT_TIMESTEP_START = 0
@@ -183,6 +184,9 @@ def compute_empirical_cdf(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def make_trajectory_label(trajectory_path: Path) -> str:
+    if "amp_mpc" in str(trajectory_path).lower():
+        return "AMP-MPC"
+
     match = re.search(r"percentage-(\d+)pct", trajectory_path.parent.name)
     if match:
         pct = int(match.group(1))
@@ -193,6 +197,9 @@ def make_trajectory_label(trajectory_path: Path) -> str:
 
 
 def make_trajectory_color(trajectory_path: Path) -> str | None:
+    if "amp_mpc" in str(trajectory_path).lower():
+        return AMP_MPC_COLOR
+
     match = re.search(r"percentage-(\d+)pct", trajectory_path.parent.name)
     if not match:
         return None

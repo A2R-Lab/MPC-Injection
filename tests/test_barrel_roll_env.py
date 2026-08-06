@@ -2,15 +2,22 @@
 
 import numpy as np
 import mujoco
+import pytest
 from scipy.spatial.transform import Rotation
 
 from mpc_rl.envs.barrel_roll_common import (
+    CONTROL_DT,
+    CONTROL_STEPS,
+    MANEUVER_HORIZON,
+    ROLL_END_TIME,
+    ROLL_START_TIME,
     ROLL_TARGET,
     RollProgressTracker,
     desired_roll_at_time,
     maneuver_phase_at_time,
 )
 from mpc_rl.envs.barrel_roll_env import QuadrupedBarrelRollEnv
+from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 
 
 def _x_quaternion(angle: float) -> np.ndarray:
@@ -19,9 +26,14 @@ def _x_quaternion(angle: float) -> np.ndarray:
 
 def test_schedule_and_unwrapped_roll_handle_wrap_and_quaternion_signs():
     assert desired_roll_at_time(0.0) == 0.0
-    assert desired_roll_at_time(0.20) == 0.0
-    assert np.isclose(desired_roll_at_time(0.80), ROLL_TARGET)
-    assert np.isclose(maneuver_phase_at_time(1.0), 1.0)
+    assert desired_roll_at_time(ROLL_START_TIME) == 0.0
+    assert np.isclose(
+        desired_roll_at_time(0.5 * (ROLL_START_TIME + ROLL_END_TIME)),
+        0.5 * ROLL_TARGET,
+    )
+    assert np.isclose(desired_roll_at_time(ROLL_END_TIME), ROLL_TARGET)
+    assert np.isclose(maneuver_phase_at_time(MANEUVER_HORIZON), 1.0)
+    assert np.isclose(CONTROL_STEPS * CONTROL_DT, MANEUVER_HORIZON)
     tracker = RollProgressTracker.from_reset_quaternion(_x_quaternion(0.0))
     for angle in (2.8, 3.2, 6.1, 6.4):
         tracker.update(_x_quaternion(angle))
@@ -33,6 +45,8 @@ def test_schedule_and_unwrapped_roll_handle_wrap_and_quaternion_signs():
 
 def test_go2_reset_is_seeded_spread_and_has_exact_observation_shapes():
     env = QuadrupedBarrelRollEnv()
+    assert env.mjModel.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL
+    assert_go2_sysid_joint_dynamics(env.mjModel)
     obs_a, info_a = env.reset(seed=13)
     qpos_a = env.mjData.qpos.copy()
     obs_b, info_b = env.reset(seed=13)
@@ -53,6 +67,18 @@ def test_go2_reset_is_seeded_spread_and_has_exact_observation_shapes():
     assert np.isclose(qpos_a[addresses[2]] - env.default_qpos[addresses[2]], -spread)
     assert np.isclose(qpos_a[addresses[3]] - env.default_qpos[addresses[3]], -spread)
     env.close()
+
+
+def test_barrel_roll_requires_sysid_and_supports_nominal_commissioning_spread():
+    with pytest.raises(ValueError, match="requires use_go2_sysid=True"):
+        QuadrupedBarrelRollEnv(use_go2_sysid=False)
+
+    env = QuadrupedBarrelRollEnv()
+    try:
+        _, info = env.reset(seed=5, options={"spread": 0.0})
+        assert info["sampled_spread"] == 0.0
+    finally:
+        env.close()
 
 
 def test_hand_authored_action_rollout_is_finite_without_premature_termination():

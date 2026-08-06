@@ -14,6 +14,8 @@ from mpc_rl.envs.barrel_roll_common import (
     CONTROL_STEPS,
     REWARD_CONFIG,
     ROLL_DIRECTION_SIGN,
+    ROLL_END_TIME,
+    ROLL_START_TIME,
     ROLL_TARGET,
     SUCCESS_CONFIG,
     RollProgressTracker,
@@ -30,18 +32,18 @@ from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
 class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
     """Nominal Go2 task with a 45D actor and 4D privileged critic input."""
 
-    def __init__(self, *, robot: str = "go2", domain_rand_cfg=None, use_go2_sysid: bool = False, **kwargs):
+    def __init__(self, *, robot: str = "go2", domain_rand_cfg=None, use_go2_sysid: bool = True, **kwargs):
         if robot.lower() != "go2":
             raise ValueError("QuadrupedBarrelRollEnv supports robot='go2' only")
-        if use_go2_sysid:
-            raise ValueError("barrel-roll uses nominal Go2 dynamics; use_go2_sysid must be false")
+        if not use_go2_sysid:
+            raise ValueError("barrel-roll requires use_go2_sysid=True")
         if domain_rand_cfg is not None and domain_rand_cfg.enable:
             raise ValueError("barrel-roll does not support domain randomization")
         kwargs.pop("simple_reward", None)
         super().__init__(
             robot="go2",
             scene="flat",
-            use_go2_sysid=False,
+            use_go2_sysid=True,
             domain_rand_cfg=DomainRandomizationConfig.disabled(),
             apply_startup_domain_rand_on_init=False,
             sim_dt=0.005,
@@ -50,6 +52,11 @@ class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
         )
         if not np.isclose(self.control_dt, CONTROL_DT):
             raise ValueError(f"barrel-roll requires control_dt={CONTROL_DT}, got {self.control_dt}")
+        # The MPX Go2 execution model uses pyramidal friction cones.  Keep this
+        # task-specific plant on the same contact convention; the shared Gym
+        # scene otherwise defaults to elliptic cones and diverges from the first
+        # stance command under an identical torque trace.
+        self.mjModel.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
         self.policy_obs_dim = 45
         self.privileged_obs_dim = 4
         self.observation_space = spaces.Dict({
@@ -70,8 +77,12 @@ class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
         mujoco.mj_resetDataKeyframe(self.mjModel, self.mjData, 0)
         if self.robot_cfg.qpos0_js is not None:
             self.mjData.qpos[7:] = np.asarray(self.robot_cfg.qpos0_js, dtype=np.float64)
+        requested_spread = None if options is None else options.get("spread")
         self.mjData.qpos[:], self._spread = sample_symmetric_hip_spread(
-            self.mjModel, self.mjData.qpos, self.np_random
+            self.mjModel,
+            self.mjData.qpos,
+            self.np_random,
+            spread=requested_spread,
         )
         self.mjData.qvel[:] = 0.0
         self.mjData.qacc[:] = 0.0
@@ -99,7 +110,6 @@ class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
         return obs, self._get_info()
 
     def _after_physics_substep(self) -> None:
-        self._previous_roll_progress = self._roll_progress
         self._roll_progress = self._roll_tracker.update(self.mjData.qpos[3:7])
         if not np.isfinite(self.mjData.qpos).all() or not np.isfinite(self.mjData.qvel).all() or not np.isfinite(self.mjData.ctrl).all():
             self._physics_failure_reason = "non_finite_state"
@@ -107,6 +117,9 @@ class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
             nonfoot = find_nonfoot_ground_contact(self)
             if nonfoot is not None:
                 self._physics_failure_reason = f"non_foot_ground_contact:{nonfoot}"
+
+    def _before_control_step(self) -> None:
+        self._previous_roll_progress = self._roll_progress
 
     def _get_obs(self) -> dict[str, np.ndarray]:
         base_ang_vel = self.mjData.qvel[3:6].copy()
@@ -157,7 +170,9 @@ class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
         desired_roll = desired_roll_at_time(self._step_count * self.control_dt)
         error = desired_roll - self._roll_progress
         tracking = REWARD_CONFIG.tracking_weight * np.exp(-(error / REWARD_CONFIG.tracking_sigma) ** 2)
-        expected_step = 2.0 * np.pi * self.control_dt / (0.80 - 0.20)
+        expected_step = (
+            2.0 * np.pi * self.control_dt / (ROLL_END_TIME - ROLL_START_TIME)
+        )
         signed_delta = ROLL_DIRECTION_SIGN * (self._roll_progress - self._previous_roll_progress)
         progress = REWARD_CONFIG.progress_weight * np.clip(signed_delta / expected_step, -REWARD_CONFIG.progress_clip, REWARD_CONFIG.progress_clip)
         outcome = 0.0

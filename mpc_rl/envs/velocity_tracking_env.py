@@ -423,6 +423,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Store previous action for action rate penalty
         self._prev_last_action = self._last_action.copy()
         self._last_action = action.copy()
+        self._before_control_step()
 
         # Compute and filter joint position targets before the PD controller.
         self._raw_q_target = self.default_joint_pos + self.action_scale * action
@@ -1002,6 +1003,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         need physics-rate safety bookkeeping (for example barrel rolls) can
         override it without copying the control loop.
         """
+        return None
+
+    def _before_control_step(self) -> None:
+        """Optional task hook invoked once before the physics substeps."""
         return None
 
     def _get_foot_positions(self) -> np.ndarray:

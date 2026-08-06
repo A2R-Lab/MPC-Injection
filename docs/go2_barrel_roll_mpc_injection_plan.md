@@ -9,8 +9,10 @@ during the design interview, the repository evidence behind the design, the
 required file changes, validation gates, runnable workflows to add, and the
 fallback order if a gate fails.
 
-This is a plan, not an implementation report. No barrel-roll environment,
-generator, dataset, or trained policy exists in the root project yet.
+Implementation passed the G3 commissioning gate on 2026-08-06. The root project
+now has a physically validated barrel-roll environment and commissioning
+generator, but no promoted dataset or trained policy exists. G4-G8 were not
+started during the G3 recovery.
 
 ## Implementation evidence (G0-G5 session)
 
@@ -41,6 +43,46 @@ generator, dataset, or trained policy exists in the root project yet.
   91 iterations, final objective norm squared `545477892.2695315`, final
   constraint norm squared `4.456622800618131e-06`, and 14.22 s elapsed.
 - No deviations from the frozen one-second schedule or roll direction.
+- 2026-08-05 follow-up diagnosis showed that the finite solve above still used
+  Aliengo-era robot parameters: 0.33 m standing height, 0.65 duty factor,
+  1.35 Hz step frequency, 0.12 m step height, enabled terrain estimation, and
+  +/-40 Nm scalar wrapper bounds. The barrel config now matches the existing
+  MPX Go2 config for those robot-specific values, including the 0.27 m Go2
+  home height and zero-height world-frame foot references. The barrel reference
+  now derives its stance and landing heights from that Go2 height; phase timing
+  and roll direction are unchanged.
+- Focused configuration validation reports `3 passed`. The corrected offline
+  solve is finite but no longer feasible enough to retain the former G1 pass:
+  after 100 iterations its final constraint norm squared was
+  `9.600926568488823`. A diagnostic 300-iteration run reached
+  `4.518660053274493`, so raising the iteration limit alone was not a fix. At
+  that point G1 and G3 remained blocked pending a Go2-sysID,
+  barrel-specific receding-horizon controller path.
+- 2026-08-05 continuation added the dedicated
+  `MPCControllerWrapper.run_barrel_roll()` path. It rebuilds the MPC state from
+  measured `qpos/qvel` and named foot positions, phase-indexes and terminal-pads
+  the fixed barrel reference/contact schedule, shifts the prior `X/U/V` warm
+  start, returns the two 100 Hz nodes for the next 50 Hz control interval, and
+  records objective, constraint, iteration, finite-status, phase, warm-start,
+  and timing diagnostics. It does not call the generic gait reference.
+- The initial measured-state solve uses 100 SQP updates. A nominal diagnostic
+  remained finite and reached constraint norm squared `0.11592822521924973`, a
+  material improvement over the corrected no-sysID offline solve but still far
+  from the former `1e-5` feasibility threshold. Repeated unit updates retain the
+  staged schedule and shift by two MPC nodes. At that point G1 remained blocked
+  on feasibility rather than on a missing API.
+- `conda run --no-capture-output -n mpc-rl pytest -q
+  deps/mpx/tests/test_barrel_roll_config.py tests/test_barrel_roll_env.py`
+  reports `8 passed` after these changes.
+- The 2026-08-06 recovery closes G1 with forward-execution evidence. The
+  reference now has one global clock, continuous Hermite base state, an exact
+  signed full-turn quaternion path, phase-dependent joint/foot targets, and the
+  XML's ordered per-actuator limits. Inactive contacts are masked before the
+  contact solve. The final `1.40` s reference and measured-state plan execute
+  physically in the exact MPX Go2 MuJoCo model with sysID, reaching `6.019205`
+  rad progress and passing the unchanged classifier without planned-state
+  assignment or non-foot contact. The expanded focused suite reports
+  `12 passed`.
 
 ### G2 — complete
 
@@ -52,8 +94,12 @@ generator, dataset, or trained policy exists in the root project yet.
 - The task is Go2-only and nominal, has 45D/4D observations, fixed 50/200 Hz
   timing, seeded `[0.00, 0.10]` named-joint spread sampling, quaternion-safe
   unwrapped roll progress, and the frozen MVP reward/success semantics.
+- The environment now requires `use_go2_sysid=True`, supports the explicit
+  zero-spread commissioning reset without changing seeded sampling defaults,
+  and snapshots roll progress once per control interval so the progress reward
+  covers all four physics substeps.
 
-### G3 — blocked (do not advance)
+### G3 — complete (G4-G8 not started)
 
 - The first direct commissioning invocation failed before it could execute a
   physics step: `/home/roy/miniconda3/envs/mpc-rl/bin/python
@@ -62,10 +108,83 @@ generator, dataset, or trained policy exists in the root project yet.
   --manifest-filename=one.jsonl` exited 1 in
   `MPCControllerWrapper.runOffline()` with
   `jaxlib._jax.XlaRuntimeError: INTERNAL: cuSolver internal error`.
-- The standalone finite MPX smoke remains successful, so this is an
-  environment/generator process interaction to diagnose before controller
-  execution alignment, schema work, or data generation. No G4-G8 work was
+- Before the Go2 parameter correction recorded under G1, the standalone MPX
+  smoke remained successful, which isolated the original `cuSolver` failure to
+  the generator process. The corrected Go2-height solve now reopens G1 on
+  feasibility independently of that allocator issue. No G4-G8 work was
   launched.
+- Setting `XLA_PYTHON_CLIENT_MEM_FRACTION=.25` allows the generator process to
+  complete the offline call without the `cuSolver internal error`. This is an
+  effective allocator workaround, but concurrent JAX processes were not present
+  during the confirming run, so launch contention is not established as the
+  root cause. The first task-plant execution then failed the classifier on a
+  non-foot ground contact with negligible roll progress.
+- The MPX MJX-compatible Go2 model and Gym Go2 plant have matching joint and
+  actuator ordering, body masses, and torque ranges, but their nominal joint
+  damping/friction, solver options, and collision geometry differ. The accepted
+  velocity pipeline handles this boundary by applying the same Go2 sysID patch
+  to both models and replanning online. Barrel roll will adopt that same policy:
+  enable Go2 sysID on both sides and use a barrel-specific receding-horizon
+  controller. Exact XML, collision-geometry, and solver-option reconciliation
+  is not an implementation gate.
+- The generator now constructs both MPX and Gym with Go2 sysID enabled and calls
+  the barrel-specific measured-state update at every 50 Hz boundary. It applies
+  the returned two-node segment at 200 Hz, preserves the direct-torque/inverse-
+  PD convention, accepts `--nominal-spread-zero`, writes structured rejection
+  metrics, and writes trajectory files only after classifier success.
+- The current source command
+  `XLA_PYTHON_CLIENT_MEM_FRACTION=.25
+  /home/roy/miniconda3/envs/mpc-rl/bin/python
+  mpc_rl/planner/gen_traj_data_barrel_roll.py --num-trajectories=1
+  --start-seed=0 --max-attempts=1
+  --output-dir=/tmp/go2_barrel_roll_replanning_warm
+  --manifest-filename=one.jsonl --nominal-spread-zero --verbose=1` completed 37
+  control steps before rear-left hip ground contact. It reached `3.5300803` rad
+  roll progress, minimum base height `0.0891304` m, maximum joint tracking error
+  `1.9952675` rad, 31.76% action clipping, 1.80% total-torque saturation, and
+  4.79% raw MPX-torque saturation. The shifted-plan constraint norm squared
+  grew to `1118157.75`. Excluding the initial compile/warm solve, mean replanning
+  time was `8.89` ms; the initial 100-update solve took `17.01` s.
+- Commissioning-only solver and height diagnostics did not clear the gate. Ten
+  SQP updates per replan failed on a base contact at 3.55 rad and increased
+  saturation. One hundred updates per replan became non-finite at 0.42 s. A
+  0.33 m stance/landing target failed at 3.48 rad, and the former Aliengo-style
+  0.33 m stance plus 0.28 m landing combination failed at 0.71 rad. The checked-
+  in task-specific stance and landing constants therefore remain at the Go2
+  0.27 m height. Further iteration or height sweeps are not justified by these
+  results.
+- At that point no rendered rollout or seeded ten-rollout set had passed, G3
+  remained blocked, and no G4-G8 work had been launched.
+- Post-change relevant regression validation (`test_velocity_tracking_env.py`,
+  `test_quadruped_model_architecture.py`, `test_go2_sysid.py`,
+  `test_barrel_roll_env.py`, and the MPX barrel config test) reports `85 passed,
+  3 failed, 1 skipped`. The three failures are exactly the G0 baseline failures;
+  no new failure remains. `git diff --check` passes in both root and `deps/mpx`.
+- The recovery selected a `1.40` s horizon and phase-limited controller. It
+  replans at 50 Hz through flight and landing; after `0.86` s, once the existing
+  five-step stable-contact requirement and current raw four-foot contact are
+  measured, it performs one final landed-state MPX solve and torque-executes
+  the shifted plan with frozen per-leg `Kp=[20,20,40]` and `Kd=[1,1,2]`.
+  This transition rule, the initial 100 updates, later single updates, sysID,
+  reference, gains, and limits are identical for all seeds.
+- A paired same-state/same-torque trace isolated the first relevant Gym transfer
+  mismatch to elliptic versus pyramidal friction cones. Only the barrel task's
+  cone convention was aligned to the exact MPX model; no XML strength,
+  collision geometry, or broad solver reconciliation changed.
+- The rendered zero-spread Gym command passed all 70 controller steps with
+  `6.143645` rad progress, `-0.141236` rad final roll, `-0.065546` rad pitch,
+  `0.273986` m final height, five stable steps, finite solves, and no non-foot
+  contact.
+- The required command with `--num-trajectories=10 --start-seed=0
+  --max-attempts=10` accepted seeds `0` through `9` in exactly ten attempts.
+  Every seed passed the unchanged classifier with finite state/control and zero
+  non-foot contacts. Per-seed spread, orientation, height, tracking,
+  saturation, contact, and solver metrics are recorded in
+  `go2_barrel_roll_g3_mvp_recovery_plan.md`; all artifacts remain under `/tmp`.
+- Final relevant regression validation reports `89 passed, 3 failed, 1
+  skipped`. The four additional passes relative to the prior `85` count are
+  expanded barrel focused tests. The three failures remain exactly the G0
+  baseline failures. Root and MPX `git diff --check` both pass.
 
 The coordinated feature branches already exist in the current worktree:
 
@@ -74,9 +193,8 @@ The coordinated feature branches already exist in the current worktree:
 - `deps/mpx`: `feature/go2-barrel-roll`, created from
   `249c7323ab0cd13bea2ddb8ed5f252eb9ccde85c`.
 
-The MPX branch currently contains the user's uncommitted Go2 barrel-roll config
-changes and the `barel_roll.py` to `barrel_roll.py` rename. Preserve them. The
-untracked tree under
+The MPX branch contains intentional uncommitted Go2 configuration work plus the
+new receding-horizon implementation and tests. Preserve it. The untracked tree under
 `deploy/robots/go2/config/policy/velocity/policies/` is unrelated user data and
 must not be modified, staged, or deleted.
 
@@ -89,16 +207,16 @@ The work is done only when all of the following are true:
 
 1. MPX uses the Go2 model, pose, feet, and joint ordering throughout the
    barrel-roll path; no Aliengo task values remain active.
-2. A seeded generator re-solves MPX for each sampled Go2 start stance and then
-   executes the solution in the same Gym-Quadruped-based plant used by the RL
-   task.
+2. A seeded generator runs barrel-specific receding-horizon MPX from each
+   sampled Go2 start stance and executes it in the same Gym-Quadruped-based
+   plant used by the RL task, with Go2 sysID enabled in both models.
 3. Only executed rollouts that pass the frozen barrel-roll success classifier
    are saved as versioned, direct RL transitions.
 4. The percentage injector strictly validates and injects the new 45D-policy,
    4D-privileged, 12D-action schema into `TaggedDictReplayBuffer`.
 5. `mpc_rl/train.py` can train and evaluate
    `--env_name=quadruped-barrel_roll` with SAC-MPC, 25% MPC replay, no domain
-   randomization, and no Go2 sysID patch.
+   randomization, and the Go2 sysID patch enabled.
 6. A 100,000-step pilot shows increasing held-out barrel-roll success before
    any production training starts.
 7. Three 500,000-step production seeds complete, and the median policy success
@@ -107,8 +225,8 @@ The work is done only when all of the following are true:
 8. Tests, commands, dataset provenance, and user-visible workflow documentation
    are current.
 
-Pure SAC, TD3-MPC, bidirectional rolls, domain randomization, system
-identification, and hardware deployment are not required for this MVP.
+Pure SAC, TD3-MPC, bidirectional rolls, domain randomization, and hardware
+deployment are not required for this MVP.
 
 ## Locked design decisions
 
@@ -127,7 +245,9 @@ silently revisited during implementation:
 | Critic observation | 4 privileged values: body-frame base linear velocity plus unwrapped signed roll progress. A 9D variant adding base height and four contacts is a fallback only if training fails. |
 | Reward | Phase-indexed unwrapped-roll tracking, signed roll progress, and terminal success/failure only. Simplification can be studied after the MVP works. |
 | Reset variation | One symmetric hip-spread scalar sampled uniformly from 0.00 to 0.10 rad; all other initial state values fixed initially. |
-| Robustness | No DR, observation noise, pushes, encoder bias, or sysID patch. |
+| Robustness | Use the existing Go2 sysID patch consistently in MPX and the Gym plant. No DR, observation noise, pushes, or encoder bias. |
+| MPC execution | Use barrel-specific, phase-aware receding-horizon replanning at each 50 Hz control step. The generic velocity-tracking `run()` reference path is not valid for this maneuver. |
+| Model boundary | Follow the compatibility boundary proven by velocity tracking. Do not require XML/collision/solver parity beyond the existing shared ordering and the consistently applied Go2 sysID patch. |
 | RL algorithm | SAC-MPC only for the MVP. |
 | Injection | Percentage injection at 25%; use the direct transition path. |
 | Data scale | Gates at 10, 100, and 1,000 accepted trajectories. |
@@ -141,7 +261,7 @@ The implementation should extend the accepted Go2 velocity path, not introduce
 a third quadruped training stack:
 
 ```text
-MPX offline Go2 solution per seed
+MPX Go2 sysID barrel reference with 50 Hz replanning
   -> execute torques in a Gym-Quadruped-based Go2 task plant
   -> save 50 Hz direct Dict-observation transitions
   -> strict barrel-roll dataset validation
@@ -152,16 +272,19 @@ MPX offline Go2 solution per seed
 
 Relevant current behavior:
 
-- `deps/mpx/mpx/examples/barrel_roll.py` calls
-  `MPCControllerWrapper.runOffline()` and visualizes the optimized `X` sequence
-  by assigning `qpos` and `qvel`. It does not execute `U` in the Go2 RL plant.
-- `deps/mpx/mpx/config/config_barrel_roll.py` now points at
-  `data/go2/go2_mjx.xml` and uses the Go2 `q0` and `p_legs0`, but it still
-  contains stale Aliengo labels and an Aliengo-valued `q0_init` declaration.
+- `deps/mpx/mpx/examples/barrel_roll.py` is now the exact-model commissioning
+  path. It steps the configured Go2 model with direct torque at 200 Hz and never
+  assigns optimized `X` after reset.
+- `MPCControllerWrapper.run()` remains the velocity-tracking path. Barrel
+  commissioning uses the dedicated measured-state `run_barrel_roll()` path,
+  which phase-indexes the fixed schedule and supports shifted fixed-plan tail
+  execution after the landing replan latch.
+- `deps/mpx/mpx/config/config_barrel_roll.py` points at
+  `data/go2/go2_mjx.xml`, uses the Go2 home pose/feet, and loads the model's
+  ordered actuator limits.
 - `deps/mpx/mpx/utils/mpc_utils.py::reference_barell_roll` defines the current
-  one-second reference. Preserve the misspelled internal function name during
-  the MVP unless renaming can be proven isolated; the public example filename
-  has already been corrected.
+  global `1.40` s reference. The misspelled internal function name remains
+  preserved; the public example filename has already been corrected.
 - `mpc_rl/envs/velocity_tracking_env.py` already provides the Go2 model loader,
   200/50 Hz stepping, 12D position-residual action, PD loop, Dict observations,
   contacts, rendering, and reset bookkeeping needed by the new task.
@@ -196,19 +319,20 @@ Keep the current MPX reference timing as the source schedule:
 | ---: | --- |
 | 0.00-0.20 s | Initial stance |
 | 0.20-0.40 s | Lateral support and push-off |
-| 0.40-0.70 s | Flight |
-| 0.70-0.80 s | Landing phase |
-| 0.80-1.00 s | Final stance |
+| 0.40-0.75 s | Flight |
+| 0.75-0.85 s | Landing phase |
+| 0.85-1.40 s | Final stance |
 
-The signed desired roll stays at zero through 0.20 s, progresses linearly by
-one full turn from 0.20 to 0.80 s, and then stays at the signed `2*pi` target.
+The signed desired roll stays at zero through 0.20 s, follows the frozen smooth
+full-turn profile from 0.20 to 0.80 s, and then stays at the signed `2*pi`
+target.
 Use one named constant for the chosen sign in the root task code, assert that it
 matches the MPX reference during validation, and save it in every dataset file.
 
-At 50 Hz, an accepted demonstration contains 50 transitions. At 200 Hz it
-contains 200 physics steps. The environment should classify success or
-incomplete failure on its 50th transition; the Gym `TimeLimit` remains a safety
-wrapper rather than the normal source of episode completion.
+At 50 Hz, a current commissioning rollout contains 70 transitions. At 200 Hz it
+contains 280 physics steps. The environment classifies success or incomplete
+failure on its 70th transition; the Gym `TimeLimit` remains a safety wrapper
+rather than the normal source of episode completion.
 
 ### Initial-state sampler
 
@@ -387,11 +511,17 @@ Work:
 3. Keep the current schedule and single roll direction. Expose its phase timing
    and roll sign as readable config constants rather than duplicating anonymous
    numbers throughout the generator.
-4. Add optional offline-solve diagnostics without breaking the example's
-   current four-value unpacking. The generator needs iteration count, final
-   objective/constraint norms if available, finite-status, and elapsed time.
-5. Ensure all barrel-roll construction passes `use_go2_sysid=False` explicitly.
-6. Make the example finite and usable as a smoke command instead of requiring an
+4. Add solve diagnostics without breaking the example's current four-value
+   unpacking. The generator needs iteration count, final objective/constraint
+   norms if available, finite-status, and elapsed time.
+5. Ensure all barrel-roll construction passes `use_go2_sysid=True` explicitly,
+   including both the MPX model and the Gym execution plant.
+6. Add a barrel-specific receding-horizon entry point. It must retain the fixed
+   maneuver reference/contact schedule, index it by current phase, initialize
+   from the measured plant state, shift the previous solution for warm start,
+   and return the next control segment. Do not route this through the generic
+   velocity-reference `run()` implementation.
+7. Make the example finite and usable as a smoke command instead of requiring an
    endless viewer loop for validation. Rendering may remain optional.
 
 Validation:
@@ -399,7 +529,9 @@ Validation:
 - config/model name and all named IDs resolve;
 - reference has `N+1` states, `N` controls, finite values, the intended contact
   stages, one signed turn, and the exact 1.0 s horizon;
-- a nominal offline solve returns finite `X` and `U`;
+- a nominal solve returns finite `X` and `U` with Go2 sysID enabled;
+- repeated barrel-specific updates preserve the maneuver phase/contact schedule
+  and return finite controls from perturbed measured states;
 - the user's existing visual result remains intact.
 
 Gate: a finite nominal Go2 plan exists. Direct state visualization alone does
@@ -429,9 +561,9 @@ Design:
    needed to update roll/contact state after each physics substep. Do not copy
    the full `step()` loop into the new class and do not change velocity-task
    defaults.
-4. Force Go2, flat terrain, nominal dynamics, disabled DR, disabled pushes/noise,
-   and disabled sysID. Reject unsupported robot names rather than silently
-   constructing another robot.
+4. Force Go2, flat terrain, disabled DR, disabled pushes/noise, and enabled Go2
+   sysID. Reject unsupported robot names rather than silently constructing
+   another robot.
 5. Override reset to use the shared spread sampler and fully reset phase,
    quaternion continuity, roll progress, landing-contact history, stability
    counter, action/filter state, and failure reason.
@@ -461,7 +593,7 @@ Validation:
 Gate: scripted state tests and a simple hand-authored action rollout can traverse
 the environment API without NaNs or premature termination.
 
-### Gate G3: execute the offline plan in the Go2 task plant
+### Gate G3: execute receding-horizon MPC in the Go2 task plant
 
 Proposed file:
 
@@ -473,16 +605,18 @@ do not add barrel-roll modes to the DR generator.
 Per attempt:
 
 1. Seed the shared spread sampler and construct `QuadrupedBarrelRollEnv` with
-   nominal Go2 dynamics, no DR, and no sysID.
-2. Copy its exact initial `qpos/qvel` into a shared-process MPX wrapper, call
-   `reset()`, and run `runOffline()` for that seed.
-3. Treat MPX `X` as the planned state target and `U` as feedforward torque.
-   MPX nodes are 100 Hz (`dt=0.01`), so hold each node for two 200 Hz physics
-   steps. A 50 Hz RL transition spans two MPX nodes/four physics steps.
-4. Follow the accepted quadruped controller convention initially:
-   `tau = U + 10*(q_des - q) - 2*dq`, clipped to the Go2 plant limits. Save the
-   fixed tracking gains as provenance. Do not introduce gain tuning before the
-   nominal executable-roll gate.
+   no DR and `use_go2_sysid=True`.
+2. Construct the shared-process MPX wrapper with `use_go2_sysid=True`, copy the
+   exact initial Gym `qpos/qvel`, and initialize the fixed barrel-roll reference.
+3. At each 50 Hz control boundary, call the barrel-specific replanning entry
+   point with the measured Gym state and current maneuver phase. Warm-start
+   from the shifted previous solution, retain the fixed phase/contact schedule,
+   and apply the returned first control segment for the next four 200 Hz physics
+   steps. Record solve timing and iteration count; rendering/commissioning may
+   run slower than real time, but the achieved update rate must be measured.
+4. Follow the frozen commissioned convention:
+   `tau = U + Kp*(q_des - q) - Kd*dq`, clipped to the Go2 plant limits, with
+   per-leg `Kp=[20,20,40]` and `Kd=[1,1,2]`. Save the gains as provenance.
 5. Compute the inverse-PD residual action from the first actually applied torque
    of each 50 Hz transition. Record unclipped and clipped actions, but inject only
    the clipped action.
@@ -492,7 +626,7 @@ Per attempt:
    touchdown sequences.
 8. Reject non-finite solver output, invalid initialization, non-foot contact,
    incomplete rotation, unstable landing, premature viewer closure, and fewer
-   than 50 transitions.
+   than the configured 70 transitions.
 9. Write one attempt record whether accepted or rejected; write a trajectory
    file only for accepted attempts.
 
@@ -507,8 +641,9 @@ CLI requirements:
 - verbosity matching existing generator conventions
 - an explicit commissioning-only option for nominal spread zero
 
-Use one MPX wrapper/JIT compilation per process and re-solve per seed. File
-names must include task, schema version, direction, seed, and episode length.
+Use one MPX wrapper/JIT compilation per process, reinitialize it per seed, and
+replan at each control boundary. File names must include task, schema version,
+direction, seed, and episode length.
 Write through a temporary file and atomically rename it so interrupted workers
 cannot leave apparently valid `.npz` files.
 
@@ -524,8 +659,10 @@ Diagnostics to save and aggregate:
 - success/failure reason and stability-streak length.
 
 Gate: one nominal rendered execution and ten seeded executions pass the frozen
-classifier. If optimized `X` looks correct but executed rollouts fail, stop and
-tune controller execution/model alignment on this gate; do not generate data.
+classifier. If optimized `X` looks correct but executed rollouts fail, inspect
+replanning, phase alignment, tracking gains, saturation, and contact timing on
+this gate; do not require broader MPX/Gym XML reconciliation and do not generate
+data.
 
 ### Gate G4: define and validate schema v1
 
@@ -555,7 +692,7 @@ Required physics/controller arrays:
 
 - `qpos`: `(19, 201)` and `qvel`: `(18, 201)`;
 - `tau_applied`, `tau_mpx`, `q_des`: `(12, 200)`;
-- offline `X`, `U`, or an equally sufficient finite controller-plan record;
+- per-update `X`, `U`, or an equally sufficient finite replanning record;
 - phase, desired roll, measured roll progress, contacts, clipping, saturation,
   and success metrics at their documented rates.
 
@@ -565,7 +702,8 @@ Required scalar/provenance fields:
 - robot, roll direction, rollout seed, sampled spread, and failure-free success;
 - schedule, success thresholds, reward configuration, timing, action scale, LPF
   configuration, PD gains, tracking gains, and torque limits;
-- explicit `domain_randomization=disabled` and `go2_sysid_enabled=false`;
+- explicit `domain_randomization=disabled` and `go2_sysid_enabled=true`;
+- replanning frequency, warm-start policy, and per-update solve diagnostics;
 - root, MPX, nested solver, and Gym-Quadruped commits;
 - hashes of MPX and rollout Go2 XML files and the effective controller/task
   configuration;
@@ -621,14 +759,14 @@ Training work:
 1. Make the quadruped factory task-aware while preserving
    `velocity_tracking` as its default. Route `barrel_roll` to
    `QuadrupedBarrelRoll-v0` and reject other quadruped task strings.
-2. Force robot Go2, disabled DR, disabled sysID, the barrel-roll reward, and the
-   50-step horizon for this task. Fail on incompatible requested options rather
-   than silently training a different task.
+2. Force robot Go2, disabled DR, enabled Go2 sysID, the barrel-roll reward, and
+   the 50-step horizon for this task. Fail on incompatible requested options
+   rather than silently training a different task.
 3. Keep SB3 asymmetric SAC and `TaggedDictReplayBuffer`. The actor remains 45D;
    SAC critic first-layer input becomes `45 + 4 + 12 = 61`.
 4. Serialize the task ID, schema version, direction, schedule, reset range,
    reward config, success thresholds, timing, action/LPF/PD config, data path,
-   25% target, and disabled DR/sysID settings into `config.json`.
+   25% target, disabled DR, and enabled Go2 sysID into `config.json`.
 5. Make evaluation and video recording task-aware. Do not set velocity commands
    or put velocity labels in barrel-roll video names.
 6. Log roll phase/progress/error, reward components, contact/stability state,
@@ -655,7 +793,7 @@ except duration and dataset size:
 - existing quadruped SAC-MPC network and optimizer defaults initially;
 - 50/200 Hz task timing;
 - `action_scale=0.5` and the existing 5 Hz online LPF;
-- no DR and no sysID;
+- no DR and Go2 sysID enabled;
 - fixed held-out evaluation seeds.
 
 Pilot checks:
@@ -696,9 +834,10 @@ conda run -n mpc-rl python mpc_rl/planner/gen_traj_data_barrel_roll.py \
 Workers 2 and 3 use starts `200000` and `300000`. These are proposed commands
 for the planned CLI; they are not currently runnable.
 
-Before adding workers, measure JAX compilation time, per-attempt solve time, GPU
-memory, success rate, and file size from the 10- and 100-file stages. Each
-process owns one MPX wrapper; do not share a compiled wrapper between processes.
+Before adding workers, measure JAX compilation time, per-update and per-attempt
+solve time, GPU memory, success rate, and file size from the 10- and 100-file
+stages. Each process owns one MPX wrapper; do not share a compiled wrapper
+between processes.
 
 After collection:
 
@@ -734,7 +873,7 @@ conda run -n mpc-rl python mpc_rl/train.py \
   --data_dir=data/go2_barrel_roll/v1 \
   --domain_rand=False \
   --domain_rand_config_type=disabled \
-  --use_go2_sysid=False \
+  --use_go2_sysid=True \
   --seed=<seed> \
   --suffix=go2-barrel-roll-v1
 ```
@@ -793,9 +932,11 @@ Use this order so failures do not trigger unrelated redesigns:
 
 1. **Optimized plan invalid:** correct Go2 config, contact/reference indexing, or
    MPX solver setup.
-2. **Plan valid but task-plant execution fails:** inspect MPX/Gym model
-   differences, node-rate mapping, tracking error, feedback gains, torque
-   saturation, and contact timing. Tune only on commissioning seeds.
+2. **Plan valid but task-plant execution fails:** verify sysID is enabled on
+   both sides, then inspect replanning/phase alignment, node-rate mapping,
+   tracking error, feedback gains, torque saturation, and contact timing. Tune
+   only on commissioning seeds; do not make exhaustive XML reconciliation a
+   prerequisite.
 3. **Execution succeeds but saved actions clip heavily:** increase
    `action_scale`, regenerate a new schema/dataset version, and rerun the
    100-trajectory pilot.
@@ -809,8 +950,8 @@ Use this order so failures do not trigger unrelated redesigns:
 7. **Policy rotates but does not land:** inspect success bonus, terminal handling,
    landing demonstrations, and late-phase state coverage before adding shaping.
 8. **Only after the above:** tune SAC hyperparameters or add a narrowly justified
-   reward term. TD3-MPC, torque actions, LPF removal, DR, and sysID remain outside
-   the initial fallback ladder.
+   reward term. TD3-MPC, torque actions, LPF removal, and DR remain outside the
+   initial fallback ladder.
 
 Every fallback that changes observations, action scale, reward semantics,
 controller behavior, or success thresholds invalidates the existing dataset
@@ -821,7 +962,7 @@ version and must be reflected in config serialization and documentation.
 Update after the corresponding behavior exists:
 
 - `README.md`: task name, generator/validator commands, data location, training
-  and evaluation commands, 50/200 Hz timing, no-DR/no-sysID scope, and artifact
+  and evaluation commands, 50/200 Hz timing, no-DR/Go2-sysID scope, and artifact
   outputs;
 - this plan: mark gates complete with exact validation results and deviations;
 - `docs/HZ_CONTROL_REFERENCE.md`: add the barrel-roll row only if the new task
@@ -830,8 +971,8 @@ Update after the corresponding behavior exists:
   barrel-roll actions use the LPF while MPC demonstration generation follows
   the existing direct-torque/inverse-PD pipeline;
 - MPX README/example comments: Go2 barrel-roll invocation and finite smoke use;
-- the new experiment script: exact dataset, schema, percentage, disabled
-  DR/sysID, seeds, and budgets.
+- the new experiment script: exact dataset, schema, percentage, disabled DR,
+  enabled Go2 sysID, seeds, and budgets.
 
 Recommended commit order:
 
@@ -850,7 +991,8 @@ training logs, or exported policies with source commits.
 - pure SAC or other 0% comparison training for the initial MVP;
 - TD3-MPC;
 - left/right command-conditioned or repeated barrel rolls;
-- random terrain, DR, pushes, observation noise, encoder bias, or sysID;
+- random terrain, DR, pushes, observation noise, or encoder bias;
+- exhaustive MPX/Gym XML, collision-geometry, or solver-option reconciliation;
 - torque-action policies;
 - imitation/behavior-cloning losses;
 - redesigning the replay-buffer sampling algorithm;
