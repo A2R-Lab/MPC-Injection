@@ -115,12 +115,18 @@ def resolve_use_go2_sysid(config: dict, cli_override: bool | None) -> bool:
     return bool(config.get("use_go2_sysid", True))
 
 
-def build_quadruped_env(*, robot: str, simple_reward: bool, use_go2_sysid: bool):
+def build_quadruped_env(
+    *,
+    robot: str,
+    simple_reward: bool,
+    use_go2_sysid: bool,
+    render_mode: str | None = None,
+):
     """Create the nominal non-domain-randomized quadruped env."""
     return gym.make(
         "QuadrupedVelocityTracking-v0",
         robot=robot,
-        render_mode=None,
+        render_mode=render_mode,
         domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
         simple_reward=simple_reward,
         use_go2_sysid=use_go2_sysid,
