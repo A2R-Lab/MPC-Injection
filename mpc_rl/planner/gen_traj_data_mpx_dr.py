@@ -1488,7 +1488,8 @@ def _write_run_artifacts(
         "rejected": len(attempt_records) - len(accepted),
         "rejection_reasons": rejection_reasons,
         "all_accepted_files_fully_validated": bool(
-            len(validation_records) == len(accepted)
+            accepted
+            and len(validation_records) == len(accepted)
             and all(record["passed"] for record in validation_records)
         ),
         "provenance": provenance,
@@ -1968,6 +1969,8 @@ def gen_traj_quadruped_dr(
             "result": "passed" if validation["passed"] else "failed",
             "passed": bool(validation["passed"]),
             "failure_reasons": validation["failure_reasons"],
+            "threshold_checks": validation.get("threshold_checks"),
+            "validation_metrics": validation.get("metrics"),
             "output_filename": filename if validation["passed"] else None,
             "validation_filename": (
                 validation_path.name if not blocking_failures else None
