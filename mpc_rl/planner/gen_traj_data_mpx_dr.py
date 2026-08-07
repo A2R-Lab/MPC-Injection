@@ -70,13 +70,26 @@ ACTION_CONVERSION_MODES = (
 DEFAULT_ACTION_CONVERSION_MODE = INFERRED_ACTION_DIRECT_TORQUE_MODE
 
 
-def _controller_config_with_qrot_pitch_cost(mpx_qrot_pitch_cost):
-    """Return the stock MPX config or an instance-local pitch-cost variant."""
-    if mpx_qrot_pitch_cost is None:
+def _controller_config_with_overrides(
+    mpx_qrot_pitch_cost, mpx_robot_height_m
+):
+    """Return the stock MPX config or an instance-local reference/cost variant."""
+    if mpx_qrot_pitch_cost is None and mpx_robot_height_m is None:
         return config
-    pitch_cost = float(mpx_qrot_pitch_cost)
+    pitch_cost = (
+        float(np.asarray(config.Qrot)[1, 1])
+        if mpx_qrot_pitch_cost is None
+        else float(mpx_qrot_pitch_cost)
+    )
+    robot_height = (
+        float(config.robot_height)
+        if mpx_robot_height_m is None
+        else float(mpx_robot_height_m)
+    )
     if not np.isfinite(pitch_cost) or pitch_cost < 0.0:
         raise ValueError("mpx_qrot_pitch_cost must be finite and non-negative")
+    if not np.isfinite(robot_height) or robot_height <= 0.0:
+        raise ValueError("mpx_robot_height_m must be finite and positive")
     qrot = config.Qrot.astype(config.W.dtype).at[1, 1].set(pitch_cost)
     weights = jax.scipy.linalg.block_diag(
         config.Qp,
@@ -94,7 +107,14 @@ def _controller_config_with_qrot_pitch_cost(mpx_qrot_pitch_cost):
         for name in dir(config)
         if not name.startswith("__")
     }
-    attributes.update(Qrot=qrot, W=weights)
+    p0 = config.p0.astype(config.W.dtype).at[2].set(robot_height)
+    attributes.update(
+        Qrot=qrot,
+        W=weights,
+        initial_height=robot_height,
+        p0=p0,
+        robot_height=robot_height,
+    )
     return SimpleNamespace(**attributes)
 
 
@@ -610,6 +630,7 @@ def generate_trajectory(
     step_frequency_hz=None,
     step_height_m=None,
     mpx_qrot_pitch_cost=None,
+    mpx_robot_height_m=None,
     joint_kp=None,
     joint_kd=None,
     max_pitch=0.5,
@@ -691,8 +712,8 @@ def generate_trajectory(
         total_sim_steps = episode_length * sim_steps_per_ctrl
 
         if own_mpc:
-            controller_config = _controller_config_with_qrot_pitch_cost(
-                mpx_qrot_pitch_cost
+            controller_config = _controller_config_with_overrides(
+                mpx_qrot_pitch_cost, mpx_robot_height_m
             )
             mpc = mpc_wrapper.MPCControllerWrapper(
                 controller_config,
@@ -1563,6 +1584,7 @@ def gen_traj_quadruped_dr(
     step_frequency_hz=None,
     step_height_m=None,
     mpx_qrot_pitch_cost=None,
+    mpx_robot_height_m=None,
     joint_kp=None,
     joint_kd=None,
     max_pitch=0.5,
@@ -1629,6 +1651,7 @@ def gen_traj_quadruped_dr(
         max_roll = float(controller_declaration["max_roll_rad"])
         min_base_height = float(controller_declaration["min_base_height_m"])
         mpx_qrot_pitch_cost = controller_declaration["mpx_qrot_pitch_cost"]
+        mpx_robot_height_m = controller_declaration["mpx_robot_height_m"]
         domain_rand_config_type = "disabled"
         use_go2_sysid = True
         action_interface_id = MPX_BOUND_ACTION_INTERFACE_ID
@@ -1768,8 +1791,8 @@ def gen_traj_quadruped_dr(
     if shared_mpc is None:
         if verbose > 0:
             print("Pre-compiling JAX MPC kernels (once for all trajectories)...")
-        controller_config = _controller_config_with_qrot_pitch_cost(
-            mpx_qrot_pitch_cost
+        controller_config = _controller_config_with_overrides(
+            mpx_qrot_pitch_cost, mpx_robot_height_m
         )
         shared_mpc = mpc_wrapper.MPCControllerWrapper(
             controller_config,
@@ -1837,6 +1860,7 @@ def gen_traj_quadruped_dr(
             step_frequency_hz=step_frequency_hz,
             step_height_m=step_height_m,
             mpx_qrot_pitch_cost=mpx_qrot_pitch_cost,
+            mpx_robot_height_m=mpx_robot_height_m,
             joint_kp=joint_kp,
             joint_kd=joint_kd,
             max_pitch=max_pitch,
@@ -1968,6 +1992,7 @@ def gen_traj_quadruped_dr(
                     step_frequency_hz=step_frequency_hz,
                     step_height_m=step_height_m,
                     mpx_qrot_pitch_cost=mpx_qrot_pitch_cost,
+                    mpx_robot_height_m=mpx_robot_height_m,
                     joint_kp=joint_kp,
                     joint_kd=joint_kd,
                     max_pitch=max_pitch,
@@ -2047,6 +2072,7 @@ def gen_traj_quadruped_dr(
             "max_roll": max_roll,
             "min_base_height": min_base_height,
             "mpx_qrot_pitch_cost": mpx_qrot_pitch_cost,
+            "mpx_robot_height_m": mpx_robot_height_m,
             "stage": stage,
             "start_seed": int(start_seed),
         }
@@ -2176,6 +2202,12 @@ def main():
         help="Optional instance-local MPX body-pitch orientation cost",
     )
     parser.add_argument(
+        "--mpx-robot-height-m",
+        type=float,
+        default=None,
+        help="Optional instance-local MPX body-height reference in meters",
+    )
+    parser.add_argument(
         "--joint-kp",
         type=float,
         default=None,
@@ -2294,6 +2326,7 @@ def main():
             max_roll_rad=args.max_roll,
             min_base_height_m=args.min_base_height,
             mpx_qrot_pitch_cost=args.mpx_qrot_pitch_cost,
+            mpx_robot_height_m=args.mpx_robot_height_m,
         )
 
     gen_traj_quadruped_dr(
@@ -2317,6 +2350,7 @@ def main():
         step_frequency_hz=args.step_frequency_hz,
         step_height_m=args.step_height_m,
         mpx_qrot_pitch_cost=args.mpx_qrot_pitch_cost,
+        mpx_robot_height_m=args.mpx_robot_height_m,
         joint_kp=args.joint_kp,
         joint_kd=args.joint_kd,
         max_pitch=args.max_pitch,

@@ -118,6 +118,7 @@ def make_commissioning_acceptance_declaration(
     max_roll_rad: float = 0.5,
     min_base_height_m: float = 0.1,
     mpx_qrot_pitch_cost: float | None = None,
+    mpx_robot_height_m: float | None = None,
     acceptance_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return an explicitly unfrozen declaration for commissioning attempts."""
@@ -164,7 +165,11 @@ def make_commissioning_acceptance_declaration(
             "realized_environment_kp": None,
             "realized_environment_kd": None,
             "mpx_weight_matrix_sha256": None,
-            "mpx_robot_height_m": None,
+            "mpx_robot_height_m": (
+                None
+                if mpx_robot_height_m is None
+                else float(mpx_robot_height_m)
+            ),
         },
         "acceptance": acceptance,
     }
@@ -270,6 +275,13 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
     ):
         raise ValueError(
             "controller mpx_qrot_pitch_cost must be null or non-negative"
+        )
+    robot_height = controller["mpx_robot_height_m"]
+    if robot_height is not None and (
+        not np.isfinite(float(robot_height)) or float(robot_height) <= 0.0
+    ):
+        raise ValueError(
+            "controller mpx_robot_height_m must be null or positive"
         )
     for key in ("max_pitch_rad", "max_roll_rad", "min_base_height_m"):
         value = float(controller[key])
