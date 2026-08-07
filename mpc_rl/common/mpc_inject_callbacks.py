@@ -537,6 +537,8 @@ class PercentMPCInjectCallback(BaseCallback):
         robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
         use_go2_sysid: bool=True,             # Whether quadruped temp envs should apply the Go2 sysID patch
         expected_dr_config_type: str | None = None,  # Expected DR preset for loaded quadruped demos
+        expected_quadruped_task: str | None = None,  # Optional strict task ID for quadruped files
+        expected_quadruped_schema_version: int | None = None,  # Optional strict schema version
         quadruped_mpc_replay_mode: str="direct",  # direct, torque_saved_pd, or torque_current_pd
         cheetah3_speed_goal: float=CHEETAH3_DEFAULT_SPEED_GOAL,
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
@@ -548,12 +550,28 @@ class PercentMPCInjectCallback(BaseCallback):
                 f"Invalid quadruped_mpc_replay_mode={quadruped_mpc_replay_mode!r}; "
                 f"expected one of: {valid}"
             )
+        if task in {"barrel_roll", "go2_barrel_roll"}:
+            from mpc_rl.envs.barrel_roll_common import SCHEMA_VERSION, TASK_ID
+
+            expected_quadruped_task = TASK_ID if expected_quadruped_task is None else expected_quadruped_task
+            expected_quadruped_schema_version = (
+                SCHEMA_VERSION
+                if expected_quadruped_schema_version is None
+                else expected_quadruped_schema_version
+            )
+            if domain != "quadruped":
+                raise ValueError("barrel-roll MPC data requires domain='quadruped'")
+            if quadruped_mpc_replay_mode != "direct":
+                raise ValueError("barrel-roll MPC data requires direct replay")
+
         self.domain = domain
         self.task = task
         self.target_percentage = target_percentage
         self.robot = robot
         self.use_go2_sysid = use_go2_sysid
         self.expected_dr_config_type = expected_dr_config_type
+        self.expected_quadruped_task = expected_quadruped_task
+        self.expected_quadruped_schema_version = expected_quadruped_schema_version
         self.quadruped_mpc_replay_mode = quadruped_mpc_replay_mode
         self.cheetah3_speed_goal = float(cheetah3_speed_goal)
         self._warned_dr_mismatch = False
@@ -586,9 +604,18 @@ class PercentMPCInjectCallback(BaseCallback):
                 raise FileNotFoundError(f"Data directory not found: {data_dir}")
             
             # Get all available trajectory files
-            self.available_files = list(self.data_dir.glob("*.npz"))
+            self.available_files = sorted(self.data_dir.glob("*.npz"))
             if len(self.available_files) == 0:
                 raise FileNotFoundError(f"No trajectory files found in {data_dir}")
+
+            # A strict task contract applies to the entire directory, not just
+            # whichever file seeded selection happens to pick first.  This is
+            # especially important for barrel roll: a malformed schema-v1 file
+            # must fail before any transition is queued and must never be
+            # interpreted as a legacy velocity torque trajectory.
+            if self.expected_quadruped_task is not None or self.expected_quadruped_schema_version is not None:
+                for trajectory_path in self.available_files:
+                    self._validate_expected_quadruped_file(trajectory_path)
             
             if verbose > 0:
                 print(f"  Found {len(self.available_files)} trajectory files in {data_dir}")
@@ -606,6 +633,43 @@ class PercentMPCInjectCallback(BaseCallback):
             print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}")
         print(f"  Note: Injection triggered by SAC_MPC when MPC% falls below target\n")
+
+    def _validate_expected_quadruped_file(self, trajectory_path):
+        """Validate a file against the optional strict quadruped task contract."""
+        if self.domain != "quadruped":
+            raise ValueError("expected quadruped task/schema requires domain='quadruped'")
+
+        from mpc_rl.envs.barrel_roll_common import TASK_ID as BARREL_ROLL_TASK_ID
+
+        if self.expected_quadruped_task == BARREL_ROLL_TASK_ID:
+            from mpc_rl.planner.barrel_roll_dataset import validate_barrel_roll_file
+
+            report = validate_barrel_roll_file(trajectory_path)
+            if not report.valid:
+                raise ValueError(
+                    f"invalid barrel-roll trajectory {trajectory_path}: "
+                    + "; ".join(report.errors)
+                )
+
+        with np.load(trajectory_path, allow_pickle=False) as loaded:
+            if self.expected_quadruped_task is not None:
+                if "task_id" not in loaded:
+                    raise ValueError(f"{trajectory_path} is missing task_id")
+                actual_task = str(np.asarray(loaded["task_id"]).item())
+                if actual_task != self.expected_quadruped_task:
+                    raise ValueError(
+                        f"{trajectory_path} task_id mismatch: expected "
+                        f"{self.expected_quadruped_task!r}, got {actual_task!r}"
+                    )
+            if self.expected_quadruped_schema_version is not None:
+                if "schema_version" not in loaded:
+                    raise ValueError(f"{trajectory_path} is missing schema_version")
+                actual_schema = int(np.asarray(loaded["schema_version"]).item())
+                if actual_schema != self.expected_quadruped_schema_version:
+                    raise ValueError(
+                        f"{trajectory_path} schema_version mismatch: expected "
+                        f"{self.expected_quadruped_schema_version}, got {actual_schema}"
+                    )
 
     def _maybe_warn_dr_mismatch(self, traj_domain_rand_patch: dict | None):
         """Print a one-time warning when loaded DR demos mismatch run DR preset."""
@@ -738,16 +802,21 @@ class PercentMPCInjectCallback(BaseCallback):
 
         return transitions_added
 
-    def _queue_quadruped_transition(self, obs, next_obs, action, reward, terminated, info) -> int:
+    def _queue_quadruped_transition(
+        self, obs, next_obs, action, reward, terminated, info, *, truncated=False
+    ) -> int:
         """Queue one unique quadruped MPC transition and flush any full batch."""
+        info = info.copy() if isinstance(info, dict) else info
+        if isinstance(info, dict):
+            info.setdefault("TimeLimit.truncated", bool(truncated and not terminated))
         self._quadruped_pending_transitions.append(
             {
                 "obs": {key: np.array(value, copy=True) for key, value in obs.items()},
                 "next_obs": {key: np.array(value, copy=True) for key, value in next_obs.items()},
                 "action": np.array(action, copy=True),
                 "reward": float(reward),
-                "done": float(terminated),
-                "info": info.copy() if isinstance(info, dict) else info,
+                "done": float(bool(terminated) or bool(truncated)),
+                "info": info,
             }
         )
         return self._flush_quadruped_pending_transitions()
@@ -761,17 +830,66 @@ class PercentMPCInjectCallback(BaseCallback):
         actions = np.asarray(traj_data["actions"], dtype=np.float64)
         rewards = np.asarray(traj_data["rewards"], dtype=np.float32)
         terminated_ctrl = np.asarray(traj_data["terminated_ctrl"], dtype=bool)
+        truncated_ctrl = (
+            np.asarray(traj_data["truncated_ctrl"], dtype=bool)
+            if "truncated_ctrl" in traj_data
+            else np.zeros_like(terminated_ctrl)
+        )
         commands_ctrl = (
             np.asarray(traj_data["commands_ctrl"], dtype=np.float64)
             if "commands_ctrl" in traj_data
             else None
         )
 
+        trajectory_task = (
+            str(np.asarray(traj_data["task_id"]).item())
+            if "task_id" in traj_data
+            else None
+        )
+        is_barrel_roll = (
+            self.expected_quadruped_task == "go2_barrel_roll"
+            or trajectory_task == "go2_barrel_roll"
+        )
+        if is_barrel_roll:
+            measured_roll_ctrl = np.asarray(traj_data["measured_roll_physics"], dtype=np.float64)[4::4]
+            contacts_ctrl = np.asarray(traj_data["foot_contacts"], dtype=bool)[3::4]
+            stable_ctrl = np.asarray(traj_data["stable_contact_streak"], dtype=np.int64)
+            phase_ctrl = np.asarray(traj_data["phase_ctrl"], dtype=np.float64)
+            desired_roll_ctrl = np.asarray(traj_data["desired_roll_ctrl"], dtype=np.float64)
+            classifier_ctrl = np.asarray(traj_data["classifier_result"], dtype=bool)
+            action_clip_ctrl = np.mean(
+                np.asarray(traj_data["action_clipped"], dtype=bool), axis=1
+            )
+            torque_sat_ctrl = np.mean(
+                np.asarray(traj_data["applied_saturation_by_actuator"], dtype=bool)
+                .reshape(12, policy_obs.shape[0], -1),
+                axis=(0, 2),
+            )
+            success = bool(np.asarray(traj_data["success"]).item())
+            failure_reason = str(np.asarray(traj_data["failure_reason"]).item()) or None
+
         transitions_added = 0
         for step in range(policy_obs.shape[0]):
             info = {}
             if commands_ctrl is not None:
                 info["commands"] = commands_ctrl[step].copy()
+            if is_barrel_roll:
+                done = bool(terminated_ctrl[step] or truncated_ctrl[step])
+                info.update(
+                    {
+                        "task_id": "go2_barrel_roll",
+                        "phase": float(phase_ctrl[step]),
+                        "desired_roll": float(desired_roll_ctrl[step]),
+                        "roll_progress": float(measured_roll_ctrl[step]),
+                        "roll_error": float(desired_roll_ctrl[step] - measured_roll_ctrl[step]),
+                        "contact_state": contacts_ctrl[step].copy(),
+                        "stability_count": int(stable_ctrl[step]),
+                        "is_success": bool(success and classifier_ctrl[step] and done),
+                        "failure_reason": failure_reason if done else None,
+                        "action_clip_fraction": float(action_clip_ctrl[step]),
+                        "torque_saturation_fraction": float(torque_sat_ctrl[step]),
+                    }
+                )
 
             transitions_committed = self._queue_quadruped_transition(
                 obs={
@@ -786,6 +904,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 reward=float(rewards[step]),
                 terminated=bool(terminated_ctrl[step]),
                 info=info,
+                truncated=bool(truncated_ctrl[step]),
             )
             transitions_added += transitions_committed
 
@@ -799,7 +918,7 @@ class PercentMPCInjectCallback(BaseCallback):
                         )
                     break
 
-            if terminated_ctrl[step]:
+            if terminated_ctrl[step] or truncated_ctrl[step]:
                 break
 
         return transitions_added
@@ -1188,9 +1307,21 @@ class PercentMPCInjectCallback(BaseCallback):
                 for retry in range(max_retries):
                     try:
                         selected_file = self._select_trajectory_file()
-                        
-                        # Load the MPC trajectory data
-                        traj_data = np.load(selected_file, allow_pickle=True)
+
+                        if (
+                            self.expected_quadruped_task is not None
+                            or self.expected_quadruped_schema_version is not None
+                        ):
+                            self._validate_expected_quadruped_file(selected_file)
+
+                        # Strict task datasets must remain pickle-free.  Legacy
+                        # datasets retain their existing loading behavior.
+                        allow_pickle = not (
+                            self.expected_quadruped_task is not None
+                            or self.expected_quadruped_schema_version is not None
+                        )
+                        with np.load(selected_file, allow_pickle=allow_pickle) as loaded:
+                            traj_data = {key: loaded[key] for key in loaded.files}
                         if is_quadruped:
                             self._maybe_warn_sysid_mismatch(traj_data)
                         qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
@@ -1216,6 +1347,15 @@ class PercentMPCInjectCallback(BaseCallback):
                                     f"{missing}"
                                 )
                             quadruped_has_direct_transitions = False
+
+                        if (
+                            self.expected_quadruped_task == "go2_barrel_roll"
+                            and not quadruped_has_direct_transitions
+                        ):
+                            raise ValueError(
+                                f"barrel-roll trajectory {selected_file} does not contain "
+                                "the required direct-transition schema"
+                            )
 
                         if is_quadruped:
                             traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)

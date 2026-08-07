@@ -122,6 +122,34 @@ Test a trained quadruped model locally with:
 python mpc_rl/play_quad.py --model=logs/quadruped-velocity_tracking-*-*-*
 ```
 
+The gated Go2 barrel-roll route uses `quadruped-barrel_roll`. It is SAC-MPC
+only and requires schema-v1 direct replay at 25%, Go2, disabled domain
+randomization, enabled Go2 sysID, and the task's fixed 70-step horizon. The
+current checked workspace contains only the G4 smoke dataset; do not start the
+G6 pilot or generate a larger dataset until that gate is authorized. A
+non-training routing/configuration check is:
+
+```bash
+python mpc_rl/train.py \
+    --env_name=quadruped-barrel_roll \
+    --robot=go2 \
+    --algorithm=SAC-MPC \
+    --total_timesteps=0 \
+    --num_envs=1 \
+    --enable_logging=False \
+    --inject_type=percentage \
+    --percentage=25 \
+    --quadruped_mpc_replay_mode=direct \
+    --data_dir=data/go2_barrel_roll/v1_g4_smoke \
+    --domain_rand=False \
+    --domain_rand_config_type=disabled \
+    --use_go2_sysid=True
+```
+
+Barrel-roll checkpoints are selected by success rate over the reserved fixed
+seeds `1000000` through `1000099`. Barrel videos are seed-labelled and do not
+set or display velocity commands.
+
 ## Deploy
 
 See `deploy/README.md` for Go2 ONNX export, simulation testing, C++ build, and real-robot deployment instructions.

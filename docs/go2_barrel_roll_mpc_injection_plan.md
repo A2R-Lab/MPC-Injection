@@ -709,7 +709,7 @@ The ignored smoke artifacts are under `data/go2_barrel_roll/v1_g4_smoke/`:
   rejections, and effective-config SHA-256
   `b94f928e5f9d090ef458b7c8cb2949531040645e07a2318554f6d08967036a94`.
 
-G5 remains unstarted and requires separate authorization.
+G5 was subsequently authorized and completed as recorded under its gate below.
 
 Proposed files:
 
@@ -775,6 +775,37 @@ Gate: all 10 smoke files validate, intentional corruptions fail, and schema
 metadata distinguishes this dataset from velocity-tracking direct files.
 
 ### Gate G5: harden direct injection and training routing
+
+**Status (2026-08-06): complete.** `PercentMPCInjectCallback` now sorts its
+file set, validates every schema-v1 barrel archive before queuing data, loads
+strict task files without pickle, and refuses torque/legacy fallback for
+`go2_barrel_roll`. Direct replay preserves distinct transitions across vector
+slots, `source=1`, terminal success/failure metadata, and SB3 timeout semantics.
+The gate test preloads 210 RL transitions, injects all 70 saved barrel tuples
+across two vector slots, verifies bit-exact policy/privileged/done values and
+exact actions/rewards after SB3's standard float32 replay conversion, and
+reaches exactly 25% MPC composition without entering velocity torque replay.
+
+Training now preserves `velocity_tracking` as the default, routes only
+`barrel_roll` to `QuadrupedBarrelRoll-v0`, and rejects unknown tasks or barrel
+options that violate Go2/SAC-MPC/direct-25%/no-DR/sysID requirements. The dry
+routing command constructed the 45D actor, 4D privileged observation, 12D
+action, and 61D critic input without taking a training step. `config.json`
+contains the frozen task/schema/direction, schedule, reset, reward, success,
+timing, action/LPF/PD, data, DR, sysID, and evaluation contracts.
+
+Barrel evaluation uses the reserved seeds `1000000` through `1000099` and
+selects the best model strictly on success-rate improvement; mean reward is
+diagnostic only. Videos are seed-labelled and do not set velocity commands.
+TensorBoard logging covers phase/progress/error, all three reward components,
+contact/stability, terminal outcome and failure reason, clipping/saturation,
+and actual MPC percentage.
+
+The required combined suite reports `129 passed, 3 failed, 1 skipped`; the
+three failures are exactly the recorded G0/G4 baseline failures. A focused G5
+run excluding only the known stale 512-layer assertion reports `46 passed, 1
+deselected`. Root and MPX `git diff --check` pass. No G6 data generation or
+training was run.
 
 Likely files:
 

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 import warnings
 import subprocess
+from collections import Counter
 
 # Configure JAX for GPU with compatible architecture settings
 # Try to detect GPU first
@@ -49,7 +50,7 @@ from sbx import SAC, PPO, TD3
 # SBX (JAX) is used for other environments for speed; SB3 is used for quadruped because
 # asymmetric actor-critic requires custom PyTorch feature extractors.
 from stable_baselines3 import SAC as SB3_SAC, TD3 as SB3_TD3
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, sync_envs_normalization
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 import numpy as np
@@ -89,6 +90,13 @@ import mpc_rl.envs
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.envs.cheetah3_env import DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL
+from mpc_rl.envs.barrel_roll_common import (
+    CONTROL_STEPS as BARREL_ROLL_CONTROL_STEPS,
+    SCHEMA_VERSION as BARREL_ROLL_SCHEMA_VERSION,
+    SPREAD_RANGE as BARREL_ROLL_SPREAD_RANGE,
+    TASK_ID as BARREL_ROLL_TASK_ID,
+)
+from mpc_rl.planner.barrel_roll_dataset import expected_effective_config
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -266,6 +274,13 @@ _DOMAIN_RAND_OBS_NOISE = flags.DEFINE_float(
 )
 
 
+# Reserved evaluation seeds are intentionally far outside the commissioned and
+# planned generation ranges (0+, 100_000+, 200_000+, and 300_000+).  Dataset
+# generation must continue to treat this range as reserved.
+BARREL_ROLL_EVAL_SEEDS = tuple(range(1_000_000, 1_000_100))
+_QUADRUPED_TASKS = ("velocity_tracking", "barrel_roll")
+
+
 @dataclass
 class AllConfig:
     algorithm: str
@@ -288,6 +303,84 @@ class AllConfig:
     quadruped_mpc_replay_mode: str
     use_go2_sysid: bool
     cheetah3_speed_goal: float
+
+
+def validate_quadruped_task(task: str) -> str:
+    """Return a supported quadruped task or fail instead of misrouting it."""
+    if task not in _QUADRUPED_TASKS:
+        valid = ", ".join(_QUADRUPED_TASKS)
+        raise ValueError(f"Unknown quadruped task {task!r}; expected one of: {valid}")
+    return task
+
+
+def validate_barrel_roll_training_options(
+    *,
+    robot: str,
+    algorithm: str,
+    inject_type: str,
+    percentage: int,
+    replay_mode: str,
+    domain_rand_enabled: bool,
+    domain_rand_config_type: str,
+    use_go2_sysid: bool,
+    data_dir: str | None,
+) -> None:
+    """Reject options that would silently violate the frozen barrel task."""
+    incompatible = []
+    if robot.lower() != "go2":
+        incompatible.append("robot must be 'go2'")
+    if algorithm != "SAC-MPC":
+        incompatible.append("algorithm must be 'SAC-MPC'")
+    if inject_type != "percentage":
+        incompatible.append("inject_type must be 'percentage'")
+    if percentage != 25:
+        incompatible.append("percentage must be 25")
+    if replay_mode != "direct":
+        incompatible.append("quadruped_mpc_replay_mode must be 'direct'")
+    if domain_rand_enabled or domain_rand_config_type != "disabled":
+        incompatible.append("domain randomization must be disabled")
+    if not use_go2_sysid:
+        incompatible.append("use_go2_sysid must be enabled")
+    if not data_dir:
+        incompatible.append("data_dir must point to validated schema-v1 barrel data")
+    if incompatible:
+        raise ValueError("Incompatible barrel-roll options: " + "; ".join(incompatible))
+
+
+def barrel_roll_config_snapshot(data_dir: str, target_percentage: int) -> dict:
+    """Return the complete frozen task/data/evaluation provenance for config.json."""
+    frozen = expected_effective_config()
+    return {
+        **frozen,
+        "reset": {
+            "sampler": "symmetric_hip_spread",
+            "spread_range_rad": list(BARREL_ROLL_SPREAD_RANGE),
+        },
+        "dataset": {
+            "path": str(Path(data_dir)),
+            "replay_mode": "direct",
+            "schema_version": BARREL_ROLL_SCHEMA_VERSION,
+            "target_mpc_percentage": target_percentage,
+        },
+        "evaluation": {
+            "checkpoint_metric": "success_rate",
+            "num_episodes": len(BARREL_ROLL_EVAL_SEEDS),
+            "seeds": list(BARREL_ROLL_EVAL_SEEDS),
+        },
+    }
+
+
+def quadruped_video_filename(
+    *, task: str, episode: int, episode_seed: int | None, velocity: float | None
+) -> str:
+    """Return a task-aware quadruped rollout filename."""
+    if task == "barrel_roll":
+        if episode_seed is None:
+            raise ValueError("barrel-roll videos require an evaluation seed")
+        return f"rollout{episode}_seed{episode_seed}.mp4"
+    if velocity is not None:
+        return f"rollout{episode}_vx{velocity:.1f}.mp4"
+    return f"rollout{episode}.mp4"
 
 
 def parse_env_name(env_name: str) -> tuple[str, str]:
@@ -429,6 +522,96 @@ class ExactTimestepCheckpointCallback(BaseCallback):
         return True
 
 
+def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -> dict:
+    """Evaluate one episode for every fixed held-out seed."""
+    episode_rewards = []
+    successes = []
+    failure_reasons = Counter()
+
+    for seed in seeds:
+        eval_env.seed(int(seed))
+        obs = eval_env.reset()
+        done = np.array([False])
+        episode_reward = 0.0
+        terminal_info = None
+        while not bool(done[0]):
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, infos = eval_env.step(action)
+            episode_reward += float(reward[0])
+            if bool(done[0]):
+                terminal_info = infos[0]
+
+        if not isinstance(terminal_info, dict) or "is_success" not in terminal_info:
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} did not return terminal is_success"
+            )
+        success = bool(terminal_info["is_success"])
+        successes.append(success)
+        episode_rewards.append(episode_reward)
+        if not success:
+            reason = terminal_info.get("failure_reason") or "unknown"
+            failure_reasons[str(reason)] += 1
+
+    return {
+        "success_rate": float(np.mean(successes)),
+        "mean_reward": float(np.mean(episode_rewards)),
+        "episode_rewards": episode_rewards,
+        "failure_reasons": dict(failure_reasons),
+        "seeds": list(seeds),
+    }
+
+
+class BarrelRollEvalCallback(BaseCallback):
+    """Checkpoint barrel policies using fixed-seed success rate."""
+
+    def __init__(
+        self,
+        eval_env,
+        *,
+        eval_freq: int,
+        best_model_save_path: Path,
+        seeds=BARREL_ROLL_EVAL_SEEDS,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        if eval_freq <= 0:
+            raise ValueError("eval_freq must be positive")
+        if len(seeds) != 100 or len(set(seeds)) != 100:
+            raise ValueError("barrel-roll evaluation requires 100 unique held-out seeds")
+        self.eval_env = eval_env
+        self.eval_freq = int(eval_freq)
+        self.best_model_save_path = Path(best_model_save_path)
+        self.seeds = tuple(int(seed) for seed in seeds)
+        self.best_success_rate = -np.inf
+        self.last_result = None
+
+    def _init_callback(self) -> None:
+        self.best_model_save_path.mkdir(parents=True, exist_ok=True)
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.eval_freq != 0:
+            return True
+
+        sync_envs_normalization(self.training_env, self.eval_env)
+        result = evaluate_barrel_roll_policy(self.model, self.eval_env, self.seeds)
+        self.last_result = result
+        self.logger.record("eval/barrel_roll_success_rate", result["success_rate"])
+        self.logger.record("eval/mean_reward", result["mean_reward"])
+        for reason, count in result["failure_reasons"].items():
+            safe_reason = reason.replace(":", "_").replace("/", "_")
+            self.logger.record(f"eval/failure_reason/{safe_reason}", float(count))
+
+        # Mean reward is diagnostic only.  A model becomes best strictly when
+        # held-out success rate improves.
+        if result["success_rate"] > self.best_success_rate:
+            self.best_success_rate = result["success_rate"]
+            self.model.save(self.best_model_save_path / "best_model")
+            vec_normalize = self.model.get_vec_normalize_env()
+            if vec_normalize is not None:
+                vec_normalize.save(self.best_model_save_path / "vec_normalize.pkl")
+        return True
+
+
 def is_shadow_hand_env(env_name: str) -> bool:
     """
     Check if the environment is a shadow hand environment.
@@ -508,13 +691,14 @@ def make_cheetah3_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPE
 
 def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None,
                        simple_reward: bool = False,
-                       use_go2_sysid: bool = True):
+                       use_go2_sysid: bool = True,
+                       task: str = "velocity_tracking"):
     """
-    Create a quadruped velocity tracking gymnasium environment.
+    Create a supported quadruped gymnasium environment.
     
     Returns a Dict observation space for asymmetric actor-critic training:
         "policy" (45-dim): Real-hardware-available sensor observations (actor)
-        "privileged" (3-dim): Simulation-only ground truth base_lin_vel (critic)
+        "privileged": Simulation-only critic input (3D velocity tracking, 4D barrel roll)
     
     No FlattenObservation wrapper is applied since Dict obs is required
     for the asymmetric policy architecture.
@@ -527,10 +711,29 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
             Used when training with MPC injection (SAC-MPC/TD3-MPC).
         use_go2_sysid: If True, apply the identified Go2 joint dynamics.
             Ignored for non-Go2 robots.
+        task: `velocity_tracking` (default) or `barrel_roll`.
     
     Returns:
-        QuadrupedVelocityTracking gymnasium environment with Dict obs space
+        Task-specific quadruped gymnasium environment with Dict obs space
     """
+    task = validate_quadruped_task(task)
+    if task == "barrel_roll":
+        if robot.lower() != "go2":
+            raise ValueError("barrel-roll requires robot='go2'")
+        if not use_go2_sysid:
+            raise ValueError("barrel-roll requires use_go2_sysid=True")
+        if domain_rand_cfg is not None and domain_rand_cfg.enable:
+            raise ValueError("barrel-roll requires disabled domain randomization")
+        if simple_reward:
+            raise ValueError("barrel-roll requires its frozen task-specific reward")
+        return gym.make(
+            "QuadrupedBarrelRoll-v0",
+            robot="go2",
+            render_mode=render_mode,
+            domain_rand_cfg=DomainRandomizationConfig.disabled(),
+            use_go2_sysid=True,
+        )
+
     kwargs = dict(
         robot=robot,
         render_mode=render_mode,
@@ -622,6 +825,7 @@ def make_single_env_for_model_loading(domain: str, task: str,
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                task=task,
             )
         ])
     if is_cheetah3:
@@ -695,7 +899,8 @@ def create_model(env, cfg, is_quadruped: bool = False):
     """
     if is_quadruped:
         # Quadruped: use SB3 PyTorch with asymmetric actor-critic policies
-        # Actor sees only "policy" obs (45-dim), critic sees "policy"+"privileged" (48-dim)
+        # Actor sees only the 45D policy vector. The critic dimensions are
+        # derived from the task space (48D state for velocity, 49D for barrel).
         if cfg.algorithm == "SAC":
             model = SB3_SAC(
                 AsymmetricSACPolicy,
@@ -886,7 +1091,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
 
     # Add rollout Tensorboard callback for quadruped off-policy training.
     if is_quadruped and cfg.algorithm in ["SAC", "TD3", "SAC-MPC", "TD3-MPC"]:
-        callbacks.append(QuadrupedTensorboardCallback(log_freq=100))
+        callbacks.append(QuadrupedTensorboardCallback(log_freq=100, task=task))
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
@@ -914,7 +1119,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             eval_env = make_vec_env(
                 lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval,
                                           simple_reward=_sr_eval,
-                                          use_go2_sysid=use_go2_sysid),
+                                          use_go2_sysid=use_go2_sysid,
+                                          task=task),
                 n_envs=1,
                 seed=seed+1000,
             )
@@ -949,20 +1155,28 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         
         # Create callback for evaluating the trained model
         # EvalCallback's eval_freq is also per training step, so divide by num_envs
-        eval_callback = EvalCallback(
-            eval_env,
-            best_model_save_path=str(logdir / "best_model"),
-            log_path=str(logdir / "eval_logs"),
-            eval_freq=eval_freq // num_envs,
-            deterministic=True,
-            render=False,
-            n_eval_episodes=5,
-        )
+        if is_quadruped and task == "barrel_roll":
+            eval_callback = BarrelRollEvalCallback(
+                eval_env,
+                eval_freq=max(eval_freq // num_envs, 1),
+                best_model_save_path=logdir / "best_model",
+                seeds=BARREL_ROLL_EVAL_SEEDS,
+            )
+        else:
+            eval_callback = EvalCallback(
+                eval_env,
+                best_model_save_path=str(logdir / "best_model"),
+                log_path=str(logdir / "eval_logs"),
+                eval_freq=max(eval_freq // num_envs, 1),
+                deterministic=True,
+                render=False,
+                n_eval_episodes=5,
+            )
         callbacks.append(eval_callback)
     
     # Add MPC injection callback if using SAC-MPC or TD3-MPC
     if cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
-        if _INJECT_TYPE.value == "fixed":
+        if cfg.inject_type == "fixed":
             print("\nSetting up FIXED MPC Injection from pre-generated trajectories...")
             inject_callback = FixedMPCInjectCallback(
                 domain=domain,
@@ -975,7 +1189,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
             )
-        elif _INJECT_TYPE.value == "percentage":
+        elif cfg.inject_type == "percentage":
             print("\nSetting up PERCENTAGE MPC Injection from pre-generated trajectories...")
             inject_callback = PercentMPCInjectCallback(
                 domain=domain,
@@ -988,6 +1202,16 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 use_go2_sysid=use_go2_sysid,
                 expected_dr_config_type=(
                     domain_rand_config_type if is_quadruped else None
+                ),
+                expected_quadruped_task=(
+                    BARREL_ROLL_TASK_ID
+                    if is_quadruped and task == "barrel_roll"
+                    else None
+                ),
+                expected_quadruped_schema_version=(
+                    BARREL_ROLL_SCHEMA_VERSION
+                    if is_quadruped and task == "barrel_roll"
+                    else None
                 ),
                 quadruped_mpc_replay_mode=cfg.quadruped_mpc_replay_mode,
                 cheetah3_speed_goal=cheetah3_speed_goal,
@@ -1028,6 +1252,8 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     
     episode_rewards = []
     episode_lengths = []
+    episode_successes = []
+    failure_reasons = Counter()
     
     # Determine environment type
     is_shadow_hand = (domain == "shadow_hand")
@@ -1035,6 +1261,9 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     # For quadruped evaluation, use fixed x-velocity commands for the recorded videos
     # to systematically test the policy at different speeds
     quadruped_eval_velocities = [0.0, 0.5, 1.0]  # vx for each video
+    is_barrel_roll = is_quadruped and task == "barrel_roll"
+    if is_barrel_roll:
+        num_episodes = len(BARREL_ROLL_EVAL_SEEDS)
     
     for episode in range(num_episodes):
         # Create evaluation environment with rgb_array render mode for video recording
@@ -1044,6 +1273,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                task=task,
             )
         elif is_cheetah3:
             eval_env_base = make_cheetah3_env(
@@ -1059,10 +1289,15 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         eval_env = DummyVecEnv([lambda: eval_env_base])
         
         # Seed the environment for reproducibility (different seed per episode)
-        if seed is not None:
-            eval_env.seed(seed + 2000 + episode)
-            eval_env.action_space.seed(seed + 2000 + episode)
-            eval_env.observation_space.seed(seed + 2000 + episode)
+        episode_seed = (
+            BARREL_ROLL_EVAL_SEEDS[episode]
+            if is_barrel_roll
+            else (seed + 2000 + episode if seed is not None else None)
+        )
+        if episode_seed is not None:
+            eval_env.seed(episode_seed)
+            eval_env.action_space.seed(episode_seed)
+            eval_env.observation_space.seed(episode_seed)
         
         # Apply normalization if available
         if normalize_env is not None:
@@ -1077,7 +1312,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         # For quadruped video episodes, set fixed velocity commands
         # so each video tests a specific speed
-        if is_quadruped and episode < len(quadruped_eval_velocities):
+        if is_quadruped and not is_barrel_roll and episode < len(quadruped_eval_velocities):
             vx = quadruped_eval_velocities[episode]
             # Unwrap through TimeLimit to reach QuadrupedVelocityTrackingEnv
             eval_env_base.unwrapped.set_commands(vx=vx, vy=0.0, wz=0.0)
@@ -1126,6 +1361,12 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
+        if is_barrel_roll:
+            terminal_info = info[0]
+            success = bool(terminal_info.get("is_success", False))
+            episode_successes.append(success)
+            if not success:
+                failure_reasons[str(terminal_info.get("failure_reason") or "unknown")] += 1
         
         print(f"Episode {episode + 1}/{num_episodes}: "
               f"Reward = {episode_reward:.2f}, Length = {episode_length}")
@@ -1133,9 +1374,21 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         # Save video
         if record_video and frames:
             # Include velocity in filename for quadruped
-            if is_quadruped and episode < len(quadruped_eval_velocities):
+            if is_barrel_roll:
+                video_path = video_dir / quadruped_video_filename(
+                    task=task,
+                    episode=episode,
+                    episode_seed=episode_seed,
+                    velocity=None,
+                )
+            elif is_quadruped and episode < len(quadruped_eval_velocities):
                 vx = quadruped_eval_velocities[episode]
-                video_path = video_dir / f"rollout{episode}_vx{vx:.1f}.mp4"
+                video_path = video_dir / quadruped_video_filename(
+                    task=task,
+                    episode=episode,
+                    episode_seed=episode_seed,
+                    velocity=vx,
+                )
             else:
                 video_path = video_dir / f"rollout{episode}.mp4"
             # Use 50 FPS for quadruped (matches control frequency), 30 FPS for others
@@ -1152,6 +1405,9 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     print(f"Min reward: {np.min(episode_rewards):.2f}")
     print(f"Max reward: {np.max(episode_rewards):.2f}")
     print(f"Mean length: {np.mean(episode_lengths):.1f}")
+    if is_barrel_roll:
+        print(f"Success rate: {np.mean(episode_successes):.1%} over {len(episode_successes)} held-out seeds")
+        print(f"Failure reasons: {dict(failure_reasons)}")
     print("="*50)
 
 
@@ -1295,8 +1551,8 @@ def main(argv):
     
     # Parse environment name
     if is_quadruped:
-        # Quadruped velocity tracking environment
         domain, task = parse_env_name(_ENV_NAME.value)
+        task = validate_quadruped_task(task)
         env_name = _ENV_NAME.value
         print(f"Environment: Quadruped ({_ROBOT.value}) / {task}")
     elif is_cheetah3:
@@ -1320,6 +1576,27 @@ def main(argv):
         domain, task = parse_env_name(_ENV_NAME.value)
         env_name = _ENV_NAME.value
         print(f"Environment: {domain}/{task}")
+
+    is_barrel_roll = is_quadruped and task == "barrel_roll"
+    if is_barrel_roll:
+        validate_barrel_roll_training_options(
+            robot=_ROBOT.value,
+            algorithm=_ALGORITHM.value,
+            inject_type=_INJECT_TYPE.value,
+            percentage=_PERCENTAGE.value,
+            replay_mode=_QUADRUPED_MPC_REPLAY_MODE.value,
+            domain_rand_enabled=_DOMAIN_RAND.value,
+            domain_rand_config_type=_DOMAIN_RAND_CONFIG_TYPE.value,
+            use_go2_sysid=_USE_GO2_SYSID.value,
+            data_dir=_DATA_DIR.value,
+        )
+        if (
+            flags.FLAGS["max_episode_steps"].present
+            and _MAX_EPISODE_STEPS.value != BARREL_ROLL_CONTROL_STEPS
+        ):
+            raise ValueError(
+                f"barrel-roll requires max_episode_steps={BARREL_ROLL_CONTROL_STEPS}"
+            )
 
     checkpoint_eval_steps = parse_checkpoint_eval_steps(_CHECKPOINT_EVALS.value)
     if checkpoint_eval_steps:
@@ -1432,10 +1709,19 @@ def main(argv):
                 "legacy_obs_noise_level": _DOMAIN_RAND_OBS_NOISE.value,
                 "resolved_config": dr_cfg.to_dict(),
             }
+        if is_barrel_roll:
+            config_dict["barrel_roll"] = barrel_roll_config_snapshot(
+                _DATA_DIR.value,
+                _PERCENTAGE.value,
+            )
         save_config(logdir, config_dict)
 
     # Use simplified reward for quadruped environments when training with MPC injection
-    use_simple_reward = is_quadruped and _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"]
+    use_simple_reward = (
+        is_quadruped
+        and not is_barrel_roll
+        and _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"]
+    )
     if use_simple_reward:
         print("Using simplified reward function (velocity tracking + termination only)")
 
@@ -1448,7 +1734,8 @@ def main(argv):
         vec_env = make_vec_env(
             lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr,
                                       simple_reward=_sr,
-                                      use_go2_sysid=_USE_GO2_SYSID.value),
+                                      use_go2_sysid=_USE_GO2_SYSID.value,
+                                      task=task),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )

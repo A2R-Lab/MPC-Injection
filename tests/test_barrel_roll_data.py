@@ -6,9 +6,11 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
 from mpc_rl.envs.barrel_roll_common import (
@@ -50,6 +52,8 @@ from mpc_rl.planner.barrel_roll_dataset import (
     sha256_file,
     validate_barrel_roll_file,
 )
+from mpc_rl.common.mpc_inject_callbacks import PercentMPCInjectCallback
+from mpc_rl.common.tagged_dict_replay_buffer import TaggedDictReplayBuffer
 
 _INTEGRITY_SPEC = importlib.util.spec_from_file_location(
     "check_data_integrity",
@@ -218,6 +222,38 @@ def _valid_arrays(seed: int = 0) -> dict[str, np.ndarray]:
 def _write_valid(path: Path, seed: int = 0) -> Path:
     np.savez_compressed(path, **_valid_arrays(seed))
     return path
+
+
+class _DummyLogger:
+    def record(self, *args, **kwargs):
+        del args, kwargs
+
+
+class _DummyCallbackModel:
+    def __init__(self, replay_buffer, num_envs):
+        self.replay_buffer = replay_buffer
+        self._env = SimpleNamespace(num_envs=num_envs)
+        self.logger = _DummyLogger()
+
+    def get_env(self):
+        return self._env
+
+
+def _barrel_replay_buffer(*, n_envs: int, buffer_size: int = 512):
+    return TaggedDictReplayBuffer(
+        buffer_size=buffer_size,
+        observation_space=spaces.Dict(
+            {
+                "policy": spaces.Box(-np.inf, np.inf, shape=(45,), dtype=np.float64),
+                "privileged": spaces.Box(-np.inf, np.inf, shape=(4,), dtype=np.float64),
+            }
+        ),
+        action_space=spaces.Box(-1.0, 1.0, shape=(12,), dtype=np.float64),
+        device="cpu",
+        n_envs=n_envs,
+        optimize_memory_usage=False,
+        handle_timeout_termination=True,
+    )
 
 
 def test_valid_schema_loads_without_pickle_and_reports_saturation(tmp_path):
@@ -395,3 +431,190 @@ def test_aggregate_writes_manifest_checksums_and_summary(tmp_path):
         tmp_path / "checksums.sha256"
     )
     assert len((tmp_path / "generation_manifest_aggregate.jsonl").read_text().splitlines()) == 2
+
+
+def test_barrel_injection_is_strict_sorted_direct_multi_env_and_exact_25_percent(
+    tmp_path, monkeypatch
+):
+    selected = _write_valid(
+        tmp_path / "b_go2_barrel_roll_v1_dir_pos_seed_000001_ep_070.npz",
+        seed=1,
+    )
+    first = _write_valid(
+        tmp_path / "a_go2_barrel_roll_v1_dir_pos_seed_000000_ep_070.npz",
+        seed=0,
+    )
+    callback = PercentMPCInjectCallback(
+        domain="quadruped",
+        task="barrel_roll",
+        target_percentage=25,
+        data_dir=str(tmp_path),
+        random_select=False,
+        trajectory_files=[selected.name],
+        expected_quadruped_task=TASK_ID,
+        expected_quadruped_schema_version=1,
+        quadruped_mpc_replay_mode="direct",
+        verbose=0,
+    )
+    assert callback.available_files == [first, selected]
+
+    replay_buffer = _barrel_replay_buffer(n_envs=2)
+    zero_obs = {
+        "policy": np.zeros((2, 45)),
+        "privileged": np.zeros((2, 4)),
+    }
+    for _ in range(105):
+        replay_buffer.add(
+            obs=zero_obs,
+            next_obs=zero_obs,
+            action=np.zeros((2, 12)),
+            reward=np.zeros(2),
+            done=np.zeros(2),
+            infos=[{}, {}],
+            source=0,
+        )
+
+    captured_infos = []
+    original_add = replay_buffer.add
+
+    def _capture_add(*args, **kwargs):
+        captured_infos.extend(kwargs["infos"])
+        return original_add(*args, **kwargs)
+
+    monkeypatch.setattr(replay_buffer, "add", _capture_add)
+    callback.init_callback(_DummyCallbackModel(replay_buffer, num_envs=2))
+    monkeypatch.setattr(
+        callback,
+        "_replay_quadruped_trajectory",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("barrel data must not construct or use velocity torque replay")
+        ),
+    )
+    callback._inject_mpc_trajectories()
+
+    assert replay_buffer.get_mpc_percentage() == pytest.approx(25.0)
+    assert replay_buffer.size() == 140
+    assert np.all(replay_buffer.transition_sources[105:140] == 1)
+    with np.load(selected, allow_pickle=False) as data:
+        injected_policy = replay_buffer.observations["policy"][105:140].reshape(70, 45)
+        injected_privileged = replay_buffer.observations["privileged"][105:140].reshape(70, 4)
+        injected_actions = replay_buffer.actions[105:140].reshape(70, 12)
+        injected_rewards = replay_buffer.rewards[105:140].reshape(70)
+        injected_dones = replay_buffer.dones[105:140].reshape(70)
+        np.testing.assert_array_equal(injected_policy, data["policy_obs"])
+        np.testing.assert_array_equal(injected_privileged, data["privileged_obs"])
+        np.testing.assert_array_equal(injected_actions, data["actions"].astype(np.float32))
+        np.testing.assert_array_equal(injected_rewards, data["rewards"].astype(np.float32))
+        np.testing.assert_array_equal(injected_dones, data["terminated_ctrl"])
+    assert captured_infos[-1]["is_success"] is True
+    assert captured_infos[-1]["failure_reason"] is None
+    assert captured_infos[-1]["TimeLimit.truncated"] is False
+    assert replay_buffer.timeouts[139, 1] == 0.0
+
+
+def test_barrel_injection_rejects_any_malformed_file_without_fallback(tmp_path):
+    _write_valid(tmp_path / "go2_barrel_roll_v1_valid.npz")
+    malformed = _valid_arrays(seed=2)
+    malformed["actions"][0, 0] = 2.0
+    np.savez_compressed(tmp_path / "go2_barrel_roll_v1_malformed.npz", **malformed)
+
+    with pytest.raises(ValueError, match="invalid barrel-roll trajectory"):
+        PercentMPCInjectCallback(
+            domain="quadruped",
+            task="barrel_roll",
+            target_percentage=25,
+            data_dir=str(tmp_path),
+            expected_quadruped_task=TASK_ID,
+            expected_quadruped_schema_version=1,
+            quadruped_mpc_replay_mode="direct",
+            verbose=0,
+        )
+
+
+def test_barrel_task_rejects_explicit_torque_replay(tmp_path):
+    _write_valid(tmp_path / "go2_barrel_roll_v1_valid.npz")
+    with pytest.raises(ValueError, match="requires direct replay"):
+        PercentMPCInjectCallback(
+            domain="quadruped",
+            task="barrel_roll",
+            data_dir=str(tmp_path),
+            quadruped_mpc_replay_mode="torque_saved_pd",
+            verbose=0,
+        )
+
+
+def test_direct_transition_timeout_sets_done_and_sb3_timeout_info():
+    callback = PercentMPCInjectCallback(
+        domain="quadruped",
+        task="velocity_tracking",
+        target_percentage=100,
+        verbose=0,
+    )
+    replay_buffer = _barrel_replay_buffer(n_envs=1)
+    captured_infos = []
+    original_add = replay_buffer.add
+
+    def _capture_add(*args, **kwargs):
+        captured_infos.extend(kwargs["infos"])
+        return original_add(*args, **kwargs)
+
+    replay_buffer.add = _capture_add
+    callback.init_callback(_DummyCallbackModel(replay_buffer, num_envs=1))
+    trajectory = {
+        "policy_obs": np.zeros((1, 45)),
+        "next_policy_obs": np.ones((1, 45)),
+        "privileged_obs": np.zeros((1, 4)),
+        "next_privileged_obs": np.ones((1, 4)),
+        "actions": np.zeros((1, 12)),
+        "rewards": np.ones(1),
+        "terminated_ctrl": np.zeros(1, dtype=bool),
+        "truncated_ctrl": np.ones(1, dtype=bool),
+    }
+    callback._inject_saved_quadruped_transitions(trajectory)
+
+    assert replay_buffer.dones[0, 0] == 1.0
+    assert replay_buffer.timeouts[0, 0] == 1.0
+    assert captured_infos[0]["TimeLimit.truncated"] is True
+
+
+def test_barrel_terminal_failure_is_preserved_in_done_info():
+    callback = PercentMPCInjectCallback(
+        domain="quadruped",
+        task="velocity_tracking",
+        target_percentage=25,
+        verbose=0,
+    )
+    replay_buffer = _barrel_replay_buffer(n_envs=1)
+    zero_obs = {
+        "policy": np.zeros((1, 45)),
+        "privileged": np.zeros((1, 4)),
+    }
+    for _ in range(210):
+        replay_buffer.add(
+            obs=zero_obs,
+            next_obs=zero_obs,
+            action=np.zeros((1, 12)),
+            reward=np.zeros(1),
+            done=np.zeros(1),
+            infos=[{}],
+            source=0,
+        )
+    captured_infos = []
+    original_add = replay_buffer.add
+
+    def _capture_add(*args, **kwargs):
+        captured_infos.extend(kwargs["infos"])
+        return original_add(*args, **kwargs)
+
+    replay_buffer.add = _capture_add
+    callback.init_callback(_DummyCallbackModel(replay_buffer, num_envs=1))
+    trajectory = _valid_arrays()
+    trajectory["success"] = np.asarray(False)
+    trajectory["failure_reason"] = np.asarray("incomplete_roll")
+    trajectory["classifier_result"][-1] = False
+    callback._inject_saved_quadruped_transitions(trajectory)
+
+    assert replay_buffer.dones[279, 0] == 1.0
+    assert captured_infos[-1]["is_success"] is False
+    assert captured_infos[-1]["failure_reason"] == "incomplete_roll"
+    assert captured_infos[-1]["TimeLimit.truncated"] is False
