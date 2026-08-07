@@ -1207,6 +1207,13 @@ earliest affected gate.
 
 ### Gate G8: production SAC-MPC training and evaluation
 
+**Status (2026-08-07): IN PROGRESS.** Production training seeds are
+predeclared as `1`, `2`, and `3` before any G8 policy result exists. The
+dedicated sequential runner records source/data provenance, refuses a dirty
+tracked worktree or an existing campaign directory, strictly revalidates the
+immutable G7 dataset, and stops on the first failed run. No production run had
+been launched when this schedule was frozen.
+
 Run three 500,000-step seeds at 25% MPC replay. Add a dedicated script such as
 `run_go2_barrel_roll_sac_mpc.sh` only after the final CLI is known; it should
 follow existing shell-script conventions and stop on the first failed run.
