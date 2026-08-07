@@ -231,6 +231,7 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         mpx_qdp_vertical_cost=4_000.0,
         mpx_qleg_vertical_cost=50_000.0,
         mpx_robot_height_m=0.24,
+        mpx_swing_clearance_speed_m_per_s=0.2,
         joint_kp={
             "hip_joint": 20.0,
             "thigh_joint": 30.0,
@@ -309,6 +310,12 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         manifest["generation_settings"]["controller"]["mpx_robot_height_m"]
         == 0.24
     )
+    assert (
+        manifest["generation_settings"]["controller"][
+            "mpx_swing_clearance_speed_m_per_s"
+        ]
+        == 0.2
+    )
     assert manifest["generation_settings"]["controller"]["environment_kp"] == [
         20.0,
         30.0,
@@ -333,6 +340,10 @@ def test_legacy_generator_defaults_remain_legacy():
     assert signature.parameters["mpx_qdp_vertical_cost"].default is None
     assert signature.parameters["mpx_qleg_vertical_cost"].default is None
     assert signature.parameters["mpx_robot_height_m"].default is None
+    assert (
+        signature.parameters["mpx_swing_clearance_speed_m_per_s"].default
+        is None
+    )
     assert signature.parameters["acceptance_declaration"].default is None
     assert signature.parameters["domain_rand_config_type"].default == (
         "sysid_dyn20_mjlab"

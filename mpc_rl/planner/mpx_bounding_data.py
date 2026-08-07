@@ -123,6 +123,7 @@ def make_commissioning_acceptance_declaration(
     mpx_qdp_vertical_cost: float | None = None,
     mpx_qleg_vertical_cost: float | None = None,
     mpx_robot_height_m: float | None = None,
+    mpx_swing_clearance_speed_m_per_s: float | None = None,
     acceptance_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return an explicitly unfrozen declaration for commissioning attempts."""
@@ -193,6 +194,11 @@ def make_commissioning_acceptance_declaration(
                 None
                 if mpx_robot_height_m is None
                 else float(mpx_robot_height_m)
+            ),
+            "mpx_swing_clearance_speed_m_per_s": (
+                None
+                if mpx_swing_clearance_speed_m_per_s is None
+                else float(mpx_swing_clearance_speed_m_per_s)
             ),
         },
         "acceptance": acceptance,
@@ -290,6 +296,7 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         "realized_environment_kd",
         "mpx_weight_matrix_sha256",
         "mpx_robot_height_m",
+        "mpx_swing_clearance_speed_m_per_s",
     }
     if set(controller) != expected_controller_keys:
         raise ValueError("acceptance declaration controller fields are incomplete")
@@ -356,6 +363,14 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
     ):
         raise ValueError(
             "controller mpx_robot_height_m must be null or positive"
+        )
+    swing_speed = controller["mpx_swing_clearance_speed_m_per_s"]
+    if swing_speed is not None and (
+        not np.isfinite(float(swing_speed)) or float(swing_speed) < 0.0
+    ):
+        raise ValueError(
+            "controller mpx_swing_clearance_speed_m_per_s must be null or "
+            "non-negative"
         )
     for key in ("max_pitch_rad", "max_roll_rad", "min_base_height_m"):
         value = float(controller[key])

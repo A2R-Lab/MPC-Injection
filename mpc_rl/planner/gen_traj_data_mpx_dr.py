@@ -373,6 +373,9 @@ def _controller_configuration_arrays(env, mpc) -> dict:
             np.asarray(controller_config.Qleg, dtype=np.float64)[2, 2]
         ),
         "controller_robot_height_m": float(mpc.robot_height),
+        "controller_swing_clearance_speed_m_per_s": float(
+            getattr(mpc, "clearence_speed", 0.4)
+        ),
         "environment_kp": np.asarray(env.kp, dtype=np.float64).copy(),
         "environment_kd": np.asarray(env.kd, dtype=np.float64).copy(),
         "environment_torque_limits": np.asarray(
@@ -714,6 +717,7 @@ def generate_trajectory(
     mpx_qdp_vertical_cost=None,
     mpx_qleg_vertical_cost=None,
     mpx_robot_height_m=None,
+    mpx_swing_clearance_speed_m_per_s=None,
     joint_kp=None,
     joint_kd=None,
     max_pitch=0.5,
@@ -815,6 +819,14 @@ def generate_trajectory(
                 ),
             )
             mpc.robot_height = controller_config.robot_height
+            if mpx_swing_clearance_speed_m_per_s is not None:
+                swing_speed = float(mpx_swing_clearance_speed_m_per_s)
+                if not np.isfinite(swing_speed) or swing_speed < 0.0:
+                    raise ValueError(
+                        "mpx_swing_clearance_speed_m_per_s must be finite "
+                        "and non-negative"
+                    )
+                mpc.clearence_speed = swing_speed
             if verbose > 0:
                 print(f"[Seed {seed}] Pre-compiling JAX MPC kernels...")
             dummy_input = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, config.robot_height])
@@ -1225,6 +1237,11 @@ def generate_trajectory(
                 "mpx_robot_height_m": controller_configuration[
                     "controller_robot_height_m"
                 ],
+                "mpx_swing_clearance_speed_m_per_s": (
+                    controller_configuration[
+                        "controller_swing_clearance_speed_m_per_s"
+                    ]
+                ),
                 "mpx_qrot_pitch_cost": controller_configuration[
                     "controller_qrot_pitch_cost"
                 ],
@@ -1689,6 +1706,7 @@ def gen_traj_quadruped_dr(
     mpx_qdp_vertical_cost=None,
     mpx_qleg_vertical_cost=None,
     mpx_robot_height_m=None,
+    mpx_swing_clearance_speed_m_per_s=None,
     joint_kp=None,
     joint_kd=None,
     max_pitch=0.5,
@@ -1766,6 +1784,9 @@ def gen_traj_quadruped_dr(
             "mpx_qleg_vertical_cost"
         ]
         mpx_robot_height_m = controller_declaration["mpx_robot_height_m"]
+        mpx_swing_clearance_speed_m_per_s = controller_declaration[
+            "mpx_swing_clearance_speed_m_per_s"
+        ]
         domain_rand_config_type = "disabled"
         use_go2_sysid = True
         action_interface_id = MPX_BOUND_ACTION_INTERFACE_ID
@@ -1923,6 +1944,14 @@ def gen_traj_quadruped_dr(
             enable_planned_contact_diagnostics=(fixed_command is not None),
         )
         shared_mpc.robot_height = controller_config.robot_height
+        if mpx_swing_clearance_speed_m_per_s is not None:
+            swing_speed = float(mpx_swing_clearance_speed_m_per_s)
+            if not np.isfinite(swing_speed) or swing_speed < 0.0:
+                raise ValueError(
+                    "mpx_swing_clearance_speed_m_per_s must be finite "
+                    "and non-negative"
+                )
+            shared_mpc.clearence_speed = swing_speed
         dummy_qpos = np.concatenate(
             [np.array(config.p0), np.array(config.quat0), np.array(config.q0)]
         )
@@ -1984,6 +2013,9 @@ def gen_traj_quadruped_dr(
             mpx_qdp_vertical_cost=mpx_qdp_vertical_cost,
             mpx_qleg_vertical_cost=mpx_qleg_vertical_cost,
             mpx_robot_height_m=mpx_robot_height_m,
+            mpx_swing_clearance_speed_m_per_s=(
+                mpx_swing_clearance_speed_m_per_s
+            ),
             joint_kp=joint_kp,
             joint_kd=joint_kd,
             max_pitch=max_pitch,
@@ -2120,6 +2152,9 @@ def gen_traj_quadruped_dr(
                     mpx_qdp_vertical_cost=mpx_qdp_vertical_cost,
                     mpx_qleg_vertical_cost=mpx_qleg_vertical_cost,
                     mpx_robot_height_m=mpx_robot_height_m,
+                    mpx_swing_clearance_speed_m_per_s=(
+                        mpx_swing_clearance_speed_m_per_s
+                    ),
                     joint_kp=joint_kp,
                     joint_kd=joint_kd,
                     max_pitch=max_pitch,
@@ -2204,6 +2239,9 @@ def gen_traj_quadruped_dr(
             "mpx_qdp_vertical_cost": mpx_qdp_vertical_cost,
             "mpx_qleg_vertical_cost": mpx_qleg_vertical_cost,
             "mpx_robot_height_m": mpx_robot_height_m,
+            "mpx_swing_clearance_speed_m_per_s": (
+                mpx_swing_clearance_speed_m_per_s
+            ),
             "stage": stage,
             "start_seed": int(start_seed),
         }
@@ -2361,6 +2399,12 @@ def main():
         type=float,
         default=None,
         help="Optional instance-local MPX body-height reference in meters",
+    )
+    parser.add_argument(
+        "--mpx-swing-clearance-speed-m-per-s",
+        type=float,
+        default=None,
+        help="Optional MPX horizontal swing-foot liftoff speed magnitude",
     )
     parser.add_argument(
         "--joint-kp",
@@ -2525,6 +2569,9 @@ def main():
             mpx_qdp_vertical_cost=args.mpx_qdp_vertical_cost,
             mpx_qleg_vertical_cost=args.mpx_qleg_vertical_cost,
             mpx_robot_height_m=args.mpx_robot_height_m,
+            mpx_swing_clearance_speed_m_per_s=(
+                args.mpx_swing_clearance_speed_m_per_s
+            ),
         )
 
     gen_traj_quadruped_dr(
@@ -2553,6 +2600,9 @@ def main():
         mpx_qdp_vertical_cost=args.mpx_qdp_vertical_cost,
         mpx_qleg_vertical_cost=args.mpx_qleg_vertical_cost,
         mpx_robot_height_m=args.mpx_robot_height_m,
+        mpx_swing_clearance_speed_m_per_s=(
+            args.mpx_swing_clearance_speed_m_per_s
+        ),
         joint_kp=joint_kp,
         joint_kd=joint_kd,
         max_pitch=args.max_pitch,
