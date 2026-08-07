@@ -15,9 +15,10 @@ project owner approved the established accepted-only generation policy for
 this gate: seeds advance sequentially, every failed attempt remains in a
 manifest, and only classifier-passing rollouts count toward the requested data
 total. G3 is accepted under that revised reproducibility policy, and G4 is
-complete with ten validated smoke files. No promoted production dataset or
-production policy exists. A schema-v2 100k pilot and its best checkpoint now
-exist as G6 recovery evidence; G7 production data generation has not started.
+complete with ten validated smoke files. The schema-v2 100k pilot and its best
+checkpoint provide the G6 recovery evidence. G7 passed on 2026-08-07 and
+promoted the immutable 1,000-file production dataset. No production policy
+exists, and G8 production training has not started.
 
 ## Implementation evidence (G0-G5 session)
 
