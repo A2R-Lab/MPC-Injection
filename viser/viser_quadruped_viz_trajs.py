@@ -678,7 +678,9 @@ class QuadrupedTrajVisualizer:
             return 0
         if "qpos_ctrl" in data.files:
             return int(data["qpos_ctrl"].shape[0])
-        return int(data["timesteps"])
+        if "timesteps" in data.files:
+            return int(data["timesteps"])
+        return int(self._qpos_ctrl(robot_idx=robot_idx).shape[0])
 
     def _qpos_ctrl(self, robot_idx: int = 1) -> np.ndarray:
         data = self._trajectory_data_for_robot(robot_idx)
