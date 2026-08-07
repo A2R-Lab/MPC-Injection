@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "report_type": "mpx_canonical_fixed_command_regression",
+  "recorded_at": "2026-08-07T16:48:04-04:00",
+  "status": "passed_diagnostic_only",
+  "passed": true,
+  "seed": 17,
+  "requested_control_steps": 150,
+  "completed_control_steps": 150,
+  "trajectory": {
+    "path": "data/quadruped_bound/nominal_vx0p5/commissioning/regression_vx0p1/quadruped_bound_bound_front_first_vx0p1_vy0_wz0_seed_000017_ep_150.npz",
+    "sha256": "27d169cf8844f9de5036431d10d9a7b2cde2da8a87fb9f7606203b6ef27e36b6",
+    "committed": false
+  },
+  "provenance": {
+    "root_commit": "63924115223a523a75fd45326b3b92cd39c3abd0",
+    "mpx_commit": "25f5f91d3050be3abeab83f13af48b352effe39f",
+    "primal_dual_ilqr_commit": "273d78dec439ed270af6f9cb8340af801fefd332"
+  },
+  "configuration": {
+    "domain_rand_config_type": "disabled",
+    "use_go2_sysid": true,
+    "target_command": [
+      0.1,
+      0.0,
+      0.0
+    ],
+    "command_ramp_control_steps": 0,
+    "action_interface_id": "mpx_bound_scale_1_no_lpf_v1",
+    "action_conversion_mode": "env_step_mpx_target_v1",
+    "gait": {
+      "name": "bound_front_first",
+      "duty_factor": 0.5,
+      "step_frequency_hz": 3.0,
+      "step_height_m": 0.03
+    }
+  },
+  "safety": {
+    "fell": false,
+    "failure_reason": "",
+    "termination_count": 0,
+    "truncation_count": 0,
+    "non_foot_ground_contact_substep_count": 0,
+    "solver_all_finite": true
+  },
+  "planned_contact": {
+    "schedule_shape": [
+      150,
+      26,
+      4
+    ],
+    "front_pair_agreement": 1.0,
+    "rear_pair_agreement": 1.0
+  },
+  "measured_contact_substeps": {
+    "front_pair_agreement": 0.975,
+    "rear_pair_agreement": 0.9716666666666667,
+    "front_only_fraction": 0.165,
+    "rear_only_fraction": 0.135,
+    "all_four_fraction": 0.645,
+    "flight_fraction": 0.0016666666666666668,
+    "diagonal_lateral_only_fraction": 0.0,
+    "paired_support_interval_count": 18,
+    "paired_interval_alternation_fraction": 0.8823529411764706,
+    "complete_front_rear_cycles": 7,
+    "contact_debounce_substeps": 2
+  },
+  "action_clipping": {
+    "element_count": 16,
+    "total_elements": 1800,
+    "element_fraction": 0.008888888888888889,
+    "max_abs_raw_action": 1.5254837274551392,
+    "max_clip_magnitude": 0.5254837274551392,
+    "saved_actions_in_range": true
+  },
+  "torque_saturation": {
+    "element_count": 35,
+    "total_elements": 7200,
+    "element_fraction": 0.004861111111111111,
+    "max_requested_torque_overshoot_nm": 4.668144168770819
+  },
+  "tracking": {
+    "forward_velocity_hold_substeps_m_per_s": {
+      "mean": 0.11070073225636357,
+      "signed_bias_from_command": 0.010700732256363574,
+      "mae": 0.20064642625169257,
+      "rmse": 0.23320154199890922,
+      "p05": -0.2258311883994756,
+      "p95": 0.4656182586015986
+    },
+    "control_rate_body_vx_m_per_s": {
+      "mean_pre_step": 0.10915137775001386,
+      "mean_post_step": 0.11124570834924107,
+      "min": -0.5626992355869223,
+      "max": 0.5866842264580261
+    },
+    "lateral_displacement_m": 0.002148965625621037,
+    "accumulated_yaw_drift_rad": 0.0011610315132346786,
+    "per_gait_cycle_mean_forward_velocity_m_per_s": [
+      0.10705931121974151,
+      0.16227204807864304,
+      0.16683847234497517,
+      0.1481360531392,
+      0.13635019532025536,
+      0.1356511898563462,
+      0.11488889166086279
+    ]
+  },
+  "posture": {
+    "min_base_height_m": 0.2057322881767344,
+    "max_abs_roll_rad": 0.024975798318771406,
+    "max_abs_pitch_rad": 0.0616352569683305
+  },
+  "full_saved_action_replay": {
+    "passed": true,
+    "replayed_control_steps": 150,
+    "forced_saved_initial_state": false,
+    "qpos_max_abs": 0.0,
+    "qvel_max_abs": 0.0,
+    "policy_observation_max_abs": 0.0,
+    "privileged_observation_max_abs": 0.0,
+    "reward_max_abs": 5.85554953413947e-08,
+    "reward_rms": 2.731695089905979e-08,
+    "applied_torque_max_abs": 0.0,
+    "push_delta_qvel_max_abs": 0.0,
+    "termination_mismatch_count": 0,
+    "truncation_mismatch_count": 0,
+    "foot_contact_mismatch_count": 0,
+    "non_foot_contact_mismatch_count": 0,
+    "torque_saturation_mismatch_fraction": 0.0,
+    "replay_action_clipping_fraction": 0.0
+  },
+  "comparison_to_bound_env_step_diagnostic_v1": {
+    "prior_report": "bound_env_step_diagnostic_v1.json",
+    "prior_completed_control_steps": 150,
+    "completion_and_safety_regressed": false,
+    "front_pair_agreement_delta": 0.013333333333333308,
+    "rear_pair_agreement_delta": -0.0016666666666667052,
+    "front_only_fraction_delta": -0.0050000000000000044,
+    "rear_only_fraction_delta": -0.024999999999999994,
+    "all_four_fraction_delta": 0.040000000000000036,
+    "clipped_element_fraction_delta": -0.002777777777777778,
+    "max_clip_magnitude_delta": -0.011940574645996094,
+    "torque_saturation_fraction_delta": -0.0016666666666666661,
+    "max_torque_overshoot_nm_delta": -1.237881256820338,
+    "min_base_height_delta_m": 0.007970140188791838,
+    "max_abs_roll_delta_rad": 0.0015161302397164266,
+    "max_abs_pitch_delta_rad": 0.001198726143950775,
+    "assessment": "No material plumbing regression. Completion and safety are unchanged; measured pair agreement remains high; clipping and torque saturation improved. All-four support increased by four percentage points, so this remains diagnostic-only and does not establish target-speed bounding acceptance."
+  },
+  "conclusion": "The canonical fixed-command path reproduces the known narrow 0.1 m/s candidate without a material regression and passes full saved-action replay. This run is excluded from the requested dataset and does not authorize multi-speed work, pilot generation, or training."
+}
