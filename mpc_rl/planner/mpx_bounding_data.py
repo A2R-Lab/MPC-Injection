@@ -123,6 +123,7 @@ def make_commissioning_acceptance_declaration(
     mpx_qdp_vertical_cost: float | None = None,
     mpx_qleg_vertical_cost: float | None = None,
     mpx_qtau_cost: float | None = None,
+    mpx_qq_cost: float | None = None,
     mpx_robot_height_m: float | None = None,
     mpx_swing_clearance_speed_m_per_s: float | None = None,
     acceptance_overrides: Mapping[str, Any] | None = None,
@@ -190,6 +191,9 @@ def make_commissioning_acceptance_declaration(
             ),
             "mpx_qtau_cost": (
                 None if mpx_qtau_cost is None else float(mpx_qtau_cost)
+            ),
+            "mpx_qq_cost": (
+                None if mpx_qq_cost is None else float(mpx_qq_cost)
             ),
             "realized_environment_kp": None,
             "realized_environment_kd": None,
@@ -297,6 +301,7 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         "mpx_qdp_vertical_cost",
         "mpx_qleg_vertical_cost",
         "mpx_qtau_cost",
+        "mpx_qq_cost",
         "realized_environment_kp",
         "realized_environment_kd",
         "mpx_weight_matrix_sha256",
@@ -367,6 +372,12 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         not np.isfinite(float(torque_cost)) or float(torque_cost) < 0.0
     ):
         raise ValueError("controller mpx_qtau_cost must be null or non-negative")
+    joint_position_cost = controller["mpx_qq_cost"]
+    if joint_position_cost is not None and (
+        not np.isfinite(float(joint_position_cost))
+        or float(joint_position_cost) < 0.0
+    ):
+        raise ValueError("controller mpx_qq_cost must be null or non-negative")
     robot_height = controller["mpx_robot_height_m"]
     if robot_height is not None and (
         not np.isfinite(float(robot_height)) or float(robot_height) <= 0.0
