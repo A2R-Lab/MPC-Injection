@@ -117,6 +117,7 @@ def make_commissioning_acceptance_declaration(
     max_pitch_rad: float = 0.5,
     max_roll_rad: float = 0.5,
     min_base_height_m: float = 0.1,
+    mpx_qrot_pitch_cost: float | None = None,
     acceptance_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return an explicitly unfrozen declaration for commissioning attempts."""
@@ -155,6 +156,11 @@ def make_commissioning_acceptance_declaration(
             "max_pitch_rad": float(max_pitch_rad),
             "max_roll_rad": float(max_roll_rad),
             "min_base_height_m": float(min_base_height_m),
+            "mpx_qrot_pitch_cost": (
+                None
+                if mpx_qrot_pitch_cost is None
+                else float(mpx_qrot_pitch_cost)
+            ),
             "realized_environment_kp": None,
             "realized_environment_kd": None,
             "mpx_weight_matrix_sha256": None,
@@ -246,6 +252,7 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         "max_pitch_rad",
         "max_roll_rad",
         "min_base_height_m",
+        "mpx_qrot_pitch_cost",
         "realized_environment_kp",
         "realized_environment_kd",
         "mpx_weight_matrix_sha256",
@@ -257,6 +264,13 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         value = controller[key]
         if value is not None and (not np.isfinite(float(value)) or float(value) < 0.0):
             raise ValueError(f"controller {key} must be null or non-negative")
+    pitch_cost = controller["mpx_qrot_pitch_cost"]
+    if pitch_cost is not None and (
+        not np.isfinite(float(pitch_cost)) or float(pitch_cost) < 0.0
+    ):
+        raise ValueError(
+            "controller mpx_qrot_pitch_cost must be null or non-negative"
+        )
     for key in ("max_pitch_rad", "max_roll_rad", "min_base_height_m"):
         value = float(controller[key])
         if not np.isfinite(value) or value < 0.0:

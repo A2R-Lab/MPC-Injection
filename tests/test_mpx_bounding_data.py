@@ -199,10 +199,12 @@ def test_batch_constructs_controller_with_requested_instance_gait(
     tmp_path, monkeypatch
 ):
     constructed = []
+    constructed_configs = []
 
     class CapturingMPC(RecordingBoundMPC):
         def __init__(self, *args, **kwargs):
             constructed.append(kwargs.copy())
+            constructed_configs.append(args[0])
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -223,6 +225,7 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         duty_factor=0.5,
         step_frequency_hz=3.0,
         step_height_m=0.03,
+        mpx_qrot_pitch_cost=25_000.0,
         action_interface_id=MPX_BOUND_ACTION_INTERFACE_ID,
     )
 
@@ -236,6 +239,9 @@ def test_batch_constructs_controller_with_requested_instance_gait(
             "enable_planned_contact_diagnostics": True,
         }
     ]
+    assert float(np.asarray(constructed_configs[0].Qrot)[1, 1]) == 25_000.0
+    assert float(np.asarray(constructed_configs[0].Qrot)[0, 0]) == 5_000.0
+    assert float(np.asarray(go2_config.Qrot)[1, 1]) == 50_000.0
     filename = next(tmp_path.glob("*.npz")).name
     assert "bound_front_first" in filename
     assert "vx0p5" in filename
@@ -245,6 +251,10 @@ def test_batch_constructs_controller_with_requested_instance_gait(
     assert manifest["result"] == "passed"
     assert manifest["passed"] is True
     assert manifest["failure_reasons"] == []
+    assert (
+        manifest["generation_settings"]["controller"]["mpx_qrot_pitch_cost"]
+        == 25_000.0
+    )
 
 
 def test_legacy_generator_defaults_remain_legacy():
@@ -253,6 +263,7 @@ def test_legacy_generator_defaults_remain_legacy():
     assert signature.parameters["fixed_command"].default is None
     assert signature.parameters["command_ramp_control_steps"].default == 0
     assert signature.parameters["gait"].default is None
+    assert signature.parameters["mpx_qrot_pitch_cost"].default is None
     assert signature.parameters["acceptance_declaration"].default is None
     assert signature.parameters["domain_rand_config_type"].default == (
         "sysid_dyn20_mjlab"
