@@ -94,15 +94,12 @@ from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.envs.cheetah3_env import DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL
 from mpc_rl.envs.barrel_roll_common import (
     ACTION_SCALE as BARREL_ROLL_ACTION_SCALE,
-    CONTROL_DT as BARREL_ROLL_CONTROL_DT,
     CONTROL_STEPS as BARREL_ROLL_CONTROL_STEPS,
-    ROLL_START_TIME as BARREL_ROLL_START_TIME,
     SCHEMA_VERSION as BARREL_ROLL_SCHEMA_VERSION,
     SPREAD_RANGE as BARREL_ROLL_SPREAD_RANGE,
-    SUCCESS_CONFIG as BARREL_ROLL_SUCCESS_CONFIG,
     TASK_ID as BARREL_ROLL_TASK_ID,
 )
-from mpc_rl.planner.barrel_roll_dataset import expected_effective_config, sha256_file
+from mpc_rl.planner.barrel_roll_dataset import expected_effective_config
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -379,85 +376,6 @@ def barrel_roll_config_snapshot(data_dir: str, target_percentage: int) -> dict:
     }
 
 
-def _git_repository_snapshot(path: Path) -> dict:
-    """Return the exact Git revision and tracked-dirty state for one repository."""
-    commit = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
-        raise RuntimeError(f"invalid Git revision for {path}: {commit!r}")
-    status = subprocess.run(
-        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return {
-        "commit": commit,
-        "tracked_worktree_dirty": bool(status.strip()),
-    }
-
-
-def barrel_roll_run_provenance(data_dir: str) -> dict:
-    """Validate and serialize G8 source and immutable-dataset provenance."""
-    repo_root = Path(__file__).resolve().parents[1]
-    dataset_dir = Path(data_dir)
-    summary_path = dataset_dir / "dataset_summary.json"
-    checksum_path = dataset_dir / "checksums.sha256"
-    if not summary_path.is_file() or not checksum_path.is_file():
-        raise ValueError(
-            f"barrel-roll production data must contain dataset_summary.json and "
-            f"checksums.sha256: {dataset_dir}"
-        )
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    actual_checksum_hash = sha256_file(checksum_path)
-    if summary.get("checksum_index_sha256") != actual_checksum_hash:
-        raise ValueError(
-            "barrel-roll checksum-index hash does not match dataset_summary.json"
-        )
-    aggregate_name = summary.get("aggregate_manifest")
-    if not isinstance(aggregate_name, str) or not aggregate_name:
-        raise ValueError("barrel-roll dataset summary is missing aggregate_manifest")
-    aggregate_path = dataset_dir / aggregate_name
-    if not aggregate_path.is_file():
-        raise ValueError(f"barrel-roll aggregate manifest is missing: {aggregate_path}")
-    actual_aggregate_hash = sha256_file(aggregate_path)
-    if summary.get("aggregate_manifest_sha256") != actual_aggregate_hash:
-        raise ValueError(
-            "barrel-roll aggregate-manifest hash does not match dataset_summary.json"
-        )
-
-    return {
-        "argv": list(sys.argv),
-        "source": {
-            "root": _git_repository_snapshot(repo_root),
-            "mpx": _git_repository_snapshot(repo_root / "deps" / "mpx"),
-            "primal_dual_ilqr": _git_repository_snapshot(
-                repo_root / "deps" / "mpx" / "mpx" / "primal_dual_ilqr"
-            ),
-            "gym_quadruped": _git_repository_snapshot(
-                repo_root / "deps" / "gym-quadruped"
-            ),
-            "mujoco_mpc": _git_repository_snapshot(repo_root / "deps" / "mujoco_mpc"),
-        },
-        "dataset": {
-            "path": str(dataset_dir),
-            "schema_version": summary.get("schema_version"),
-            "file_count": summary.get("file_count"),
-            "transition_count": summary.get("transition_count"),
-            "effective_config_sha256": summary.get("effective_config_sha256"),
-            "checksum_index": checksum_path.name,
-            "checksum_index_sha256": actual_checksum_hash,
-            "aggregate_manifest": aggregate_name,
-            "aggregate_manifest_sha256": actual_aggregate_hash,
-            "dataset_summary_sha256": sha256_file(summary_path),
-        },
-    }
-
-
 def quadruped_video_filename(
     *, task: str, episode: int, episode_seed: int | None, velocity: float | None
 ) -> str:
@@ -611,11 +529,10 @@ class ExactTimestepCheckpointCallback(BaseCallback):
 
 
 def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -> dict:
-    """Evaluate fixed seeds and retain per-episode G8 outcome diagnostics."""
+    """Evaluate one episode for every fixed held-out seed."""
     episode_rewards = []
     successes = []
     failure_reasons = Counter()
-    episodes = []
 
     for seed in seeds:
         eval_env.seed(int(seed))
@@ -623,132 +540,31 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
         done = np.array([False])
         episode_reward = 0.0
         terminal_info = None
-        control_step = 0
-        touchdown_step = None
-        stabilization_step = None
-        post_start_contact_break = False
         while not bool(done[0]):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done, infos = eval_env.step(action)
             episode_reward += float(reward[0])
-            control_step += 1
-            step_info = infos[0]
-            if isinstance(step_info, dict):
-                contacts = np.asarray(step_info.get("contact_state", []), dtype=bool)
-                all_contacts = contacts.shape == (4,) and bool(np.all(contacts))
-                if (
-                    contacts.shape == (4,)
-                    and control_step * BARREL_ROLL_CONTROL_DT >= BARREL_ROLL_START_TIME
-                    and not all_contacts
-                ):
-                    post_start_contact_break = True
-                if touchdown_step is None and post_start_contact_break and all_contacts:
-                    touchdown_step = control_step
-                stability_count = int(step_info.get("stability_count", 0))
-                if (
-                    stabilization_step is None
-                    and touchdown_step is not None
-                    and stability_count >= BARREL_ROLL_SUCCESS_CONFIG.stable_control_steps
-                ):
-                    stabilization_step = control_step
             if bool(done[0]):
-                terminal_info = step_info
+                terminal_info = infos[0]
 
         if not isinstance(terminal_info, dict) or "is_success" not in terminal_info:
             raise RuntimeError(
                 f"barrel-roll evaluation seed {seed} did not return terminal is_success"
             )
-        terminal_values = {}
-        for key in ("roll_progress", "roll_error"):
-            if terminal_info.get(key) is None:
-                raise RuntimeError(
-                    f"barrel-roll evaluation seed {seed} did not return terminal {key}"
-                )
-            value = float(terminal_info[key])
-            if not np.isfinite(value):
-                raise RuntimeError(
-                    f"barrel-roll evaluation seed {seed} returned non-finite {key}"
-                )
-            terminal_values[key] = value
-        if not np.isfinite(episode_reward):
-            raise RuntimeError(
-                f"barrel-roll evaluation seed {seed} returned a non-finite episode return"
-            )
         success = bool(terminal_info["is_success"])
         successes.append(success)
         episode_rewards.append(episode_reward)
-        failure_reason = None
         if not success:
-            failure_reason = str(terminal_info.get("failure_reason") or "unknown")
-            failure_reasons[failure_reason] += 1
-        episodes.append({
-            "seed": int(seed),
-            "success": success,
-            "failure_reason": failure_reason,
-            "return": episode_reward,
-            "control_steps": control_step,
-            "terminal_roll_progress": terminal_values["roll_progress"],
-            "terminal_roll_error": terminal_values["roll_error"],
-            "touchdown_step": touchdown_step,
-            "touchdown_time_s": (
-                touchdown_step * BARREL_ROLL_CONTROL_DT
-                if touchdown_step is not None
-                else None
-            ),
-            "stabilization_step": stabilization_step,
-            "stabilization_time_s": (
-                stabilization_step * BARREL_ROLL_CONTROL_DT
-                if stabilization_step is not None
-                else None
-            ),
-            "terminal_stability_count": int(terminal_info.get("stability_count", 0)),
-        })
-
-    terminal_errors = [episode["terminal_roll_error"] for episode in episodes]
-    touchdown_times = [
-        episode["touchdown_time_s"]
-        for episode in episodes
-        if episode["touchdown_time_s"] is not None
-    ]
-    stabilization_times = [
-        episode["stabilization_time_s"]
-        for episode in episodes
-        if episode["stabilization_time_s"] is not None
-    ]
+            reason = terminal_info.get("failure_reason") or "unknown"
+            failure_reasons[str(reason)] += 1
 
     return {
         "success_rate": float(np.mean(successes)),
         "mean_reward": float(np.mean(episode_rewards)),
-        "mean_return": float(np.mean(episode_rewards)),
-        "min_return": float(np.min(episode_rewards)),
-        "max_return": float(np.max(episode_rewards)),
         "episode_rewards": episode_rewards,
         "failure_reasons": dict(failure_reasons),
         "seeds": list(seeds),
-        "episodes": episodes,
-        "mean_terminal_roll_error": float(np.mean(terminal_errors)),
-        "mean_abs_terminal_roll_error": float(np.mean(np.abs(terminal_errors))),
-        "touchdown_count": len(touchdown_times),
-        "mean_touchdown_time_s": (
-            float(np.mean(touchdown_times)) if touchdown_times else None
-        ),
-        "stabilization_count": len(stabilization_times),
-        "mean_stabilization_time_s": (
-            float(np.mean(stabilization_times)) if stabilization_times else None
-        ),
     }
-
-
-def _atomic_write_json(path: Path, payload: dict) -> None:
-    """Write one durable JSON artifact without exposing a partial file."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(path.suffix + ".tmp")
-    temporary_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(path)
 
 
 class BarrelRollEvalCallback(BaseCallback):
@@ -809,14 +625,6 @@ class BarrelRollEvalCallback(BaseCallback):
             vec_normalize = self.model.get_vec_normalize_env()
             if vec_normalize is not None:
                 vec_normalize.save(self.best_model_save_path / "vec_normalize.pkl")
-            _atomic_write_json(
-                self.best_model_save_path / "selection.json",
-                {
-                    "checkpoint_metric": "success_rate",
-                    "success_rate": result["success_rate"],
-                    "timesteps": int(self.num_timesteps),
-                },
-            )
 
     def _on_training_start(self) -> None:
         # G6 requires evidence that held-out success improves above the exact
@@ -1607,15 +1415,13 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     return (callbacks if callbacks else None), eval_env, None
 
 
-def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
+def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
                         num_videos: int, video_dir: Path, normalize_env=None, seed: int = None,
                         is_quadruped: bool = False, robot: str = "go2",
                         simple_reward: bool = False,
                         use_go2_sysid: bool = True,
                         is_cheetah3: bool = False,
-                        cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL,
-                        barrel_roll_seeds: tuple[int, ...] | None = None,
-                        barrel_roll_video_labels: dict[int, str] | None = None):
+                        cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """
     Evaluate model and record videos.
     
@@ -1647,19 +1453,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     quadruped_eval_velocities = [0.0, 0.5, 1.0]  # vx for each video
     is_barrel_roll = is_quadruped and task == "barrel_roll"
     if is_barrel_roll:
-        evaluation_seeds = (
-            tuple(int(value) for value in barrel_roll_seeds)
-            if barrel_roll_seeds is not None
-            else BARREL_ROLL_EVAL_SEEDS
-        )
-        if not evaluation_seeds or len(evaluation_seeds) != len(set(evaluation_seeds)):
-            raise ValueError("barrel-roll recording seeds must be non-empty and unique")
-        num_episodes = len(evaluation_seeds)
-        invalid_labels = set((barrel_roll_video_labels or {}).values()) - {
-            "success", "failure"
-        }
-        if invalid_labels:
-            raise ValueError(f"invalid barrel-roll video labels: {sorted(invalid_labels)}")
+        num_episodes = len(BARREL_ROLL_EVAL_SEEDS)
     
     for episode in range(num_episodes):
         # Create evaluation environment with rgb_array render mode for video recording
@@ -1686,7 +1480,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         # Seed the environment for reproducibility (different seed per episode)
         episode_seed = (
-            evaluation_seeds[episode]
+            BARREL_ROLL_EVAL_SEEDS[episode]
             if is_barrel_roll
             else (seed + 2000 + episode if seed is not None else None)
         )
@@ -1771,16 +1565,12 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         if record_video and frames:
             # Include velocity in filename for quadruped
             if is_barrel_roll:
-                outcome_label = (barrel_roll_video_labels or {}).get(int(episode_seed))
-                if outcome_label is not None:
-                    video_path = video_dir / f"{outcome_label}_seed{episode_seed}.mp4"
-                else:
-                    video_path = video_dir / quadruped_video_filename(
-                        task=task,
-                        episode=episode,
-                        episode_seed=episode_seed,
-                        velocity=None,
-                    )
+                video_path = video_dir / quadruped_video_filename(
+                    task=task,
+                    episode=episode,
+                    episode_seed=episode_seed,
+                    velocity=None,
+                )
             elif is_quadruped and episode < len(quadruped_eval_velocities):
                 vx = quadruped_eval_velocities[episode]
                 video_path = video_dir / quadruped_video_filename(
@@ -1809,12 +1599,6 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         print(f"Success rate: {np.mean(episode_successes):.1%} over {len(episode_successes)} held-out seeds")
         print(f"Failure reasons: {dict(failure_reasons)}")
     print("="*50)
-    return {
-        "episode_rewards": episode_rewards,
-        "episode_lengths": episode_lengths,
-        "episode_successes": episode_successes,
-        "failure_reasons": dict(failure_reasons),
-    }
 
 
 def _parse_saved_checkpoint_step(model_zip_path: Path) -> Optional[int]:
@@ -1927,97 +1711,6 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
             )
         finally:
             checkpoint_env.close()
-
-
-def evaluate_selected_barrel_roll_checkpoint(
-    *,
-    logdir: Path,
-    algorithm: str,
-    domain: str,
-    task: str,
-    robot: str,
-    use_go2_sysid: bool,
-) -> dict:
-    """Evaluate the success-selected checkpoint and record outcome videos."""
-    best_model_dir = Path(logdir) / "best_model"
-    model_path = best_model_dir / "best_model"
-    vecnormalize_path = best_model_dir / "vec_normalize.pkl"
-    selection_path = best_model_dir / "selection.json"
-    required_paths = (model_path.with_suffix(".zip"), vecnormalize_path, selection_path)
-    missing = [str(path) for path in required_paths if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "selected barrel-roll checkpoint artifacts are missing: " + ", ".join(missing)
-        )
-    selection = json.loads(selection_path.read_text(encoding="utf-8"))
-
-    selected_model, selected_env = load_saved_model_for_video_eval(
-        algorithm=algorithm,
-        model_path=model_path,
-        vecnormalize_path=vecnormalize_path,
-        domain=domain,
-        task=task,
-        is_quadruped=True,
-        robot=robot,
-        simple_reward=False,
-        use_go2_sysid=use_go2_sysid,
-    )
-    try:
-        evaluation = evaluate_barrel_roll_policy(
-            selected_model,
-            selected_env,
-            BARREL_ROLL_EVAL_SEEDS,
-        )
-        report = {
-            "selection": selection,
-            "checkpoint_model": str(model_path.with_suffix(".zip")),
-            "vecnormalize": str(vecnormalize_path),
-            "evaluation": evaluation,
-        }
-        _atomic_write_json(best_model_dir / "evaluation.json", report)
-
-        representative = {}
-        for episode in evaluation["episodes"]:
-            label = "success" if episode["success"] else "failure"
-            representative.setdefault(label, int(episode["seed"]))
-        video_seeds = tuple(representative.values())
-        if video_seeds:
-            labels_by_seed = {seed: label for label, seed in representative.items()}
-            video_result = evaluate_and_record(
-                model=selected_model,
-                domain=domain,
-                task=task,
-                num_episodes=len(video_seeds),
-                num_videos=len(video_seeds),
-                video_dir=best_model_dir / "videos",
-                normalize_env=vecnormalize_path,
-                seed=None,
-                is_quadruped=True,
-                robot=robot,
-                simple_reward=False,
-                use_go2_sysid=use_go2_sysid,
-                barrel_roll_seeds=video_seeds,
-                barrel_roll_video_labels=labels_by_seed,
-            )
-            for seed, observed_success in zip(
-                video_seeds, video_result["episode_successes"], strict=True
-            ):
-                expected_success = labels_by_seed[seed] == "success"
-                if bool(observed_success) != expected_success:
-                    raise RuntimeError(
-                        f"representative video outcome changed for seed {seed}: "
-                        f"expected {expected_success}, got {bool(observed_success)}"
-                    )
-                video_path = best_model_dir / "videos" / (
-                    f"{labels_by_seed[seed]}_seed{seed}.mp4"
-                )
-                if not video_path.is_file() or video_path.stat().st_size == 0:
-                    raise RuntimeError(f"representative video was not written: {video_path}")
-        report["representative_video_seeds"] = representative
-        _atomic_write_json(best_model_dir / "evaluation.json", report)
-        return report
-    finally:
-        selected_env.close()
 
 
 def main(argv):
@@ -2207,14 +1900,10 @@ def main(argv):
                 "resolved_config": dr_cfg.to_dict(),
             }
         if is_barrel_roll:
-            barrel_roll_snapshot = barrel_roll_config_snapshot(
+            config_dict["barrel_roll"] = barrel_roll_config_snapshot(
                 _DATA_DIR.value,
                 _PERCENTAGE.value,
             )
-            barrel_roll_snapshot["run_provenance"] = barrel_roll_run_provenance(
-                _DATA_DIR.value
-            )
-            config_dict["barrel_roll"] = barrel_roll_snapshot
         save_config(logdir, config_dict)
 
     # Use simplified reward for quadruped environments when training with MPC injection
@@ -2361,20 +2050,6 @@ def main(argv):
         # Close eval environment if it was created
         if eval_env is not None:
             eval_env.close()
-
-        if is_barrel_roll and _ENABLE_LOGGING.value:
-            selected_report = evaluate_selected_barrel_roll_checkpoint(
-                logdir=logdir,
-                algorithm=_ALGORITHM.value,
-                domain=domain,
-                task=task,
-                robot=_ROBOT.value,
-                use_go2_sysid=_USE_GO2_SYSID.value,
-            )
-            print(
-                "Selected checkpoint success rate: "
-                f"{selected_report['evaluation']['success_rate']:.1%}"
-            )
     
     # Evaluation phase (only if logging enabled)
     if _ENABLE_LOGGING.value:

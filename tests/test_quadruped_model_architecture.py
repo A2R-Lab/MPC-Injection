@@ -31,10 +31,8 @@ from mpc_rl.train import (
     BarrelRollEvalCallback,
     BarrelRollPilotDiagnosticsCallback,
     barrel_roll_config_snapshot,
-    barrel_roll_run_provenance,
     create_callbacks,
     create_model,
-    evaluate_barrel_roll_policy,
     make_quadruped_env,
     quadruped_video_filename,
     validate_barrel_roll_training_options,
@@ -320,159 +318,6 @@ def test_barrel_roll_config_serializes_frozen_contract_and_held_out_seeds():
     assert min(BARREL_ROLL_EVAL_SEEDS) >= 1_000_000
 
 
-def test_barrel_roll_run_provenance_verifies_dataset_hashes(monkeypatch, tmp_path):
-    checksum_path = tmp_path / "checksums.sha256"
-    aggregate_path = tmp_path / "generation_manifest_aggregate.jsonl"
-    checksum_path.write_text("test checksum index\n", encoding="utf-8")
-    aggregate_path.write_text('{"accepted": true}\n', encoding="utf-8")
-    summary = {
-        "schema_version": 2,
-        "file_count": 1000,
-        "transition_count": 70000,
-        "effective_config_sha256": "a" * 64,
-        "checksum_index_sha256": train_module.sha256_file(checksum_path),
-        "aggregate_manifest": aggregate_path.name,
-        "aggregate_manifest_sha256": train_module.sha256_file(aggregate_path),
-    }
-    (tmp_path / "dataset_summary.json").write_text(
-        json.dumps(summary), encoding="utf-8"
-    )
-    monkeypatch.setattr(
-        train_module,
-        "_git_repository_snapshot",
-        lambda path: {
-            "commit": str(path.name).ljust(40, "0")[:40],
-            "tracked_worktree_dirty": False,
-        },
-    )
-
-    provenance = barrel_roll_run_provenance(str(tmp_path))
-
-    assert provenance["dataset"]["file_count"] == 1000
-    assert provenance["dataset"]["transition_count"] == 70000
-    assert provenance["dataset"]["checksum_index_sha256"] == summary["checksum_index_sha256"]
-    assert provenance["dataset"]["aggregate_manifest_sha256"] == summary["aggregate_manifest_sha256"]
-    assert set(provenance["source"]) == {
-        "root", "mpx", "primal_dual_ilqr", "gym_quadruped", "mujoco_mpc"
-    }
-
-
-def test_barrel_roll_policy_evaluation_records_g8_episode_metrics():
-    class _Model:
-        @staticmethod
-        def predict(obs, deterministic=True):
-            del obs
-            assert deterministic
-            return np.zeros((1, 12), dtype=np.float32), None
-
-    class _EvalEnv:
-        def seed(self, seed):
-            self.current_seed = seed
-
-        def reset(self):
-            self.step_count = 0
-            return {"policy": np.zeros((1, 45)), "privileged": np.zeros((1, 4))}
-
-        def step(self, action):
-            assert action.shape == (1, 12)
-            self.step_count += 1
-            success = self.current_seed == 10
-            done = self.step_count == 15
-            contact_state = (
-                np.zeros(4, dtype=bool)
-                if self.step_count == 11
-                else np.ones(4, dtype=bool)
-            )
-            stability_count = max(self.step_count - 10, 0)
-            info = {
-                "contact_state": contact_state,
-                "stability_count": stability_count,
-                "is_success": success if done else False,
-                "failure_reason": None if success else "incomplete_roll",
-                "roll_progress": 6.2 if success else 2.0,
-                "roll_error": 0.08 if success else 4.28,
-            }
-            return {}, np.array([1.0]), np.array([done]), [info]
-
-    result = evaluate_barrel_roll_policy(_Model(), _EvalEnv(), seeds=(10, 11))
-
-    assert result["success_rate"] == pytest.approx(0.5)
-    assert result["mean_return"] == pytest.approx(15.0)
-    assert result["failure_reasons"] == {"incomplete_roll": 1}
-    assert result["touchdown_count"] == 2
-    assert result["mean_touchdown_time_s"] == pytest.approx(0.24)
-    assert result["stabilization_count"] == 2
-    assert result["mean_stabilization_time_s"] == pytest.approx(0.30)
-    assert [episode["seed"] for episode in result["episodes"]] == [10, 11]
-    assert result["episodes"][0]["terminal_roll_error"] == pytest.approx(0.08)
-
-
-def test_selected_barrel_roll_checkpoint_writes_report_and_outcome_videos(
-    monkeypatch, tmp_path
-):
-    best_dir = tmp_path / "best_model"
-    best_dir.mkdir()
-    (best_dir / "best_model.zip").touch()
-    (best_dir / "vec_normalize.pkl").touch()
-    (best_dir / "selection.json").write_text(
-        json.dumps({"checkpoint_metric": "success_rate", "success_rate": 0.5, "timesteps": 50}),
-        encoding="utf-8",
-    )
-
-    class _Env:
-        closed = False
-
-        def close(self):
-            self.closed = True
-
-    selected_env = _Env()
-    selected_model = object()
-    monkeypatch.setattr(
-        train_module,
-        "load_saved_model_for_video_eval",
-        lambda **kwargs: (selected_model, selected_env),
-    )
-    monkeypatch.setattr(
-        train_module,
-        "evaluate_barrel_roll_policy",
-        lambda *args, **kwargs: {
-            "success_rate": 0.5,
-            "episodes": [
-                {"seed": 1_000_000, "success": True},
-                {"seed": 1_000_001, "success": False},
-            ],
-        },
-    )
-
-    def _record(**kwargs):
-        video_dir = kwargs["video_dir"]
-        video_dir.mkdir(parents=True)
-        labels = kwargs["barrel_roll_video_labels"]
-        for seed, label in labels.items():
-            (video_dir / f"{label}_seed{seed}.mp4").write_bytes(b"video")
-        return {"episode_successes": [labels[seed] == "success" for seed in kwargs["barrel_roll_seeds"]]}
-
-    monkeypatch.setattr(train_module, "evaluate_and_record", _record)
-
-    report = train_module.evaluate_selected_barrel_roll_checkpoint(
-        logdir=tmp_path,
-        algorithm="SAC-MPC",
-        domain="quadruped",
-        task="barrel_roll",
-        robot="go2",
-        use_go2_sysid=True,
-    )
-
-    assert report["representative_video_seeds"] == {
-        "success": 1_000_000,
-        "failure": 1_000_001,
-    }
-    assert (best_dir / "evaluation.json").is_file()
-    assert (best_dir / "videos" / "success_seed1000000.mp4").read_bytes() == b"video"
-    assert (best_dir / "videos" / "failure_seed1000001.mp4").read_bytes() == b"video"
-    assert selected_env.closed
-
-
 def test_quadruped_video_names_are_task_aware():
     barrel_name = quadruped_video_filename(
         task="barrel_roll", episode=2, episode_seed=1_000_002, velocity=None
@@ -533,12 +378,6 @@ def test_barrel_roll_checkpoint_selection_uses_success_rate(monkeypatch, tmp_pat
 
     assert model.saved == [tmp_path / "best_model", tmp_path / "best_model"]
     assert callback.best_success_rate == pytest.approx(0.60)
-    selection = json.loads((tmp_path / "selection.json").read_text())
-    assert selection == {
-        "checkpoint_metric": "success_rate",
-        "success_rate": 0.60,
-        "timesteps": 0,
-    }
 
 
 def test_barrel_roll_evaluator_records_step_zero_history(monkeypatch, tmp_path):
