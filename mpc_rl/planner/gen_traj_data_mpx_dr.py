@@ -2270,6 +2270,14 @@ def main():
         default=None,
         help="Optional scalar environment joint derivative gain",
     )
+    parser.add_argument(
+        "--joint-kd-by-type",
+        type=float,
+        nargs=3,
+        metavar=("HIP", "THIGH", "CALF"),
+        default=None,
+        help="Optional hip/thigh/calf derivative gains",
+    )
     parser.add_argument("--max-pitch", type=float, default=0.5)
     parser.add_argument("--max-roll", type=float, default=0.5)
     parser.add_argument("--min-base-height", type=float, default=0.1)
@@ -2347,12 +2355,23 @@ def main():
 
     if args.joint_kp is not None and args.joint_kp_by_type is not None:
         parser.error("--joint-kp and --joint-kp-by-type are mutually exclusive")
+    if args.joint_kd is not None and args.joint_kd_by_type is not None:
+        parser.error("--joint-kd and --joint-kd-by-type are mutually exclusive")
     joint_kp = args.joint_kp
     if args.joint_kp_by_type is not None:
         joint_kp = dict(
             zip(
                 ("hip_joint", "thigh_joint", "calf_joint"),
                 args.joint_kp_by_type,
+                strict=True,
+            )
+        )
+    joint_kd = args.joint_kd
+    if args.joint_kd_by_type is not None:
+        joint_kd = dict(
+            zip(
+                ("hip_joint", "thigh_joint", "calf_joint"),
+                args.joint_kd_by_type,
                 strict=True,
             )
         )
@@ -2384,7 +2403,7 @@ def main():
             gait_step_frequency_hz=args.step_frequency_hz,
             gait_step_height_m=args.step_height_m,
             joint_kp=joint_kp,
-            joint_kd=args.joint_kd,
+            joint_kd=joint_kd,
             max_pitch_rad=args.max_pitch,
             max_roll_rad=args.max_roll,
             min_base_height_m=args.min_base_height,
@@ -2417,7 +2436,7 @@ def main():
         mpx_qomega_pitch_cost=args.mpx_qomega_pitch_cost,
         mpx_robot_height_m=args.mpx_robot_height_m,
         joint_kp=joint_kp,
-        joint_kd=args.joint_kd,
+        joint_kd=joint_kd,
         max_pitch=args.max_pitch,
         max_roll=args.max_roll,
         min_base_height=args.min_base_height,

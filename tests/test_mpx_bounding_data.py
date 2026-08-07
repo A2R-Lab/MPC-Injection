@@ -233,6 +233,11 @@ def test_batch_constructs_controller_with_requested_instance_gait(
             "thigh_joint": 30.0,
             "calf_joint": 40.0,
         },
+        joint_kd={
+            "hip_joint": 1.0,
+            "thigh_joint": 2.0,
+            "calf_joint": 2.0,
+        },
         action_interface_id=MPX_BOUND_ACTION_INTERFACE_ID,
     )
 
@@ -281,6 +286,11 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         30.0,
         40.0,
     ] * 4
+    assert manifest["generation_settings"]["controller"]["environment_kd"] == [
+        1.0,
+        2.0,
+        2.0,
+    ] * 4
 
 
 def test_legacy_generator_defaults_remain_legacy():
@@ -308,10 +318,16 @@ def test_commissioning_declaration_preserves_per_joint_type_gains():
         "thigh_joint": 30.0,
         "calf_joint": 40.0,
     }
+    declaration["controller"]["joint_kd_arg"] = {
+        "hip_joint": 1.0,
+        "thigh_joint": 2.0,
+        "calf_joint": 2.0,
+    }
 
     normalized = validate_acceptance_declaration(declaration)
 
     assert normalized["controller"]["joint_kp_arg"]["thigh_joint"] == 30.0
+    assert normalized["controller"]["joint_kd_arg"]["thigh_joint"] == 2.0
 
 
 def test_measured_classifier_accepts_repeated_symmetric_alternation():
