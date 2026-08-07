@@ -120,6 +120,7 @@ def make_commissioning_acceptance_declaration(
     mpx_qrot_pitch_cost: float | None = None,
     mpx_qomega_pitch_cost: float | None = None,
     mpx_qp_height_cost: float | None = None,
+    mpx_qdp_vertical_cost: float | None = None,
     mpx_robot_height_m: float | None = None,
     acceptance_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -173,6 +174,11 @@ def make_commissioning_acceptance_declaration(
                 None
                 if mpx_qp_height_cost is None
                 else float(mpx_qp_height_cost)
+            ),
+            "mpx_qdp_vertical_cost": (
+                None
+                if mpx_qdp_vertical_cost is None
+                else float(mpx_qdp_vertical_cost)
             ),
             "realized_environment_kp": None,
             "realized_environment_kd": None,
@@ -272,6 +278,7 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         "mpx_qrot_pitch_cost",
         "mpx_qomega_pitch_cost",
         "mpx_qp_height_cost",
+        "mpx_qdp_vertical_cost",
         "realized_environment_kp",
         "realized_environment_kd",
         "mpx_weight_matrix_sha256",
@@ -319,6 +326,14 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
     ):
         raise ValueError(
             "controller mpx_qp_height_cost must be null or non-negative"
+        )
+    vertical_velocity_cost = controller["mpx_qdp_vertical_cost"]
+    if vertical_velocity_cost is not None and (
+        not np.isfinite(float(vertical_velocity_cost))
+        or float(vertical_velocity_cost) < 0.0
+    ):
+        raise ValueError(
+            "controller mpx_qdp_vertical_cost must be null or non-negative"
         )
     robot_height = controller["mpx_robot_height_m"]
     if robot_height is not None and (
