@@ -610,7 +610,7 @@ class PercentMPCInjectCallback(BaseCallback):
 
             # A strict task contract applies to the entire directory, not just
             # whichever file seeded selection happens to pick first.  This is
-            # especially important for barrel roll: a malformed schema-v1 file
+            # especially important for barrel roll: a malformed versioned file
             # must fail before any transition is queued and must never be
             # interpreted as a legacy velocity torque trajectory.
             if self.expected_quadruped_task is not None or self.expected_quadruped_schema_version is not None:

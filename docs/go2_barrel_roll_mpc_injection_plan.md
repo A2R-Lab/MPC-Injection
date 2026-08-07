@@ -16,7 +16,8 @@ this gate: seeds advance sequentially, every failed attempt remains in a
 manifest, and only classifier-passing rollouts count toward the requested data
 total. G3 is accepted under that revised reproducibility policy, and G4 is
 complete with ten validated smoke files. No promoted production dataset or
-trained policy exists.
+production policy exists. A schema-v2 100k pilot and its best checkpoint now
+exist as G6 recovery evidence; G7 production data generation has not started.
 
 ## Implementation evidence (G0-G5 session)
 
@@ -442,8 +443,11 @@ that fallback without recording evidence from the 4D run.
 ### Action and control contract
 
 Keep `sim_dt=0.005`, `decimation=4`, the current Go2 per-joint PD gains, the
-12D normalized residual action, and initially `action_scale=0.5`. Online RL
-actions continue through the existing 5 Hz absolute-target LPF.
+12D normalized residual action, and the existing 5 Hz absolute-target LPF.
+Historical schema v1 froze `action_scale=0.5`. The G6 evidence below showed
+that value did not represent the commissioned inverse-PD demonstration actions
+adequately, so the authorized schema-v2 recovery freezes `action_scale=2.0`.
+This is one versioned replacement, not a hyperparameter sweep.
 
 For demonstrations, preserve the existing direct quadruped convention:
 
@@ -463,6 +467,17 @@ Record action clipping and torque saturation prominently. If representability
 blocks policy learning, increase `action_scale` first and regenerate all data;
 do not mix action scales in one dataset. Changing the LPF or action type is a
 later fallback, not part of the initial plan.
+
+The schema-v2 selection rule was declared from demonstration residuals only:
+at most 1% aggregate clipping and at most 2% clipping in every accepted file.
+The smallest scale satisfying both is `1.900524783`; rounding upward to one
+decimal place selects `2.0`. Re-encoding the 84,000 saved schema-v1 residuals
+at `2.0` projects 0.5381% aggregate clipping and 1.6667% worst-file clipping.
+No held-out policy-evaluation seed informed this choice. Because the virtual
+PD target envelope is broader than the Go2 joint ranges, schema v2 must also
+pass a non-learning finite-state and torque-limit smoke before dataset
+generation. The virtual target is not clamped; the unchanged actuator torque
+limits remain the physical control bound.
 
 ### Reward contract
 
@@ -859,6 +874,158 @@ without constructing a velocity replay environment.
 
 ### Gate G6: run the 100-trajectory training pilot
 
+**Status (2026-08-06): BLOCKED; earliest affected gate G2 (action
+representability).** Preconditions held at root `e8b0f2ca` and MPX `6bc496d6`.
+The required suite reproduced only the three recorded baseline failures
+(`129 passed, 3 failed, 1 skipped`) before G6 work. The accepted-only generator
+then produced 100 files/7,000 transitions from 134 sequential attempts, seeds
+12 through 145. Strict validation reported 100 valid and zero corrupt files.
+The 34 rejected attempts remain in the aggregate manifest: 19
+`incomplete_roll`, nine `non_finite_solver_output`, four
+`non_foot_ground_contact:geom_18`, and two
+`non_foot_ground_contact:geom_42`. The aggregate manifest SHA-256 is
+`d46c4ec9ba05885ece47bcdc50ef61958af5a02f92e590aaac88000576484f77`;
+the checksum-index SHA-256 is
+`f3f70eccb300d4a50042130e2592744e29bce8054d84893e3de08335dcf4b1a0`.
+Every checksum passes, and every accepted demonstration still passes the
+unchanged classifier.
+
+G6 added fail-fast finite-signal diagnostics, durable step-zero/periodic
+100-seed evaluation history, and category-level TensorBoard failure metrics
+while retaining exact geom-specific reasons in JSONL. An initial pilot attempt
+stopped at 19,964 steps because SB3's console formatter truncated two distinct
+geom-specific metric names to the same display key. The category metric fix was
+tested and the failed run was preserved; no training parameter changed.
+
+The clean rerun
+`quadruped-barrel_roll-SAC-MPC-20260806-212611-percentage-25pct-go2-barrel-roll-v1-g6-pilot-rerun1`
+completed exactly 100,000 steps with the frozen seed-1 settings. All 100,000
+environment transitions, 25,000 Q batches, and 22,500 post-learning training
+snapshots were finite. Final replay composition was `25.0014999700006%` MPC.
+However, fixed-seed success was 0% at step zero and at every 10k evaluation
+through 100k. The final post-training 100-seed evaluation was also 0% success
+(85 `geom_23`, 12 `geom_50`, two `geom_47`, and one `geom_26` non-foot
+contacts). Policy roll progress ranged from `-1.6492` to only `2.8821` rad.
+Critic loss reached `6,174,120.21875`, Q values ranged from `-3,004.37` to
+`12,598.17`, and the entropy coefficient ranged from `0.08456` to `4.27058`;
+these values remained finite but show unstable value learning.
+
+The fallback audit rules out demonstration execution and injection before
+changing learning configuration. All accepted controller executions reach
+`5.9998` to `6.2678` rad and land with at least the required five-step stable
+contact streak; torque saturation remains low. In contrast, every accepted
+file clips more than 20% of saved inverse-PD residual actions. Mean action
+clipping is `22.8524%` (maximum `29.4048%`), mean per-file maximum unclipped
+action magnitude is `4.5856`, and the maximum is `5.5222` against the saved
+`[-1, 1]` range. This is concrete evidence that the initial
+`action_scale=0.5` representation assumption failed before SAC hyperparameter
+or reward tuning is justified.
+
+The earliest owning gate is G2 because action scale and the online residual
+interface are part of the frozen environment/control contract. Per the fallback
+order, the next authorized work must deliberately increase one global action
+scale, create a new schema/dataset version, and rerun the affected G2-G6
+validation chain. Do not mix scales, tune SAC, add reward terms, or begin G7.
+After the diagnostics changes, the combined relevant suite reports
+`133 passed, 3 failed, 1 skipped`; the failures are exactly the recorded
+baseline failures. G6 therefore has the legitimate `BLOCKED` outcome, not a
+forced pass.
+
+**Authorized recovery (2026-08-06): schema v2 with
+`action_scale=2.0`.** Preserve all schema-v1 data and the blocked pilot above.
+Schema v2 keeps the controller, direct-torque transition semantics, 5 Hz LPF,
+PD gains, reward, observations, success classifier, reset distribution, SAC
+configuration, 25% injection target, training seed, and held-out seeds
+unchanged. The affected validation chain is deliberately narrow:
+
+1. G2: prove the v2 environment freezes scale 2.0, rejects other barrel scales,
+   and remains finite and torque-limited under deterministic extreme-action
+   pulses.
+2. G1/G3: rerun focused MPX regression evidence and one nominal plus ten seeded
+   controller executions. Do not tune the controller; direct torque execution
+   should remain physically unchanged while saved actions and previous-action
+   observations change.
+3. G4: create ten strictly validated schema-v2 smoke files. Retain v1
+   validation support and reject mixed-version aggregation.
+4. G5: prove exact v2 direct replay, strict schema routing, configuration
+   serialization, and explicit v1 rejection for the v2 training path.
+5. G6: generate a fresh 100-file v2 dataset from new non-held-out seeds and
+   rerun the same seed-1 100k pilot, including step-zero and every-10k evaluation.
+
+If the non-learning smoke fails, stop and amend the action-interface fallback;
+do not try additional scales ad hoc. G7 remains prohibited until the v2 G6
+retry passes.
+
+**Schema-v2 recovery validation through G5 (2026-08-06): complete.** The
+barrel environment freezes scale 2.0 and rejects scale 0.5; deterministic
+single-step extreme-action pulses remain finite and actuator-torque-limited.
+The focused environment/data/routing suite reports `60 passed, 1 deselected`,
+where the deselection is the documented stale SAC-MPC `net_arch` assertion.
+The combined required suite reports `139 passed, 3 failed, 1 skipped`; the
+three failures are exactly the recorded reward-weight, stale `net_arch`, and
+missing sysID report baseline failures. The focused MPX suite reports `8
+passed`.
+
+The nominal seed-146 zero-spread controller execution remained physically
+successful with `6.146901` rad progress, 18 stable-contact steps, finite solves,
+no non-foot contact, and 0.2381% saved-action clipping. The schema-v2 smoke set
+then accepted ten trajectories from 14 sequential attempts, seeds 147 through
+160. Accepted seeds are `147,148,149,150,153,154,156,157,158,160`; the four
+manifest-visible rejections are two `incomplete_roll`, one
+`non_finite_solver_output`, and one `non_foot_ground_contact:geom_18`. All ten
+files validate. Mean action clipping is 0.4524% and worst-file clipping is
+0.7143%. The aggregate manifest SHA-256 is
+`3ea9734604da49d82c45877423d22a4e0fac3495ce200991eda40ab54dc91cec`;
+the checksum-index SHA-256 is
+`904fd6b05f2b033c451ea068fd8a05ab238464188f5ff45b4d2da24428238136`.
+
+The v2 training dry route constructed the 45D/4D environment and SAC-MPC model
+and serialized schema 2, scale 2.0, 5 Hz LPF, and the v2 smoke path. Strict
+tests preserve historical v1 validation, reject v1 from the current v2
+injection path, reject mixed-version aggregation, and prove exact v2 direct
+replay. G6 may now generate a fresh 100-file v2 dataset starting after seed
+160; no G7 work is authorized.
+
+The fresh schema-v2 G6 dataset is complete under
+`data/go2_barrel_roll/v2_g6_pilot/`: 100 accepted files/7,000 transitions from
+148 sequential attempts, seeds 161 through 308. Strict validation reports 100
+valid and zero corrupt files. The 48 manifest-visible rejections are 32
+`incomplete_roll`, six `non_finite_solver_output`, seven
+`non_foot_ground_contact:geom_18`, two `geom_11`, and one `geom_38`. Mean
+action clipping is 0.5060% and worst-file clipping is 1.6667%, satisfying the
+predeclared aggregate/worst-file limits. The aggregate manifest SHA-256 is
+`9c3674429f6d9b94548dcb39e801d258120374a5de0a619b6ef09c4518b96b35`;
+the checksum-index SHA-256 is
+`e3520b071d34d2479bfa09495faa99264460633c0b170aa6215b012d3aeacd69`.
+The v2 G6 training retry is now authorized with no other configuration change.
+
+**Schema-v2 G6 retry status (2026-08-06): PASSED, with checkpoint
+instability.** The run
+`quadruped-barrel_roll-SAC-MPC-20260806-223427-percentage-25pct-go2-barrel-roll-v2-g6-pilot`
+completed exactly 100,000 environment steps with seed 1, four environments,
+25% direct injection, and the unchanged SAC/reward/LPF/controller/classifier
+settings. All 100,000 environment transitions, 25,000 Q batches, and 22,500
+post-learning snapshots were finite. Final replay composition was
+`25.0014999700006%` MPC. Critic loss ranged from `0.1185` to `601.1354`, Q
+values from `-190.4914` to `407.8657`, entropy coefficient from `0.004001` to
+`0.999550`, and observed training roll progress from `-8.5387` to `15.4878`
+rad. This is materially more stable and more rotational than the schema-v1
+pilot, though over-rotation remains visible.
+
+Fixed held-out success was 0% at steps 0 through 70k, rose to 15% at 80k,
+then regressed to 0% at 90k and 100k. The success-selected 80k checkpoint was
+preserved and an independent reload/evaluation reproduced exactly 15/100
+successes, with 83 `incomplete_roll` and two
+`non_foot_ground_contact:geom_30` failures. The periodic 100k evaluation was
+0% with 87 incomplete rolls and 13 `geom_53` contacts; the separate final-model
+evaluation was also 0%, with 99 incomplete rolls and one `geom_17` contact.
+G6 therefore passes its declared requirement of clear held-out improvement
+above the initial level before the production-scale experiment; it does not
+claim stable convergence or the deferred 80% production threshold. Preserve
+the full evaluation history, diagnostics summary, final model, and best model
+under the run directory. G7 is now dependency-unblocked but was not started in
+this recovery session.
+
 Generate 100 accepted trajectories only after G0-G5 pass. This gives 7,000
 distinct direct transitions.
 
@@ -868,7 +1035,8 @@ except duration and dataset size:
 - 25% percentage injection;
 - existing quadruped SAC-MPC network and optimizer defaults initially;
 - 50/200 Hz task timing;
-- `action_scale=0.5` and the existing 5 Hz online LPF;
+- schema-v1 historical run: `action_scale=0.5`; schema-v2 recovery run:
+  `action_scale=2.0`; both retain the existing 5 Hz online LPF;
 - no DR and Go2 sysID enabled;
 - fixed held-out evaluation seeds.
 
@@ -890,25 +1058,37 @@ the pilot before scaling.
 
 ### Gate G7: generate and promote 1,000 accepted trajectories
 
+**Status: pending; dependency-unblocked by the schema-v2 G6 pass above.** Audit
+the G6 evidence and the current repository before generation. G7 freezes schema
+v2 and `action_scale=2.0`; it does not authorize changes to the controller,
+classifier, reward, observations, reset distribution, direct-transition
+semantics, LPF, PD gains, or clipping limits. The reserved evaluation seeds
+`1000000` through `1000099` remain prohibited for generation.
+
 After the 100k pilot passes, collect 1,000 accepted trajectories (70,000 direct
 transitions). Run multiple terminals with disjoint, generously separated seed
-ranges and unique manifest names. For example, after the CLI exists, four
-workers can each target 250 successes:
+ranges and unique manifest names. The implemented CLI permits four workers to
+target 250 successes each, subject to the resource audit below:
 
 ```bash
-conda run -n mpc-rl python mpc_rl/planner/gen_traj_data_barrel_roll.py \
-  --num-trajectories=250 --start-seed=0 --max-attempts=2500 \
-  --output-dir=data/go2_barrel_roll/v1_staging \
+XLA_PYTHON_CLIENT_MEM_FRACTION=.25 conda run --no-capture-output -n mpc-rl \
+  python mpc_rl/planner/gen_traj_data_barrel_roll.py \
+  --num-trajectories=250 --start-seed=10000 --max-attempts=2500 \
+  --output-dir=data/go2_barrel_roll/v2_staging \
   --manifest-filename=generation_manifest_worker0.jsonl
 
-conda run -n mpc-rl python mpc_rl/planner/gen_traj_data_barrel_roll.py \
-  --num-trajectories=250 --start-seed=100000 --max-attempts=2500 \
-  --output-dir=data/go2_barrel_roll/v1_staging \
+XLA_PYTHON_CLIENT_MEM_FRACTION=.25 conda run --no-capture-output -n mpc-rl \
+  python mpc_rl/planner/gen_traj_data_barrel_roll.py \
+  --num-trajectories=250 --start-seed=110000 --max-attempts=2500 \
+  --output-dir=data/go2_barrel_roll/v2_staging \
   --manifest-filename=generation_manifest_worker1.jsonl
 ```
 
-Workers 2 and 3 use starts `200000` and `300000`. These are proposed commands
-for the planned CLI; they are not currently runnable.
+Workers 2 and 3 use starts `210000` and `310000` with manifest suffixes
+`worker2` and `worker3`. The CLI is implemented. Start with a measured
+single-process attempt and increase concurrency only if GPU memory and solver
+behavior remain safe; four concurrent workers are an example, not an
+acceptance requirement.
 
 Before adding workers, measure JAX compilation time, per-update and per-attempt
 solve time, GPU memory, success rate, and file size from the 10- and 100-file
@@ -922,12 +1102,19 @@ After collection:
 3. aggregate every attempt manifest and report rejection reasons;
 4. create checksums and the dataset summary;
 5. promote by atomic directory rename from staging to
-   `data/go2_barrel_roll/v1`;
+   `data/go2_barrel_roll/v2` after proving that target does not already exist;
 6. never add `.npz` files to Git.
 
-Gate: the promoted directory is immutable for the production experiment. Any
-action scale, reward, schema, controller, or success-threshold change creates a
-new dataset version.
+Gate PASS requires exactly 1,000 unique accepted schema-v2 seeds/files and
+70,000 direct transitions; strict validation of every file; no generation seed
+overlap with calibration, smoke, pilot, or held-out evaluation seeds; complete
+worker and aggregate attempt manifests with rejection reasons; a verified
+checksum index and dataset summary; the predeclared clipping limits of at most
+1% aggregate and at most 2% in every accepted file; and atomic promotion to
+`data/go2_barrel_roll/v2`. The promoted directory is immutable for the
+production experiment. Any action scale, reward, schema, controller, or
+success-threshold change creates a new dataset version and returns work to the
+earliest affected gate.
 
 ### Gate G8: production SAC-MPC training and evaluation
 
@@ -946,16 +1133,16 @@ conda run -n mpc-rl python mpc_rl/train.py \
   --inject_type=percentage \
   --percentage=25 \
   --quadruped_mpc_replay_mode=direct \
-  --data_dir=data/go2_barrel_roll/v1 \
+  --data_dir=data/go2_barrel_roll/v2 \
   --domain_rand=False \
   --domain_rand_config_type=disabled \
   --use_go2_sysid=True \
   --seed=<seed> \
-  --suffix=go2-barrel-roll-v1
+  --suffix=go2-barrel-roll-v2
 ```
 
-This is also a planned command, not currently runnable. Confirm final flag
-spelling against the implemented Abseil CLI.
+The flags in this command are implemented, but the production run is not
+authorized until G7 passes and its promoted checksum index is frozen.
 
 For each seed:
 
@@ -981,11 +1168,11 @@ seeds or replace a weak seed without reporting it.
 | Reset | Seeded `[0, 0.10]` stance spread and valid contacts | Fix sampler |
 | Environment | 45D/4D spaces, 50/200 Hz, correct reward/done/info | Fix environment |
 | Executed controller | Ten successful closed-loop task-plant rollouts | Tune execution/model; do not generate |
-| Schema | Strict v1 validation and corruption rejection | Fix generator/validator |
+| Schema | Strict current-v2 validation, historical-v1 support, mixed-version rejection | Fix generator/validator |
 | Injection | Exact direct tuples, MPC tags, multi-env batching, 25% | Fix loader/callback |
 | Model | SAC actor 45D, critic input 61, finite update | Fix routing/policy config |
 | Pilot | Increasing held-out success by 100k | Use fallback ladder |
-| Production data | 1,000 unique valid files and checksums | Regenerate failed shards |
+| Production data | 1,000 unique valid v2 files, 70,000 transitions, clipping limits, manifests, and checksums | Regenerate failed shards |
 | Production policy | Median >=80% over three x 100 held-out episodes | MVP result not achieved; report and diagnose |
 
 Suggested focused test command after implementation:

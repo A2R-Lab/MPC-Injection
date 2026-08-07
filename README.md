@@ -123,11 +123,17 @@ python mpc_rl/play_quad.py --model=logs/quadruped-velocity_tracking-*-*-*
 ```
 
 The gated Go2 barrel-roll route uses `quadruped-barrel_roll`. It is SAC-MPC
-only and requires schema-v1 direct replay at 25%, Go2, disabled domain
-randomization, enabled Go2 sysID, and the task's fixed 70-step horizon. The
-current checked workspace contains only the G4 smoke dataset; do not start the
-G6 pilot or generate a larger dataset until that gate is authorized. A
-non-training routing/configuration check is:
+only and requires schema-v2 direct replay at 25%, Go2, disabled domain
+randomization, enabled Go2 sysID, `action_scale=2.0`, and the task's fixed
+70-step horizon. The historical schema-v1/`action_scale=0.5` G6 pilot is
+**blocked**, not passed: held-out success remained 0% while every demonstration
+clipped more than 20% of its saved inverse-PD residual actions. Schema v2 is the
+controlled representability recovery and must not be mixed with v1. Its 100k
+G6 retry passed the learning-progress gate by reaching a reproducible 15%
+held-out success at the success-selected 80k checkpoint, although the final
+policy regressed to 0%; checkpoint instability remains an explicit production
+risk. G7 production generation has not started. The non-training routing check
+is:
 
 ```bash
 python mpc_rl/train.py \
@@ -140,7 +146,7 @@ python mpc_rl/train.py \
     --inject_type=percentage \
     --percentage=25 \
     --quadruped_mpc_replay_mode=direct \
-    --data_dir=data/go2_barrel_roll/v1_g4_smoke \
+    --data_dir=data/go2_barrel_roll/v2_g4_smoke \
     --domain_rand=False \
     --domain_rand_config_type=disabled \
     --use_go2_sysid=True

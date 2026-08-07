@@ -56,6 +56,7 @@ from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 import numpy as np
 import mediapy as media
 import jax
+import torch as th
 
 # Import JAX and verify backend
 import jax
@@ -79,6 +80,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 #from mpc_rl.planner.mpc_planner import MPCPlanner
 from mpc_rl.common import TaggedReplayBuffer, TaggedDictReplayBuffer
 from mpc_rl.common import FixedMPCInjectCallback, PercentMPCInjectCallback, QuadrupedTensorboardCallback
+from mpc_rl.common.quadruped_tensorboard_callback import failure_reason_metric_name
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 # SB3 (PyTorch) MPC-augmented algorithms for quadruped (supports asymmetric policies + Dict obs)
@@ -91,6 +93,7 @@ from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.envs.cheetah3_env import DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL
 from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE as BARREL_ROLL_ACTION_SCALE,
     CONTROL_STEPS as BARREL_ROLL_CONTROL_STEPS,
     SCHEMA_VERSION as BARREL_ROLL_SCHEMA_VERSION,
     SPREAD_RANGE as BARREL_ROLL_SPREAD_RANGE,
@@ -342,7 +345,10 @@ def validate_barrel_roll_training_options(
     if not use_go2_sysid:
         incompatible.append("use_go2_sysid must be enabled")
     if not data_dir:
-        incompatible.append("data_dir must point to validated schema-v1 barrel data")
+        incompatible.append(
+            f"data_dir must point to validated schema-v{BARREL_ROLL_SCHEMA_VERSION} "
+            "barrel data"
+        )
     if incompatible:
         raise ValueError("Incompatible barrel-roll options: " + "; ".join(incompatible))
 
@@ -571,6 +577,7 @@ class BarrelRollEvalCallback(BaseCallback):
         eval_freq: int,
         best_model_save_path: Path,
         seeds=BARREL_ROLL_EVAL_SEEDS,
+        history_path: Path | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -581,25 +588,34 @@ class BarrelRollEvalCallback(BaseCallback):
         self.eval_env = eval_env
         self.eval_freq = int(eval_freq)
         self.best_model_save_path = Path(best_model_save_path)
+        self.history_path = (
+            Path(history_path)
+            if history_path is not None
+            else self.best_model_save_path / "evaluation_history.jsonl"
+        )
         self.seeds = tuple(int(seed) for seed in seeds)
         self.best_success_rate = -np.inf
         self.last_result = None
 
     def _init_callback(self) -> None:
         self.best_model_save_path.mkdir(parents=True, exist_ok=True)
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _on_step(self) -> bool:
-        if self.n_calls % self.eval_freq != 0:
-            return True
-
+    def _evaluate_and_record(self) -> None:
         sync_envs_normalization(self.training_env, self.eval_env)
         result = evaluate_barrel_roll_policy(self.model, self.eval_env, self.seeds)
+        result = {**result, "timesteps": int(self.num_timesteps)}
         self.last_result = result
+        with self.history_path.open("a", encoding="utf-8") as history:
+            history.write(json.dumps(result, sort_keys=True, allow_nan=False) + "\n")
+            history.flush()
         self.logger.record("eval/barrel_roll_success_rate", result["success_rate"])
         self.logger.record("eval/mean_reward", result["mean_reward"])
+        metric_failure_reasons = Counter()
         for reason, count in result["failure_reasons"].items():
-            safe_reason = reason.replace(":", "_").replace("/", "_")
-            self.logger.record(f"eval/failure_reason/{safe_reason}", float(count))
+            metric_failure_reasons[failure_reason_metric_name(reason)] += count
+        for reason, count in metric_failure_reasons.items():
+            self.logger.record(f"eval/failure_reason/{reason}", float(count))
 
         # Mean reward is diagnostic only.  A model becomes best strictly when
         # held-out success rate improves.
@@ -609,7 +625,173 @@ class BarrelRollEvalCallback(BaseCallback):
             vec_normalize = self.model.get_vec_normalize_env()
             if vec_normalize is not None:
                 vec_normalize.save(self.best_model_save_path / "vec_normalize.pkl")
+
+    def _on_training_start(self) -> None:
+        # G6 requires evidence that held-out success improves above the exact
+        # untrained policy baseline, so evaluate before collecting a transition.
+        self._evaluate_and_record()
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.eval_freq != 0:
+            return True
+
+        self._evaluate_and_record()
         return True
+
+
+class BarrelRollPilotDiagnosticsCallback(BaseCallback):
+    """Fail fast on non-finite G6 signals and write a durable audit summary."""
+
+    _TRAIN_SCALARS = (
+        "train/actor_loss",
+        "train/critic_loss",
+        "train/ent_coef",
+        "train/ent_coef_loss",
+    )
+
+    def __init__(self, summary_path: Path, verbose: int = 0):
+        super().__init__(verbose)
+        self.summary_path = Path(summary_path)
+        self.rollout_batches_checked = 0
+        self.environment_transitions_checked = 0
+        self.q_batches_checked = 0
+        self.training_snapshots_checked = 0
+        self.last_checked_updates = 0
+        self.ranges: dict[str, list[float]] = {}
+        self.replay_percentages: list[float] = []
+        self.roll_progresses: list[float] = []
+
+    def _update_range(self, name: str, values) -> None:
+        array = np.asarray(values, dtype=np.float64)
+        if array.size == 0:
+            return
+        if not np.isfinite(array).all():
+            self._fail(f"non-finite {name}")
+        low = float(np.min(array))
+        high = float(np.max(array))
+        if name not in self.ranges:
+            self.ranges[name] = [low, high]
+        else:
+            self.ranges[name][0] = min(self.ranges[name][0], low)
+            self.ranges[name][1] = max(self.ranges[name][1], high)
+
+    def _check_observations(self, observations, prefix: str = "observations") -> None:
+        if isinstance(observations, dict):
+            for key, value in observations.items():
+                self._update_range(f"{prefix}/{key}", value)
+        else:
+            self._update_range(prefix, observations)
+
+    def _check_q_values(self, observations, actions) -> None:
+        observation_tensor, _ = self.model.policy.obs_to_tensor(observations)
+        action_tensor = th.as_tensor(
+            actions, dtype=th.float32, device=self.model.device
+        )
+        with th.no_grad():
+            q_values = self.model.critic(observation_tensor, action_tensor)
+        for index, q_value in enumerate(q_values):
+            values = q_value.detach().cpu().numpy()
+            self._update_range(f"q_value/{index}", values)
+        self.q_batches_checked += 1
+        q_min = min(bounds[0] for key, bounds in self.ranges.items() if key.startswith("q_value/"))
+        q_max = max(bounds[1] for key, bounds in self.ranges.items() if key.startswith("q_value/"))
+        self.logger.record("diagnostics/q_value_min", q_min)
+        self.logger.record("diagnostics/q_value_max", q_max)
+
+    def _check_training_scalars(self) -> None:
+        updates = int(getattr(self.model, "_n_updates", 0))
+        if updates <= self.last_checked_updates:
+            return
+        logged = getattr(self.logger, "name_to_value", {})
+        missing = [name for name in self._TRAIN_SCALARS if name not in logged]
+        if missing:
+            self._fail(
+                f"training update {updates} missing diagnostics: {', '.join(missing)}"
+            )
+        for name in self._TRAIN_SCALARS:
+            self._update_range(name, [logged[name]])
+        self.last_checked_updates = updates
+        self.training_snapshots_checked += 1
+
+    def _check_replay(self) -> None:
+        replay_buffer = getattr(self.model, "replay_buffer", None)
+        if replay_buffer is None or not hasattr(replay_buffer, "get_mpc_percentage"):
+            return
+        percentage = float(replay_buffer.get_mpc_percentage())
+        self._update_range("replay_buffer/mpc_percentage", [percentage])
+        if percentage < 0.0 or percentage > 100.0:
+            self._fail(f"invalid MPC replay percentage {percentage}")
+        self.replay_percentages.append(percentage)
+        sources = getattr(replay_buffer, "transition_sources", None)
+        if sources is not None:
+            filled = replay_buffer.size()
+            active_sources = sources if replay_buffer.full else sources[:filled]
+            if active_sources.size and not np.isin(active_sources, (0, 1)).all():
+                self._fail("replay buffer contains a source tag other than 0 or 1")
+
+    def _summary(self, status: str, error: str | None = None) -> dict:
+        return {
+            "status": status,
+            "error": error,
+            "rollout_batches_checked": self.rollout_batches_checked,
+            "environment_transitions_checked": self.environment_transitions_checked,
+            "q_batches_checked": self.q_batches_checked,
+            "training_snapshots_checked": self.training_snapshots_checked,
+            "last_checked_updates": self.last_checked_updates,
+            "ranges": self.ranges,
+            "replay_percentage_last": (
+                self.replay_percentages[-1] if self.replay_percentages else None
+            ),
+            "roll_progress_min": (
+                min(self.roll_progresses) if self.roll_progresses else None
+            ),
+            "roll_progress_max": (
+                max(self.roll_progresses) if self.roll_progresses else None
+            ),
+        }
+
+    def _write_summary(self, status: str, error: str | None = None) -> None:
+        self.summary_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.summary_path.with_suffix(self.summary_path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(self._summary(status, error), indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(self.summary_path)
+
+    def _fail(self, error: str) -> None:
+        self._write_summary("failed", error)
+        raise FloatingPointError(error)
+
+    def _on_step(self) -> bool:
+        observations = self.locals.get("new_obs")
+        actions = self.locals.get("actions")
+        rewards = self.locals.get("rewards")
+        if observations is None or actions is None or rewards is None:
+            self._fail("rollout callback is missing observations, actions, or rewards")
+        self._check_observations(observations)
+        self._update_range("actions", actions)
+        self._update_range("rewards", rewards)
+        self._check_q_values(observations, actions)
+        self._check_training_scalars()
+        self._check_replay()
+        infos = self.locals.get("infos") or []
+        for info in infos:
+            if isinstance(info, dict) and info.get("roll_progress") is not None:
+                progress = float(info["roll_progress"])
+                self._update_range("roll_progress", [progress])
+                self.roll_progresses.append(progress)
+        self.rollout_batches_checked += 1
+        self.environment_transitions_checked += int(np.asarray(rewards).size)
+        if self.n_calls % 100 == 0:
+            self._write_summary("running")
+        return True
+
+    def _on_training_end(self) -> None:
+        self._check_training_scalars()
+        self._check_replay()
+        self._write_summary("complete")
 
 
 def is_shadow_hand_env(env_name: str) -> bool:
@@ -732,6 +914,7 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
             render_mode=render_mode,
             domain_rand_cfg=DomainRandomizationConfig.disabled(),
             use_go2_sysid=True,
+            action_scale=BARREL_ROLL_ACTION_SCALE,
         )
 
     kwargs = dict(
@@ -1092,6 +1275,12 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     # Add rollout Tensorboard callback for quadruped off-policy training.
     if is_quadruped and cfg.algorithm in ["SAC", "TD3", "SAC-MPC", "TD3-MPC"]:
         callbacks.append(QuadrupedTensorboardCallback(log_freq=100, task=task))
+        if task == "barrel_roll" and enable_logging:
+            callbacks.append(
+                BarrelRollPilotDiagnosticsCallback(
+                    logdir / "barrel_roll_pilot_diagnostics.json"
+                )
+            )
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
@@ -1161,6 +1350,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 eval_freq=max(eval_freq // num_envs, 1),
                 best_model_save_path=logdir / "best_model",
                 seeds=BARREL_ROLL_EVAL_SEEDS,
+                history_path=logdir / "barrel_roll_eval_history.jsonl",
             )
         else:
             eval_callback = EvalCallback(

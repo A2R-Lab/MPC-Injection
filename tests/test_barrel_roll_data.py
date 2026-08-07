@@ -14,12 +14,14 @@ from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
 from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE,
     CONTROL_DT,
     CONTROL_STEPS,
     REWARD_CONFIG,
     ROLL_DIRECTION_SIGN,
     ROLL_END_TIME,
     ROLL_START_TIME,
+    SCHEMA_VERSION,
     SIM_DT,
     desired_roll_at_time,
     maneuver_phase_at_time,
@@ -28,6 +30,7 @@ from mpc_rl.envs.barrel_roll_common import (
 )
 from mpc_rl.planner.barrel_roll_dataset import (
     ACTION_SEMANTICS,
+    BarrelRollValidationError,
     CONTACT_CONVENTION,
     CONTROLLER_MODE,
     DOMAIN_RANDOMIZATION,
@@ -44,6 +47,7 @@ from mpc_rl.planner.barrel_roll_dataset import (
     TRACKING_KD,
     TRACKING_KP,
     WARM_START_POLICY,
+    action_scale_for_schema,
     aggregate_barrel_roll_dataset,
     atomic_save_npz,
     canonical_json,
@@ -66,7 +70,9 @@ check_directory = _INTEGRITY_MODULE.check_directory
 check_npz_file = _INTEGRITY_MODULE.check_npz_file
 
 
-def _valid_arrays(seed: int = 0) -> dict[str, np.ndarray]:
+def _valid_arrays(
+    seed: int = 0, schema_version: int = SCHEMA_VERSION
+) -> dict[str, np.ndarray]:
     physics_time = np.arange(PHYSICS_STEPS + 1, dtype=np.float64) * SIM_DT
     control_time = np.arange(1, CONTROL_STEPS + 1, dtype=np.float64) * CONTROL_DT
     roll = np.array([desired_roll_at_time(time_s) for time_s in physics_time])
@@ -112,7 +118,8 @@ def _valid_arrays(seed: int = 0) -> dict[str, np.ndarray]:
     terminated = np.zeros(CONTROL_STEPS, dtype=bool)
     terminated[-1] = True
     zeros_tau = np.zeros((12, PHYSICS_STEPS), dtype=np.float64)
-    effective_json = canonical_json(expected_effective_config())
+    action_scale = action_scale_for_schema(schema_version)
+    effective_json = canonical_json(expected_effective_config(schema_version))
     final_roll, final_pitch, _ = Rotation.from_quat(
         np.roll(qpos[3:7, -1], -1)
     ).as_euler("xyz")
@@ -165,7 +172,7 @@ def _valid_arrays(seed: int = 0) -> dict[str, np.ndarray]:
         "tracking_kp": TRACKING_KP.copy(),
         "tracking_kd": TRACKING_KD.copy(),
         "torque_limits": TORQUE_LIMITS.copy(),
-        "schema_version": np.asarray(1),
+        "schema_version": np.asarray(schema_version),
         "task_id": np.asarray(TASK_ID),
         "robot_id": np.asarray(ROBOT_ID),
         "roll_direction": np.asarray(ROLL_DIRECTION_SIGN),
@@ -183,7 +190,7 @@ def _valid_arrays(seed: int = 0) -> dict[str, np.ndarray]:
         "maneuver_horizon": np.asarray(1.4),
         "mpc_dt": np.asarray(MPC_DT),
         "replanning_frequency_hz": np.asarray(REPLANNING_FREQUENCY_HZ),
-        "action_scale": np.asarray(0.5),
+        "action_scale": np.asarray(action_scale),
         "action_lpf_cutoff_hz": np.asarray(5.0),
         "action_lpf_alpha": np.asarray(1.0 - np.exp(-2.0 * np.pi * 5.0 * CONTROL_DT)),
         "action_semantics": np.asarray(ACTION_SEMANTICS),
@@ -219,8 +226,10 @@ def _valid_arrays(seed: int = 0) -> dict[str, np.ndarray]:
     return {key: np.asarray(value) for key, value in arrays.items()}
 
 
-def _write_valid(path: Path, seed: int = 0) -> Path:
-    np.savez_compressed(path, **_valid_arrays(seed))
+def _write_valid(
+    path: Path, seed: int = 0, schema_version: int = SCHEMA_VERSION
+) -> Path:
+    np.savez_compressed(path, **_valid_arrays(seed, schema_version))
     return path
 
 
@@ -257,7 +266,7 @@ def _barrel_replay_buffer(*, n_envs: int, buffer_size: int = 512):
 
 
 def test_valid_schema_loads_without_pickle_and_reports_saturation(tmp_path):
-    path = _write_valid(tmp_path / "go2_barrel_roll_v1_dir_pos_seed_000000_ep_070.npz")
+    path = _write_valid(tmp_path / "go2_barrel_roll_v2_dir_pos_seed_000000_ep_070.npz")
     with np.load(path, allow_pickle=False) as data:
         assert data["policy_obs"].shape == (70, 45)
         assert all(data[key].dtype.kind != "O" for key in data.files)
@@ -268,17 +277,31 @@ def test_valid_schema_loads_without_pickle_and_reports_saturation(tmp_path):
         "mpx_torque_saturation_fraction": 0.0,
         "torque_saturation_fraction": 0.0,
     }
+    with np.load(path, allow_pickle=False) as data:
+        assert int(data["schema_version"]) == SCHEMA_VERSION
+        assert float(data["action_scale"]) == ACTION_SCALE
+
+
+def test_historical_schema_v1_remains_strictly_validatable(tmp_path):
+    path = _write_valid(
+        tmp_path / "go2_barrel_roll_v1_dir_pos_seed_000000_ep_070.npz",
+        schema_version=1,
+    )
+    report = validate_barrel_roll_file(path)
+    assert report.valid, report.errors
+    with np.load(path, allow_pickle=False) as data:
+        assert float(data["action_scale"]) == 0.5
 
 
 def test_atomic_save_leaves_only_valid_final_archive(tmp_path):
-    path = tmp_path / "go2_barrel_roll_v1_atomic.npz"
+    path = tmp_path / "go2_barrel_roll_v2_atomic.npz"
     atomic_save_npz(path, _valid_arrays())
     assert validate_barrel_roll_file(path).valid
     assert list(tmp_path.iterdir()) == [path]
 
 
 def _wrong_schema(arrays):
-    arrays["schema_version"] = np.asarray(2)
+    arrays["schema_version"] = np.asarray(999)
 
 
 def _wrong_task(arrays):
@@ -359,7 +382,7 @@ def _wrong_reward_config(arrays):
 def test_required_corruptions_are_rejected(tmp_path, mutation):
     arrays = _valid_arrays()
     mutation(arrays)
-    path = tmp_path / "go2_barrel_roll_v1_corrupt.npz"
+    path = tmp_path / "go2_barrel_roll_v2_corrupt.npz"
     np.savez_compressed(path, **arrays)
     report = validate_barrel_roll_file(path)
     assert not report.valid
@@ -367,22 +390,22 @@ def test_required_corruptions_are_rejected(tmp_path, mutation):
 
 
 def test_integrity_checker_delegates_barrel_files_and_preserves_generic_npz(tmp_path):
-    _write_valid(tmp_path / "go2_barrel_roll_v1_valid.npz")
+    _write_valid(tmp_path / "go2_barrel_roll_v2_valid.npz")
     corrupted = _valid_arrays()
     corrupted["task_id"] = np.asarray("velocity_tracking")
-    np.savez_compressed(tmp_path / "go2_barrel_roll_v1_wrong_task.npz", **corrupted)
+    np.savez_compressed(tmp_path / "go2_barrel_roll_v2_wrong_task.npz", **corrupted)
     generic = tmp_path / "quadruped_velocity_data.npz"
     np.savez_compressed(generic, qpos=np.zeros((2, 3)))
     assert check_npz_file(generic) == (True, None)
     valid, invalid, failures = check_directory(tmp_path, verbose=False)
     assert (valid, invalid) == (2, 1)
-    assert failures[0][0].name == "go2_barrel_roll_v1_wrong_task.npz"
+    assert failures[0][0].name == "go2_barrel_roll_v2_wrong_task.npz"
 
 
 def test_integrity_cli_exits_nonzero_for_barrel_corruption(tmp_path):
     arrays = _valid_arrays()
     arrays["rewards"][0] += 1.0
-    path = tmp_path / "go2_barrel_roll_v1_corrupt.npz"
+    path = tmp_path / "go2_barrel_roll_v2_corrupt.npz"
     np.savez_compressed(path, **arrays)
     result = subprocess.run(
         [
@@ -402,7 +425,7 @@ def test_integrity_cli_exits_nonzero_for_barrel_corruption(tmp_path):
 def test_aggregate_writes_manifest_checksums_and_summary(tmp_path):
     paths = [
         _write_valid(
-            tmp_path / f"go2_barrel_roll_v1_dir_pos_seed_{seed:06d}_ep_070.npz",
+            tmp_path / f"go2_barrel_roll_v2_dir_pos_seed_{seed:06d}_ep_070.npz",
             seed,
         )
         for seed in (0, 1)
@@ -433,15 +456,30 @@ def test_aggregate_writes_manifest_checksums_and_summary(tmp_path):
     assert len((tmp_path / "generation_manifest_aggregate.jsonl").read_text().splitlines()) == 2
 
 
+def test_aggregate_rejects_mixed_schema_versions(tmp_path):
+    _write_valid(
+        tmp_path / "go2_barrel_roll_v1_dir_pos_seed_000000_ep_070.npz",
+        seed=0,
+        schema_version=1,
+    )
+    _write_valid(
+        tmp_path / "go2_barrel_roll_v2_dir_pos_seed_000001_ep_070.npz",
+        seed=1,
+        schema_version=2,
+    )
+    with pytest.raises(BarrelRollValidationError, match="mixes schema versions"):
+        aggregate_barrel_roll_dataset(tmp_path)
+
+
 def test_barrel_injection_is_strict_sorted_direct_multi_env_and_exact_25_percent(
     tmp_path, monkeypatch
 ):
     selected = _write_valid(
-        tmp_path / "b_go2_barrel_roll_v1_dir_pos_seed_000001_ep_070.npz",
+        tmp_path / "b_go2_barrel_roll_v2_dir_pos_seed_000001_ep_070.npz",
         seed=1,
     )
     first = _write_valid(
-        tmp_path / "a_go2_barrel_roll_v1_dir_pos_seed_000000_ep_070.npz",
+        tmp_path / "a_go2_barrel_roll_v2_dir_pos_seed_000000_ep_070.npz",
         seed=0,
     )
     callback = PercentMPCInjectCallback(
@@ -452,7 +490,7 @@ def test_barrel_injection_is_strict_sorted_direct_multi_env_and_exact_25_percent
         random_select=False,
         trajectory_files=[selected.name],
         expected_quadruped_task=TASK_ID,
-        expected_quadruped_schema_version=1,
+        expected_quadruped_schema_version=SCHEMA_VERSION,
         quadruped_mpc_replay_mode="direct",
         verbose=0,
     )
@@ -513,10 +551,10 @@ def test_barrel_injection_is_strict_sorted_direct_multi_env_and_exact_25_percent
 
 
 def test_barrel_injection_rejects_any_malformed_file_without_fallback(tmp_path):
-    _write_valid(tmp_path / "go2_barrel_roll_v1_valid.npz")
+    _write_valid(tmp_path / "go2_barrel_roll_v2_valid.npz")
     malformed = _valid_arrays(seed=2)
     malformed["actions"][0, 0] = 2.0
-    np.savez_compressed(tmp_path / "go2_barrel_roll_v1_malformed.npz", **malformed)
+    np.savez_compressed(tmp_path / "go2_barrel_roll_v2_malformed.npz", **malformed)
 
     with pytest.raises(ValueError, match="invalid barrel-roll trajectory"):
         PercentMPCInjectCallback(
@@ -525,14 +563,32 @@ def test_barrel_injection_rejects_any_malformed_file_without_fallback(tmp_path):
             target_percentage=25,
             data_dir=str(tmp_path),
             expected_quadruped_task=TASK_ID,
-            expected_quadruped_schema_version=1,
+            expected_quadruped_schema_version=SCHEMA_VERSION,
+            quadruped_mpc_replay_mode="direct",
+            verbose=0,
+        )
+
+
+def test_schema_v2_injection_rejects_historical_v1_data(tmp_path):
+    _write_valid(
+        tmp_path / "go2_barrel_roll_v1_dir_pos_seed_000000_ep_070.npz",
+        schema_version=1,
+    )
+    with pytest.raises(ValueError, match="schema_version mismatch: expected 2, got 1"):
+        PercentMPCInjectCallback(
+            domain="quadruped",
+            task="barrel_roll",
+            target_percentage=25,
+            data_dir=str(tmp_path),
+            expected_quadruped_task=TASK_ID,
+            expected_quadruped_schema_version=SCHEMA_VERSION,
             quadruped_mpc_replay_mode="direct",
             verbose=0,
         )
 
 
 def test_barrel_task_rejects_explicit_torque_replay(tmp_path):
-    _write_valid(tmp_path / "go2_barrel_roll_v1_valid.npz")
+    _write_valid(tmp_path / "go2_barrel_roll_v2_valid.npz")
     with pytest.raises(ValueError, match="requires direct replay"):
         PercentMPCInjectCallback(
             domain="quadruped",

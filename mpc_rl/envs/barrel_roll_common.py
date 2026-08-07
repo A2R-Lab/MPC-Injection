@@ -10,7 +10,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 TASK_ID = "go2_barrel_roll"
-SCHEMA_VERSION = 1
+LEGACY_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+ACTION_SCALE = 2.0
+LEGACY_ACTION_SCALE = 0.5
 ROLL_DIRECTION_SIGN = 1.0
 SIM_DT = 0.005
 CONTROL_DT = 0.02

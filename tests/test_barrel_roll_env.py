@@ -6,6 +6,7 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE,
     CONTROL_DT,
     CONTROL_STEPS,
     MANEUVER_HORIZON,
@@ -45,6 +46,7 @@ def test_schedule_and_unwrapped_roll_handle_wrap_and_quaternion_signs():
 
 def test_go2_reset_is_seeded_spread_and_has_exact_observation_shapes():
     env = QuadrupedBarrelRollEnv()
+    assert env.action_scale == ACTION_SCALE == 2.0
     assert env.mjModel.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL
     assert_go2_sysid_joint_dynamics(env.mjModel)
     obs_a, info_a = env.reset(seed=13)
@@ -72,6 +74,8 @@ def test_go2_reset_is_seeded_spread_and_has_exact_observation_shapes():
 def test_barrel_roll_requires_sysid_and_supports_nominal_commissioning_spread():
     with pytest.raises(ValueError, match="requires use_go2_sysid=True"):
         QuadrupedBarrelRollEnv(use_go2_sysid=False)
+    with pytest.raises(ValueError, match="schema-v2 requires action_scale=2.0"):
+        QuadrupedBarrelRollEnv(action_scale=0.5)
 
     env = QuadrupedBarrelRollEnv()
     try:
@@ -91,3 +95,31 @@ def test_hand_authored_action_rollout_is_finite_without_premature_termination():
         assert not terminated and not truncated
         assert info["failure_reason"] is None
     env.close()
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        np.ones(12),
+        -np.ones(12),
+        np.tile(np.array([1.0, -1.0, 1.0]), 4),
+    ],
+)
+def test_schema_v2_extreme_action_pulse_is_finite_and_torque_limited(action):
+    env = QuadrupedBarrelRollEnv()
+    try:
+        env.reset(seed=146)
+        obs, reward, terminated, truncated, _ = env.step(action)
+        assert not terminated and not truncated
+        assert np.isfinite(reward)
+        assert np.isfinite(obs["policy"]).all()
+        assert np.isfinite(env.mjData.qpos).all()
+        assert np.isfinite(env.mjData.qvel).all()
+        assert np.all(env._applied_torques >= env.torque_limits[:, 0])
+        assert np.all(env._applied_torques <= env.torque_limits[:, 1])
+        np.testing.assert_allclose(
+            env._raw_q_target,
+            env.default_joint_pos + ACTION_SCALE * action,
+        )
+    finally:
+        env.close()

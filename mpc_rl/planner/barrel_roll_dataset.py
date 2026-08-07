@@ -19,12 +19,15 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE,
     CONTROL_DT,
     CONTROL_STEPS,
     FINAL_STANCE_DURATION,
     FLIGHT_DURATION,
     INITIAL_STANCE_DURATION,
     LANDING_DURATION,
+    LEGACY_ACTION_SCALE,
+    LEGACY_SCHEMA_VERSION,
     LATERAL_SUPPORT_DURATION,
     MANEUVER_HORIZON,
     REWARD_CONFIG,
@@ -165,7 +168,7 @@ REQUIRED_SCALARS = {
 
 
 class BarrelRollValidationError(ValueError):
-    """Raised when a schema-v1 barrel-roll file fails strict validation."""
+    """Raised when a barrel-roll dataset fails strict validation."""
 
 
 @dataclass(frozen=True)
@@ -208,11 +211,21 @@ def schedule_dict() -> dict[str, float]:
     }
 
 
-def expected_effective_config() -> dict[str, Any]:
+def action_scale_for_schema(schema_version: int) -> float:
+    """Return the immutable action scale for a supported dataset schema."""
+    if schema_version == LEGACY_SCHEMA_VERSION:
+        return LEGACY_ACTION_SCALE
+    if schema_version == SCHEMA_VERSION:
+        return ACTION_SCALE
+    raise ValueError(f"unsupported barrel-roll schema version {schema_version}")
+
+
+def expected_effective_config(schema_version: int = SCHEMA_VERSION) -> dict[str, Any]:
+    action_scale = action_scale_for_schema(schema_version)
     return {
         "action": {
             "lpf_cutoff_hz": 5.0,
-            "scale": 0.5,
+            "scale": action_scale,
             "semantics": ACTION_SEMANTICS,
         },
         "contact_convention": CONTACT_CONVENTION,
@@ -235,7 +248,7 @@ def expected_effective_config() -> dict[str, Any]:
         "robot": ROBOT_ID,
         "roll_direction": ROLL_DIRECTION_SIGN,
         "schedule": schedule_dict(),
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "success": success_config_dict(),
         "task_id": TASK_ID,
         "timing": {
@@ -396,7 +409,7 @@ def _add_mismatch(errors: list[str], label: str, actual: Any, expected: Any) -> 
 
 
 def validate_barrel_roll_file(path: Path | str) -> ValidationReport:
-    """Strictly validate one accepted schema-v1 direct-transition archive."""
+    """Strictly validate one accepted versioned direct-transition archive."""
     path = Path(path)
     errors: list[str] = []
     metrics: dict[str, float] = {}
@@ -423,13 +436,20 @@ def validate_barrel_roll_file(path: Path | str) -> ValidationReport:
     if errors:
         return ValidationReport(path, tuple(errors), metrics)
 
+    try:
+        schema_version = int(_scalar(data, "schema_version"))
+        action_scale = action_scale_for_schema(schema_version)
+    except (TypeError, ValueError) as error:
+        errors.append(str(error))
+        return ValidationReport(path, tuple(errors), metrics)
+
     for key, value in data.items():
         array = np.asarray(value)
         if array.dtype.kind in "fci" and not np.isfinite(array).all():
             errors.append(f"{key} contains non-finite values")
 
     scalar_expectations = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "task_id": TASK_ID,
         "robot_id": ROBOT_ID,
         "roll_direction": ROLL_DIRECTION_SIGN,
@@ -445,7 +465,7 @@ def validate_barrel_roll_file(path: Path | str) -> ValidationReport:
         "maneuver_horizon": MANEUVER_HORIZON,
         "mpc_dt": MPC_DT,
         "replanning_frequency_hz": REPLANNING_FREQUENCY_HZ,
-        "action_scale": 0.5,
+        "action_scale": action_scale,
         "action_lpf_cutoff_hz": 5.0,
         "action_semantics": ACTION_SEMANTICS,
         "saved_action_reproduces_lpf_transition": False,
@@ -482,7 +502,7 @@ def validate_barrel_roll_file(path: Path | str) -> ValidationReport:
         "schedule_json": schedule_dict(),
         "success_config_json": success_config_dict(),
         "reward_config_json": reward_config_dict(),
-        "effective_config_json": expected_effective_config(),
+        "effective_config_json": expected_effective_config(schema_version),
     }
     for key, expected in json_expectations.items():
         try:
@@ -491,7 +511,9 @@ def validate_barrel_roll_file(path: Path | str) -> ValidationReport:
             errors.append(f"{key} is invalid JSON: {error}")
             continue
         if actual != expected:
-            errors.append(f"{key} does not match the frozen schema-v1 configuration")
+            errors.append(
+                f"{key} does not match the frozen schema-v{schema_version} configuration"
+            )
     effective_json = str(_scalar(data, "effective_config_json"))
     if _scalar(data, "effective_config_sha256") != sha256_bytes(effective_json.encode("utf-8")):
         errors.append("effective_config_sha256 mismatch")
@@ -707,9 +729,9 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def aggregate_barrel_roll_dataset(directory: Path | str) -> dict[str, Any]:
     """Validate a completed shard set and write its aggregate/checksum/summary."""
     directory = Path(directory)
-    trajectory_files = sorted(directory.glob("go2_barrel_roll_v1_*.npz"))
+    trajectory_files = sorted(directory.glob("go2_barrel_roll_v*_*.npz"))
     if not trajectory_files:
-        raise BarrelRollValidationError(f"no schema-v1 barrel-roll files in {directory}")
+        raise BarrelRollValidationError(f"no versioned barrel-roll files in {directory}")
     reports = [validate_barrel_roll_file(path) for path in trajectory_files]
     invalid = [report for report in reports if not report.valid]
     if invalid:
@@ -717,6 +739,7 @@ def aggregate_barrel_roll_dataset(directory: Path | str) -> dict[str, Any]:
         raise BarrelRollValidationError(details)
 
     seeds: list[int] = []
+    schema_versions: set[int] = set()
     config_hashes: set[str] = set()
     clipping: list[float] = []
     mpx_saturation: list[float] = []
@@ -724,12 +747,15 @@ def aggregate_barrel_roll_dataset(directory: Path | str) -> dict[str, Any]:
     for path, report in zip(trajectory_files, reports, strict=True):
         with np.load(path, allow_pickle=False) as data:
             seeds.append(int(data["rollout_seed"]))
+            schema_versions.add(int(data["schema_version"]))
             config_hashes.add(str(data["effective_config_sha256"]))
         clipping.append(report.metrics["action_clip_fraction"])
         mpx_saturation.append(report.metrics["mpx_torque_saturation_fraction"])
         torque_saturation.append(report.metrics["torque_saturation_fraction"])
     if len(set(seeds)) != len(seeds):
         raise BarrelRollValidationError("duplicate rollout seeds in dataset")
+    if len(schema_versions) != 1:
+        raise BarrelRollValidationError("dataset mixes schema versions")
     if len(config_hashes) != 1:
         raise BarrelRollValidationError("dataset mixes effective configuration hashes")
 
@@ -773,7 +799,7 @@ def aggregate_barrel_roll_dataset(directory: Path | str) -> dict[str, Any]:
         if not record.get("accepted")
     )
     summary = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": next(iter(schema_versions)),
         "task_id": TASK_ID,
         "robot_id": ROBOT_ID,
         "file_count": len(trajectory_files),
@@ -809,7 +835,7 @@ def main() -> None:
     failed = False
     for path in args.paths:
         if path.is_dir():
-            files = sorted(path.glob("go2_barrel_roll_v1_*.npz"))
+            files = sorted(path.glob("go2_barrel_roll_v*_*.npz"))
         else:
             files = [path]
         for file_path in files:

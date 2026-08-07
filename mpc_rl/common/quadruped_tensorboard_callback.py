@@ -6,6 +6,11 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 
+def failure_reason_metric_name(reason: str) -> str:
+    category = reason.split(":", 1)[0]
+    return category.replace("/", "_").replace(" ", "_")
+
+
 class QuadrupedTensorboardCallback(BaseCallback):
     """
     Logs selected rollout metrics from quadruped env info dicts to TensorBoard.
@@ -213,9 +218,11 @@ class QuadrupedTensorboardCallback(BaseCallback):
                 self.logger.record("barrel_roll/stability_count_mean", float(np.mean(stability_counts)))
             if success_flags:
                 self.logger.record("barrel_roll/success_fraction", float(np.mean(success_flags)))
+            metric_failure_reasons = Counter()
             for reason, count in failure_reasons.items():
-                safe_reason = reason.replace(":", "_").replace("/", "_")
-                self.logger.record(f"barrel_roll/failure_reason/{safe_reason}", float(count))
+                metric_failure_reasons[failure_reason_metric_name(reason)] += count
+            for reason, count in metric_failure_reasons.items():
+                self.logger.record(f"barrel_roll/failure_reason/{reason}", float(count))
             if roll_tracking_terms:
                 self.logger.record("reward/roll_tracking", float(np.mean(roll_tracking_terms)))
             if signed_progress_terms:

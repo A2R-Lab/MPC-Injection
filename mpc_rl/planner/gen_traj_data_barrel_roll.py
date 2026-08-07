@@ -16,10 +16,12 @@ from scipy.spatial.transform import Rotation
 import mpx.config.config_barrel_roll as config
 import mpx.utils.mpc_wrapper as mpc_wrapper
 from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE,
     CONTROL_DT,
     CONTROL_STEPS,
     MANEUVER_HORIZON,
     ROLL_DIRECTION_SIGN,
+    SCHEMA_VERSION,
     desired_roll_at_time,
 )
 from mpc_rl.envs.barrel_roll_env import QuadrupedBarrelRollEnv
@@ -77,6 +79,7 @@ def generate_attempt(
     env = QuadrupedBarrelRollEnv(
         render_mode="human" if render else None,
         use_go2_sysid=True,
+        action_scale=ACTION_SCALE,
     )
     try:
         reset_options = {"spread": 0.0} if nominal_spread_zero else None
@@ -569,7 +572,7 @@ def generate_attempt(
                 dtype=np.int64,
             ),
             residual_actions_unclipped=residual_unclipped,
-            schema_version=np.array(1),
+            schema_version=np.array(SCHEMA_VERSION),
             task_id=np.array("go2_barrel_roll"),
             roll_direction=np.array(ROLL_DIRECTION_SIGN),
             rollout_seed=np.array(seed),
@@ -625,7 +628,7 @@ def main():
     parser.add_argument("--start-seed", type=int, default=0)
     parser.add_argument("--max-attempts", type=int, default=1)
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("data/go2_barrel_roll/v1")
+        "--output-dir", type=Path, default=Path("data/go2_barrel_roll/v2")
     )
     parser.add_argument("--manifest-filename", default="generation_manifest.jsonl")
     parser.add_argument("--render", action="store_true")
@@ -682,11 +685,11 @@ def main():
                 temporary_trace.replace(trace_path)
             if data is not None:
                 path = args.output_dir / (
-                    f"go2_barrel_roll_v1_dir_pos_seed_{seed:06d}_"
+                    f"go2_barrel_roll_v{SCHEMA_VERSION}_dir_pos_seed_{seed:06d}_"
                     f"ep_{CONTROL_STEPS:03d}.npz"
                 )
                 atomic_save_npz(path, data)
-                metrics["schema_version"] = 1
+                metrics["schema_version"] = SCHEMA_VERSION
                 metrics["task_id"] = "go2_barrel_roll"
                 metrics["trajectory_file"] = path.name
                 accepted += 1

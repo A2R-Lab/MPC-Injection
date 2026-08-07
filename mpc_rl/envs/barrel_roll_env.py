@@ -10,6 +10,7 @@ from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
 from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE,
     CONTROL_DT,
     CONTROL_STEPS,
     REWARD_CONFIG,
@@ -32,13 +33,26 @@ from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
 class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
     """Nominal Go2 task with a 45D actor and 4D privileged critic input."""
 
-    def __init__(self, *, robot: str = "go2", domain_rand_cfg=None, use_go2_sysid: bool = True, **kwargs):
+    def __init__(
+        self,
+        *,
+        robot: str = "go2",
+        domain_rand_cfg=None,
+        use_go2_sysid: bool = True,
+        action_scale: float = ACTION_SCALE,
+        **kwargs,
+    ):
         if robot.lower() != "go2":
             raise ValueError("QuadrupedBarrelRollEnv supports robot='go2' only")
         if not use_go2_sysid:
             raise ValueError("barrel-roll requires use_go2_sysid=True")
         if domain_rand_cfg is not None and domain_rand_cfg.enable:
             raise ValueError("barrel-roll does not support domain randomization")
+        if not np.isclose(action_scale, ACTION_SCALE, atol=0.0, rtol=0.0):
+            raise ValueError(
+                f"barrel-roll schema-v2 requires action_scale={ACTION_SCALE}, "
+                f"got {action_scale}"
+            )
         kwargs.pop("simple_reward", None)
         super().__init__(
             robot="go2",
@@ -48,6 +62,7 @@ class QuadrupedBarrelRollEnv(QuadrupedVelocityTrackingEnv):
             apply_startup_domain_rand_on_init=False,
             sim_dt=0.005,
             decimation=4,
+            action_scale=ACTION_SCALE,
             **kwargs,
         )
         if not np.isclose(self.control_dt, CONTROL_DT):

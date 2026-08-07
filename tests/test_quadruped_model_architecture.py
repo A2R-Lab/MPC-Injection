@@ -6,12 +6,14 @@ Run:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch as th
 from absl import flags
 from torch import nn
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -27,6 +29,7 @@ from mpc_rl.train import (
     BARREL_ROLL_EVAL_SEEDS,
     AllConfig,
     BarrelRollEvalCallback,
+    BarrelRollPilotDiagnosticsCallback,
     barrel_roll_config_snapshot,
     create_callbacks,
     create_model,
@@ -215,6 +218,7 @@ def test_quadruped_factory_routes_barrel_and_rejects_unknown_tasks():
         assert env.spec.max_episode_steps == 70
         assert env.observation_space["policy"].shape == (45,)
         assert env.observation_space["privileged"].shape == (4,)
+        assert env.unwrapped.action_scale == 2.0
     finally:
         env.close()
 
@@ -249,6 +253,10 @@ def test_barrel_roll_callbacks_use_fixed_seed_success_evaluator(tmp_path):
             if isinstance(callback, BarrelRollEvalCallback)
         )
         assert evaluator.seeds == BARREL_ROLL_EVAL_SEEDS
+        assert any(
+            isinstance(callback, BarrelRollPilotDiagnosticsCallback)
+            for callback in callbacks
+        )
         assert inject_callback is None
     finally:
         eval_env.close()
@@ -278,7 +286,7 @@ def test_barrel_roll_training_rejects_incompatible_options(override, message):
         "domain_rand_enabled": False,
         "domain_rand_config_type": "disabled",
         "use_go2_sysid": True,
-        "data_dir": "data/go2_barrel_roll/v1",
+        "data_dir": "data/go2_barrel_roll/v2",
     }
     options.update(override)
     with pytest.raises(ValueError, match=message):
@@ -286,22 +294,22 @@ def test_barrel_roll_training_rejects_incompatible_options(override, message):
 
 
 def test_barrel_roll_config_serializes_frozen_contract_and_held_out_seeds():
-    snapshot = barrel_roll_config_snapshot("data/go2_barrel_roll/v1", 25)
+    snapshot = barrel_roll_config_snapshot("data/go2_barrel_roll/v2", 25)
 
     assert snapshot["task_id"] == "go2_barrel_roll"
-    assert snapshot["schema_version"] == 1
+    assert snapshot["schema_version"] == 2
     assert snapshot["robot"] == "go2"
     assert snapshot["roll_direction"] == 1.0
     assert snapshot["timing"]["control_steps"] == 70
-    assert snapshot["action"]["scale"] == 0.5
+    assert snapshot["action"]["scale"] == 2.0
     assert snapshot["action"]["lpf_cutoff_hz"] == 5.0
     assert len(snapshot["pd_kp"]) == 12
     assert snapshot["domain_randomization"] == "disabled"
     assert snapshot["go2_sysid_enabled"] is True
     assert snapshot["dataset"] == {
-        "path": "data/go2_barrel_roll/v1",
+        "path": "data/go2_barrel_roll/v2",
         "replay_mode": "direct",
-        "schema_version": 1,
+        "schema_version": 2,
         "target_mpc_percentage": 25,
     }
     assert snapshot["evaluation"]["checkpoint_metric"] == "success_rate"
@@ -360,6 +368,7 @@ def test_barrel_roll_checkpoint_selection_uses_success_rate(monkeypatch, tmp_pat
         eval_freq=1,
         best_model_save_path=tmp_path,
         seeds=BARREL_ROLL_EVAL_SEEDS,
+        history_path=tmp_path / "history.jsonl",
     )
     model = _Model()
     callback.init_callback(model)
@@ -369,6 +378,159 @@ def test_barrel_roll_checkpoint_selection_uses_success_rate(monkeypatch, tmp_pat
 
     assert model.saved == [tmp_path / "best_model", tmp_path / "best_model"]
     assert callback.best_success_rate == pytest.approx(0.60)
+
+
+def test_barrel_roll_evaluator_records_step_zero_history(monkeypatch, tmp_path):
+    class _Logger:
+        def __init__(self):
+            self.records = {}
+
+        def record(self, key, value, *args, **kwargs):
+            del args, kwargs
+            self.records[key] = value
+
+    class _Model:
+        num_timesteps = 0
+
+        def __init__(self):
+            self.logger = _Logger()
+            self._env = SimpleNamespace(num_envs=1)
+
+        def get_env(self):
+            return self._env
+
+        def save(self, path):
+            Path(path).touch()
+
+        def get_vec_normalize_env(self):
+            return None
+
+    monkeypatch.setattr(train_module, "sync_envs_normalization", lambda *args: None)
+    monkeypatch.setattr(
+        train_module,
+        "evaluate_barrel_roll_policy",
+        lambda *args, **kwargs: {
+            "success_rate": 0.0,
+            "mean_reward": -1.0,
+            "episode_rewards": [-1.0] * 100,
+            "failure_reasons": {
+                "non_foot_ground_contact:geom_29": 40,
+                "non_foot_ground_contact:geom_53": 60,
+            },
+            "seeds": list(BARREL_ROLL_EVAL_SEEDS),
+        },
+    )
+    history_path = tmp_path / "evaluation_history.jsonl"
+    callback = BarrelRollEvalCallback(
+        object(),
+        eval_freq=1,
+        best_model_save_path=tmp_path / "best",
+        seeds=BARREL_ROLL_EVAL_SEEDS,
+        history_path=history_path,
+    )
+    model = _Model()
+    callback.init_callback(model)
+    callback._on_training_start()
+
+    records = [json.loads(line) for line in history_path.read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["timesteps"] == 0
+    assert records[0]["success_rate"] == 0.0
+    assert records[0]["seeds"] == list(BARREL_ROLL_EVAL_SEEDS)
+    assert model.logger.records["eval/failure_reason/non_foot_ground_contact"] == 100.0
+
+
+def test_barrel_roll_pilot_diagnostics_proves_finite_signals(tmp_path):
+    class _Logger:
+        def __init__(self):
+            self.name_to_value = {
+                "train/actor_loss": 1.0,
+                "train/critic_loss": 2.0,
+                "train/ent_coef": 0.5,
+                "train/ent_coef_loss": -0.25,
+            }
+
+        def record(self, key, value, *args, **kwargs):
+            del args, kwargs
+            self.name_to_value[key] = value
+
+    class _Policy:
+        @staticmethod
+        def obs_to_tensor(observations):
+            return {
+                key: th.as_tensor(value, dtype=th.float32)
+                for key, value in observations.items()
+            }, False
+
+    class _Critic:
+        @staticmethod
+        def __call__(observations, actions):
+            batch = observations["policy"].shape[0]
+            assert actions.shape == (batch, 12)
+            return (th.ones((batch, 1)), th.full((batch, 1), 2.0))
+
+    class _ReplayBuffer:
+        full = False
+        transition_sources = np.array([[0], [1]], dtype=np.uint8)
+
+        @staticmethod
+        def size():
+            return 2
+
+        @staticmethod
+        def get_mpc_percentage():
+            return 50.0
+
+    class _Model:
+        device = th.device("cpu")
+        num_timesteps = 1
+        _n_updates = 1
+        policy = _Policy()
+        critic = _Critic()
+        replay_buffer = _ReplayBuffer()
+
+        def __init__(self):
+            self.logger = _Logger()
+            self._env = SimpleNamespace(num_envs=1)
+
+        def get_env(self):
+            return self._env
+
+    summary_path = tmp_path / "diagnostics.json"
+    callback = BarrelRollPilotDiagnosticsCallback(summary_path)
+    callback.init_callback(_Model())
+    callback.locals = {
+        "new_obs": {
+            "policy": np.zeros((1, 45), dtype=np.float32),
+            "privileged": np.zeros((1, 4), dtype=np.float32),
+        },
+        "actions": np.zeros((1, 12), dtype=np.float32),
+        "rewards": np.array([1.0], dtype=np.float32),
+        "infos": [{"roll_progress": 0.25}],
+    }
+    assert callback._on_step()
+    callback._on_training_end()
+
+    summary = json.loads(summary_path.read_text())
+    assert summary["status"] == "complete"
+    assert summary["environment_transitions_checked"] == 1
+    assert summary["q_batches_checked"] == 1
+    assert summary["training_snapshots_checked"] == 1
+    assert summary["ranges"]["q_value/0"] == [1.0, 1.0]
+    assert summary["ranges"]["train/ent_coef"] == [0.5, 0.5]
+    assert summary["replay_percentage_last"] == 50.0
+
+
+def test_barrel_roll_pilot_diagnostics_fails_on_nonfinite_reward(tmp_path):
+    callback = BarrelRollPilotDiagnosticsCallback(tmp_path / "diagnostics.json")
+    callback._write_summary = lambda status, error=None: None
+    callback.locals = {
+        "new_obs": {"policy": np.zeros((1, 45)), "privileged": np.zeros((1, 4))},
+        "actions": np.zeros((1, 12)),
+        "rewards": np.array([np.nan]),
+    }
+    with pytest.raises(FloatingPointError, match="non-finite rewards"):
+        callback._on_step()
 
 
 def test_barrel_roll_tensorboard_logging_covers_task_and_replay_metrics():
@@ -408,7 +570,7 @@ def test_barrel_roll_tensorboard_logging_covers_task_and_replay_metrics():
                 "contact_state": np.array([True, False, True, False]),
                 "stability_count": 2,
                 "is_success": False,
-                "failure_reason": "incomplete_roll",
+                "failure_reason": "non_foot_ground_contact:geom_29",
                 "action_clip_fraction": 0.25,
                 "torque_saturation_fraction": 0.125,
                 "applied_torques": np.zeros(12),
@@ -429,7 +591,7 @@ def test_barrel_roll_tensorboard_logging_covers_task_and_replay_metrics():
         "barrel_roll/contact_fraction",
         "barrel_roll/stability_count_mean",
         "barrel_roll/success_fraction",
-        "barrel_roll/failure_reason/incomplete_roll",
+        "barrel_roll/failure_reason/non_foot_ground_contact",
         "barrel_roll/action_clip_fraction",
         "barrel_roll/torque_saturation_fraction",
         "reward/roll_tracking",
@@ -438,3 +600,36 @@ def test_barrel_roll_tensorboard_logging_covers_task_and_replay_metrics():
         "replay_buffer/mpc_percentage_actual",
     }
     assert expected_keys <= model.logger.records.keys()
+
+
+def test_barrel_roll_failure_metrics_aggregate_geom_details_without_collision():
+    class _Logger:
+        def __init__(self):
+            self.records = {}
+
+        def record(self, key, value, *args, **kwargs):
+            del args, kwargs
+            self.records[key] = value
+
+    class _Model:
+        def __init__(self):
+            self.logger = _Logger()
+            self._env = SimpleNamespace(num_envs=2)
+
+        def get_env(self):
+            return self._env
+
+    callback = QuadrupedTensorboardCallback(log_freq=1, task="barrel_roll")
+    model = _Model()
+    callback.init_callback(model)
+    callback.n_calls = 1
+    callback.locals = {
+        "infos": [
+            {"failure_reason": "non_foot_ground_contact:geom_29"},
+            {"failure_reason": "non_foot_ground_contact:geom_53"},
+        ]
+    }
+    assert callback._on_step()
+    assert model.logger.records == {
+        "barrel_roll/failure_reason/non_foot_ground_contact": 2.0
+    }
