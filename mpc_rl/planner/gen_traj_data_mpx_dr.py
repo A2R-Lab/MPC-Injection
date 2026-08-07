@@ -78,6 +78,7 @@ def _controller_config_with_overrides(
     mpx_qleg_vertical_cost,
     mpx_qtau_cost,
     mpx_qq_cost,
+    mpx_qdq_cost,
     mpx_robot_height_m,
 ):
     """Return the stock MPX config or an instance-local reference/cost variant."""
@@ -89,6 +90,7 @@ def _controller_config_with_overrides(
         and mpx_qleg_vertical_cost is None
         and mpx_qtau_cost is None
         and mpx_qq_cost is None
+        and mpx_qdq_cost is None
         and mpx_robot_height_m is None
     ):
         return config
@@ -132,6 +134,11 @@ def _controller_config_with_overrides(
         if mpx_qq_cost is None
         else float(mpx_qq_cost)
     )
+    joint_velocity_cost = (
+        float(np.asarray(config.Qdq)[0, 0])
+        if mpx_qdq_cost is None
+        else float(mpx_qdq_cost)
+    )
     if not np.isfinite(pitch_cost) or pitch_cost < 0.0:
         raise ValueError("mpx_qrot_pitch_cost must be finite and non-negative")
     if not np.isfinite(robot_height) or robot_height <= 0.0:
@@ -157,6 +164,8 @@ def _controller_config_with_overrides(
         raise ValueError("mpx_qtau_cost must be finite and non-negative")
     if not np.isfinite(joint_position_cost) or joint_position_cost < 0.0:
         raise ValueError("mpx_qq_cost must be finite and non-negative")
+    if not np.isfinite(joint_velocity_cost) or joint_velocity_cost < 0.0:
+        raise ValueError("mpx_qdq_cost must be finite and non-negative")
     qp = config.Qp.astype(config.W.dtype).at[2, 2].set(height_cost)
     qdp = (
         config.Qdp.astype(config.W.dtype)
@@ -172,6 +181,9 @@ def _controller_config_with_overrides(
     qq = config.Qq.astype(config.W.dtype) * (
         joint_position_cost / float(np.asarray(config.Qq)[0, 0])
     )
+    qdq = config.Qdq.astype(config.W.dtype) * (
+        joint_velocity_cost / float(np.asarray(config.Qdq)[0, 0])
+    )
     qrot = config.Qrot.astype(config.W.dtype).at[1, 1].set(pitch_cost)
     qomega = (
         config.Qomega.astype(config.W.dtype)
@@ -184,7 +196,7 @@ def _controller_config_with_overrides(
         qq,
         qdp,
         qomega,
-        config.Qdq,
+        qdq,
         qleg,
         qtau,
         config.Q_grf,
@@ -203,6 +215,7 @@ def _controller_config_with_overrides(
         Qleg=qleg,
         Qtau=qtau,
         Qq=qq,
+        Qdq=qdq,
         W=weights,
         initial_height=robot_height,
         p0=p0,
@@ -403,6 +416,9 @@ def _controller_configuration_arrays(env, mpc) -> dict:
         ),
         "controller_qq_cost": float(
             np.asarray(controller_config.Qq, dtype=np.float64)[0, 0]
+        ),
+        "controller_qdq_cost": float(
+            np.asarray(controller_config.Qdq, dtype=np.float64)[0, 0]
         ),
         "controller_robot_height_m": float(mpc.robot_height),
         "controller_swing_clearance_speed_m_per_s": float(
@@ -750,6 +766,7 @@ def generate_trajectory(
     mpx_qleg_vertical_cost=None,
     mpx_qtau_cost=None,
     mpx_qq_cost=None,
+    mpx_qdq_cost=None,
     mpx_robot_height_m=None,
     mpx_swing_clearance_speed_m_per_s=None,
     joint_kp=None,
@@ -841,6 +858,7 @@ def generate_trajectory(
                 mpx_qleg_vertical_cost,
                 mpx_qtau_cost,
                 mpx_qq_cost,
+                mpx_qdq_cost,
                 mpx_robot_height_m,
             )
             mpc = mpc_wrapper.MPCControllerWrapper(
@@ -1299,6 +1317,9 @@ def generate_trajectory(
                 "mpx_qq_cost": controller_configuration[
                     "controller_qq_cost"
                 ],
+                "mpx_qdq_cost": controller_configuration[
+                    "controller_qdq_cost"
+                ],
                 "mpx_weight_matrix_sha256": controller_configuration[
                     "controller_weight_matrix_sha256"
                 ],
@@ -1749,6 +1770,7 @@ def gen_traj_quadruped_dr(
     mpx_qleg_vertical_cost=None,
     mpx_qtau_cost=None,
     mpx_qq_cost=None,
+    mpx_qdq_cost=None,
     mpx_robot_height_m=None,
     mpx_swing_clearance_speed_m_per_s=None,
     joint_kp=None,
@@ -1829,6 +1851,7 @@ def gen_traj_quadruped_dr(
         ]
         mpx_qtau_cost = controller_declaration["mpx_qtau_cost"]
         mpx_qq_cost = controller_declaration["mpx_qq_cost"]
+        mpx_qdq_cost = controller_declaration["mpx_qdq_cost"]
         mpx_robot_height_m = controller_declaration["mpx_robot_height_m"]
         mpx_swing_clearance_speed_m_per_s = controller_declaration[
             "mpx_swing_clearance_speed_m_per_s"
@@ -1980,6 +2003,7 @@ def gen_traj_quadruped_dr(
             mpx_qleg_vertical_cost,
             mpx_qtau_cost,
             mpx_qq_cost,
+            mpx_qdq_cost,
             mpx_robot_height_m,
         )
         shared_mpc = mpc_wrapper.MPCControllerWrapper(
@@ -2062,6 +2086,7 @@ def gen_traj_quadruped_dr(
             mpx_qleg_vertical_cost=mpx_qleg_vertical_cost,
             mpx_qtau_cost=mpx_qtau_cost,
             mpx_qq_cost=mpx_qq_cost,
+            mpx_qdq_cost=mpx_qdq_cost,
             mpx_robot_height_m=mpx_robot_height_m,
             mpx_swing_clearance_speed_m_per_s=(
                 mpx_swing_clearance_speed_m_per_s
@@ -2203,6 +2228,7 @@ def gen_traj_quadruped_dr(
                     mpx_qleg_vertical_cost=mpx_qleg_vertical_cost,
                     mpx_qtau_cost=mpx_qtau_cost,
                     mpx_qq_cost=mpx_qq_cost,
+                    mpx_qdq_cost=mpx_qdq_cost,
                     mpx_robot_height_m=mpx_robot_height_m,
                     mpx_swing_clearance_speed_m_per_s=(
                         mpx_swing_clearance_speed_m_per_s
@@ -2292,6 +2318,7 @@ def gen_traj_quadruped_dr(
             "mpx_qleg_vertical_cost": mpx_qleg_vertical_cost,
             "mpx_qtau_cost": mpx_qtau_cost,
             "mpx_qq_cost": mpx_qq_cost,
+            "mpx_qdq_cost": mpx_qdq_cost,
             "mpx_robot_height_m": mpx_robot_height_m,
             "mpx_swing_clearance_speed_m_per_s": (
                 mpx_swing_clearance_speed_m_per_s
@@ -2459,6 +2486,12 @@ def main():
         type=float,
         default=None,
         help="Optional instance-local MPX per-joint position-reference cost",
+    )
+    parser.add_argument(
+        "--mpx-qdq-cost",
+        type=float,
+        default=None,
+        help="Optional instance-local MPX per-joint velocity cost",
     )
     parser.add_argument(
         "--mpx-robot-height-m",
@@ -2636,6 +2669,7 @@ def main():
             mpx_qleg_vertical_cost=args.mpx_qleg_vertical_cost,
             mpx_qtau_cost=args.mpx_qtau_cost,
             mpx_qq_cost=args.mpx_qq_cost,
+            mpx_qdq_cost=args.mpx_qdq_cost,
             mpx_robot_height_m=args.mpx_robot_height_m,
             mpx_swing_clearance_speed_m_per_s=(
                 args.mpx_swing_clearance_speed_m_per_s
@@ -2669,6 +2703,7 @@ def main():
         mpx_qleg_vertical_cost=args.mpx_qleg_vertical_cost,
         mpx_qtau_cost=args.mpx_qtau_cost,
         mpx_qq_cost=args.mpx_qq_cost,
+        mpx_qdq_cost=args.mpx_qdq_cost,
         mpx_robot_height_m=args.mpx_robot_height_m,
         mpx_swing_clearance_speed_m_per_s=(
             args.mpx_swing_clearance_speed_m_per_s

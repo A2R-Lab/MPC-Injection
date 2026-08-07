@@ -342,7 +342,8 @@ pitch-rate, body/foot vertical tracking, and body-height reference overrides wit
 `--mpx-qleg-vertical-cost`, `--mpx-robot-height-m`, or
 `--mpx-swing-clearance-speed-m-per-s`. The per-joint torque-effort diagonal is
 available as `--mpx-qtau-cost`, and the per-joint position-reference diagonal
-as `--mpx-qq-cost`. Joint feedback studies can
+as `--mpx-qq-cost`. The joint-velocity diagonal is available as
+`--mpx-qdq-cost`. Joint feedback studies can
 use scalar `--joint-kp` and `--joint-kd` values or explicit hip/thigh/calf triplets through
 `--joint-kp-by-type` and `--joint-kd-by-type`. These values are serialized in
 the acceptance declaration and realized controller metadata; a frozen
