@@ -1207,12 +1207,58 @@ earliest affected gate.
 
 ### Gate G8: production SAC-MPC training and evaluation
 
-**Status (2026-08-07): IN PROGRESS.** Production training seeds are
-predeclared as `1`, `2`, and `3` before any G8 policy result exists. The
-dedicated sequential runner records source/data provenance, refuses a dirty
-tracked worktree or an existing campaign directory, strictly revalidates the
-immutable G7 dataset, and stops on the first failed run. No production run had
-been launched when this schedule was frozen.
+**Status (2026-08-07): BLOCKED; earliest affected gate G6 (production-readiness
+learning evidence).** Production seeds `1`, `2`, and `3` were predeclared
+before any G8 result. Setup commit `49034f51` added the sequential runner and
+durable selected-checkpoint diagnostics. Its focused tests reported `21
+passed`; the relevant root suite reported `134 passed, 3 failed, 1 skipped`,
+with exactly the three frozen baseline failures; MPX reported `8 passed`.
+Strict validation and all 1,000 indexed checksums passed before launch. The
+runner recorded root `49034f51`, MPX `6bc496d6`, nested solver `273d78de`,
+Gym-Quadruped `6eaa8ea6`, MuJoCo MPC `17be7ffb`, checksum-index SHA-256
+`153334c544fec09e8aee4fa74223bde0f5b1c6b4f0018ce1e65328fbf0ccee70`,
+and aggregate-manifest SHA-256
+`8d67b8ab296bc4bd56cffac69e34a44f2b8da922b203e0b0b9c1b4ad931b5491`.
+
+Seeds 1 and 2 each completed exactly 500,000 environment steps, 125,000 Q
+batches, and 122,500 post-learning snapshots with finite diagnostics. Final
+replay composition was `25.0001499997%` for both. Every run preserves 20 model
+checkpoints and 20 matching normalization checkpoints plus all 51 fixed-seed
+evaluations (step zero and every 10k through 500k). Both final models scored
+0/100, with 100 `incomplete_roll` failures.
+
+- Seed 1 selected the earliest strict success-rate improvement at 160k. Its
+  selected-checkpoint result was 1/100, with 99 `incomplete_roll` failures,
+  mean return `60.8812916696` (range `59.7506018877` to `80.7157520056`), mean
+  absolute terminal roll error `0.0530784638` rad, 58 detected touchdowns at
+  mean `1.0186206897` s, and 22 stabilizations at mean `1.1227272727` s.
+  Labelled failure seed `1000000` and success seed `1000080` videos exist.
+- Seed 2 selected the earliest strict improvement at 110k. Its selected result
+  was 1/100, with 66 `incomplete_roll` and 33
+  `non_foot_ground_contact:geom_18` failures, mean return `57.4109835219`
+  (range `41.4832899570` to `85.0970307589`), mean absolute terminal roll
+  error `0.0597363792` rad, 20 detected touchdowns at mean `1.162` s, and one
+  stabilization at `1.38` s. Labelled failure seed `1000000` and success seed
+  `1000024` videos exist.
+
+After seed 2, the project owner authorized the blocker-protocol stop before
+seed 3. For any possible third rate `x`, the sorted rates are bounded by
+`[1%, 1%, x]`, so the median is at most 1%, far below the required 80%. Seed 3
+was not launched, no seed-3 directory exists, and the campaign intentionally
+has no `COMPLETE` marker. This is not a three-run PASS; it is a compute-saving
+BLOCKED resolution after the acceptance result became mathematically fixed.
+
+The fallback audit found valid landing evidence rather than a corrupt data or
+replay path: all 1,000 demonstrations have successful terminal transitions,
+minimum terminal stability streak 5 (mean 18.661), and 54.2857% of transitions
+are at phase 0.8 or later. Strict direct-replay tests preserve terminal success
+and timeout semantics. Both policies rotate close to the target but almost
+never stabilize, while losses and values remain finite. The schema-v2 G6
+pilot's transient single-seed 15% improvement therefore did not establish
+robust production readiness. Return to G6's ordered landing-learning fallback
+audit before any new production run; do not sweep G8 seeds or alter frozen
+reward, observation, data, replay, or classifier decisions without a new
+authorized recovery chain.
 
 Run three 500,000-step seeds at 25% MPC replay. Add a dedicated script such as
 `run_go2_barrel_roll_sac_mpc.sh` only after the final CLI is known; it should

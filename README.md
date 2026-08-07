@@ -154,19 +154,23 @@ conda run --no-capture-output -n mpc-rl python \
 )
 ```
 
-G8 production training uses the predeclared seeds `1`, `2`, and `3`. The
-sequential runner revalidates the immutable dataset, records provenance and
-resource usage, refuses to overwrite an existing campaign, and stops on the
-first failed run:
+G8 production training is **BLOCKED**. Predeclared seeds 1 and 2 each completed
+500,000 steps, but their success-selected held-out rates were only 1%. Because
+even a hypothetical 100% seed 3 would leave the median at 1%, the project owner
+authorized stopping before seed 3. Do not rerun or overwrite the retained
+campaign under `logs/go2_barrel_roll_g8_production/`.
+
+The frozen sequential runner revalidates the immutable dataset, records
+provenance and resource usage, refuses to overwrite an existing campaign, and
+stops on the first failed run:
 
 ```bash
 ./run_go2_barrel_roll_sac_mpc.sh
 ```
 
 It writes ignored policies, checkpoints, evaluation JSONL, selected-checkpoint
-reports, and labelled representative outcome videos under
-`logs/go2_barrel_roll_g8_production/`. The non-training production routing
-check is:
+reports, and labelled representative outcome videos under the campaign
+directory. The non-training production routing check is:
 
 ```bash
 python mpc_rl/train.py \
