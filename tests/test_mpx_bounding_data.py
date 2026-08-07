@@ -230,6 +230,7 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         mpx_qp_height_cost=2_500.0,
         mpx_qdp_vertical_cost=4_000.0,
         mpx_qleg_vertical_cost=50_000.0,
+        mpx_qtau_cost=1.0,
         mpx_robot_height_m=0.24,
         mpx_swing_clearance_speed_m_per_s=0.2,
         joint_kp={
@@ -268,6 +269,10 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         np.full(4, 50_000.0),
     )
     assert float(np.asarray(constructed_configs[0].Qleg)[0, 0]) == 10_000.0
+    np.testing.assert_array_equal(
+        np.diag(np.asarray(constructed_configs[0].Qtau)),
+        np.ones(12),
+    )
     assert float(constructed_configs[0].robot_height) == 0.24
     assert float(np.asarray(constructed_configs[0].p0)[2]) == pytest.approx(0.24)
     assert float(np.asarray(go2_config.Qrot)[1, 1]) == 50_000.0
@@ -307,6 +312,10 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         == 50_000.0
     )
     assert (
+        manifest["generation_settings"]["controller"]["mpx_qtau_cost"]
+        == pytest.approx(1.0)
+    )
+    assert (
         manifest["generation_settings"]["controller"]["mpx_robot_height_m"]
         == 0.24
     )
@@ -339,6 +348,7 @@ def test_legacy_generator_defaults_remain_legacy():
     assert signature.parameters["mpx_qp_height_cost"].default is None
     assert signature.parameters["mpx_qdp_vertical_cost"].default is None
     assert signature.parameters["mpx_qleg_vertical_cost"].default is None
+    assert signature.parameters["mpx_qtau_cost"].default is None
     assert signature.parameters["mpx_robot_height_m"].default is None
     assert (
         signature.parameters["mpx_swing_clearance_speed_m_per_s"].default
