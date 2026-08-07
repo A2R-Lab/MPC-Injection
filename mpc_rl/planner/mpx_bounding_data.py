@@ -118,6 +118,7 @@ def make_commissioning_acceptance_declaration(
     max_roll_rad: float = 0.5,
     min_base_height_m: float = 0.1,
     mpx_qrot_pitch_cost: float | None = None,
+    mpx_qomega_pitch_cost: float | None = None,
     mpx_robot_height_m: float | None = None,
     acceptance_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -161,6 +162,11 @@ def make_commissioning_acceptance_declaration(
                 None
                 if mpx_qrot_pitch_cost is None
                 else float(mpx_qrot_pitch_cost)
+            ),
+            "mpx_qomega_pitch_cost": (
+                None
+                if mpx_qomega_pitch_cost is None
+                else float(mpx_qomega_pitch_cost)
             ),
             "realized_environment_kp": None,
             "realized_environment_kd": None,
@@ -258,6 +264,7 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
         "max_roll_rad",
         "min_base_height_m",
         "mpx_qrot_pitch_cost",
+        "mpx_qomega_pitch_cost",
         "realized_environment_kp",
         "realized_environment_kd",
         "mpx_weight_matrix_sha256",
@@ -275,6 +282,14 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
     ):
         raise ValueError(
             "controller mpx_qrot_pitch_cost must be null or non-negative"
+        )
+    pitch_rate_cost = controller["mpx_qomega_pitch_cost"]
+    if pitch_rate_cost is not None and (
+        not np.isfinite(float(pitch_rate_cost))
+        or float(pitch_rate_cost) < 0.0
+    ):
+        raise ValueError(
+            "controller mpx_qomega_pitch_cost must be null or non-negative"
         )
     robot_height = controller["mpx_robot_height_m"]
     if robot_height is not None and (
