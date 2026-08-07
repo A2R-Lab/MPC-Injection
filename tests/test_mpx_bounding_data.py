@@ -239,6 +239,12 @@ def test_batch_constructs_controller_with_requested_instance_gait(
     filename = next(tmp_path.glob("*.npz")).name
     assert "bound_front_first" in filename
     assert "vx0p5" in filename
+    manifest = json.loads(
+        (tmp_path / "generation_manifest.jsonl").read_text(encoding="utf-8")
+    )
+    assert manifest["result"] == "passed"
+    assert manifest["passed"] is True
+    assert manifest["failure_reasons"] == []
 
 
 def test_legacy_generator_defaults_remain_legacy():

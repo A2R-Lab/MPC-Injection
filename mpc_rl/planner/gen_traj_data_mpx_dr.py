@@ -1830,12 +1830,21 @@ def gen_traj_quadruped_dr(
             ),
         }
         if normalized_declaration is None:
+            legacy_passed = bool(
+                (not traj_data["fell"])
+                and (traj_data["completed_control_steps"] == episode_length)
+            )
+            legacy_failure_reasons = []
+            if not legacy_passed:
+                legacy_failure_reasons.append(
+                    str(traj_data["failure_reason"] or "incomplete_horizon")
+                )
             manifest_record = {
                 **base_manifest_record,
-                "success": bool(
-                    (not traj_data["fell"])
-                    and (traj_data["completed_control_steps"] == episode_length)
-                ),
+                "success": legacy_passed,
+                "passed": legacy_passed,
+                "result": "passed" if legacy_passed else "failed",
+                "failure_reasons": legacy_failure_reasons,
             }
             _append_manifest_record(manifest_path, manifest_record)
 
