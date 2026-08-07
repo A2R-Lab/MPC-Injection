@@ -1,5 +1,12 @@
 # MPX Bounding-Data Implementation Plan
 
+> Historical scope note (2026-08-07): this G0-G6 plan records the original
+> broader bounding, domain-randomization, injection, and training workflow. The
+> current repository objective is limited to generating validated nominal MPX
+> bounding trajectories at a commanded 0.5 m/s. The active implementation plan
+> is [mpx_bounding_data_generation_plan.md](mpx_bounding_data_generation_plan.md).
+> Training and use of the generated data are deferred.
+
 ## Goal and definition of done
 
 Build a reproducible pipeline that uses the checked-in `deps/mpx` controller to
