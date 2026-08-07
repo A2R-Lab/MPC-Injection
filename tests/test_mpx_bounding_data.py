@@ -228,6 +228,11 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         mpx_qrot_pitch_cost=25_000.0,
         mpx_qomega_pitch_cost=250.0,
         mpx_robot_height_m=0.24,
+        joint_kp={
+            "hip_joint": 20.0,
+            "thigh_joint": 30.0,
+            "calf_joint": 40.0,
+        },
         action_interface_id=MPX_BOUND_ACTION_INTERFACE_ID,
     )
 
@@ -271,6 +276,11 @@ def test_batch_constructs_controller_with_requested_instance_gait(
         manifest["generation_settings"]["controller"]["mpx_robot_height_m"]
         == 0.24
     )
+    assert manifest["generation_settings"]["controller"]["environment_kp"] == [
+        20.0,
+        30.0,
+        40.0,
+    ] * 4
 
 
 def test_legacy_generator_defaults_remain_legacy():
@@ -289,6 +299,19 @@ def test_legacy_generator_defaults_remain_legacy():
     assert signature.parameters["action_interface_id"].default == (
         DEFAULT_ACTION_INTERFACE_ID
     )
+
+
+def test_commissioning_declaration_preserves_per_joint_type_gains():
+    declaration = _short_declaration()
+    declaration["controller"]["joint_kp_arg"] = {
+        "hip_joint": 20.0,
+        "thigh_joint": 30.0,
+        "calf_joint": 40.0,
+    }
+
+    normalized = validate_acceptance_declaration(declaration)
+
+    assert normalized["controller"]["joint_kp_arg"]["thigh_joint"] == 30.0
 
 
 def test_measured_classifier_accepts_repeated_symmetric_alternation():

@@ -112,8 +112,8 @@ def make_commissioning_acceptance_declaration(
     gait_duty_factor: float,
     gait_step_frequency_hz: float,
     gait_step_height_m: float,
-    joint_kp: float | None = None,
-    joint_kd: float | None = None,
+    joint_kp: float | Mapping[str, float] | None = None,
+    joint_kd: float | Mapping[str, float] | None = None,
     max_pitch_rad: float = 0.5,
     max_roll_rad: float = 0.5,
     min_base_height_m: float = 0.1,
@@ -153,8 +153,8 @@ def make_commissioning_acceptance_declaration(
             "step_height_m": float(gait_step_height_m),
         },
         "controller": {
-            "joint_kp_arg": None if joint_kp is None else float(joint_kp),
-            "joint_kd_arg": None if joint_kd is None else float(joint_kd),
+            "joint_kp_arg": joint_kp,
+            "joint_kd_arg": joint_kd,
             "max_pitch_rad": float(max_pitch_rad),
             "max_roll_rad": float(max_roll_rad),
             "min_base_height_m": float(min_base_height_m),
@@ -272,9 +272,24 @@ def validate_acceptance_declaration(declaration: Mapping[str, Any]) -> dict[str,
     }
     if set(controller) != expected_controller_keys:
         raise ValueError("acceptance declaration controller fields are incomplete")
+    gain_map_keys = {"hip_joint", "thigh_joint", "calf_joint"}
     for key in ("joint_kp_arg", "joint_kd_arg"):
         value = controller[key]
-        if value is not None and (not np.isfinite(float(value)) or float(value) < 0.0):
+        if isinstance(value, dict):
+            if set(value) != gain_map_keys:
+                raise ValueError(
+                    f"controller {key} gain map must contain {sorted(gain_map_keys)}"
+                )
+            if any(
+                not np.isfinite(float(gain)) or float(gain) < 0.0
+                for gain in value.values()
+            ):
+                raise ValueError(
+                    f"controller {key} gain map values must be non-negative"
+                )
+        elif value is not None and (
+            not np.isfinite(float(value)) or float(value) < 0.0
+        ):
             raise ValueError(f"controller {key} must be null or non-negative")
     pitch_cost = controller["mpx_qrot_pitch_cost"]
     if pitch_cost is not None and (

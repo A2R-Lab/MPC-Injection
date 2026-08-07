@@ -2257,6 +2257,14 @@ def main():
         help="Optional scalar environment joint proportional gain",
     )
     parser.add_argument(
+        "--joint-kp-by-type",
+        type=float,
+        nargs=3,
+        metavar=("HIP", "THIGH", "CALF"),
+        default=None,
+        help="Optional hip/thigh/calf proportional gains",
+    )
+    parser.add_argument(
         "--joint-kd",
         type=float,
         default=None,
@@ -2337,6 +2345,18 @@ def main():
     
     args = parser.parse_args()
 
+    if args.joint_kp is not None and args.joint_kp_by_type is not None:
+        parser.error("--joint-kp and --joint-kp-by-type are mutually exclusive")
+    joint_kp = args.joint_kp
+    if args.joint_kp_by_type is not None:
+        joint_kp = dict(
+            zip(
+                ("hip_joint", "thigh_joint", "calf_joint"),
+                args.joint_kp_by_type,
+                strict=True,
+            )
+        )
+
     acceptance_declaration = None
     if args.acceptance_declaration is not None:
         acceptance_declaration = json.loads(
@@ -2363,7 +2383,7 @@ def main():
             gait_duty_factor=args.duty_factor,
             gait_step_frequency_hz=args.step_frequency_hz,
             gait_step_height_m=args.step_height_m,
-            joint_kp=args.joint_kp,
+            joint_kp=joint_kp,
             joint_kd=args.joint_kd,
             max_pitch_rad=args.max_pitch,
             max_roll_rad=args.max_roll,
@@ -2396,7 +2416,7 @@ def main():
         mpx_qrot_pitch_cost=args.mpx_qrot_pitch_cost,
         mpx_qomega_pitch_cost=args.mpx_qomega_pitch_cost,
         mpx_robot_height_m=args.mpx_robot_height_m,
-        joint_kp=args.joint_kp,
+        joint_kp=joint_kp,
         joint_kd=args.joint_kd,
         max_pitch=args.max_pitch,
         max_roll=args.max_roll,
