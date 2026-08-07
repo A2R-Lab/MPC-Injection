@@ -9,10 +9,14 @@ during the design interview, the repository evidence behind the design, the
 required file changes, validation gates, runnable workflows to add, and the
 fallback order if a gate fails.
 
-Implementation passed the G3 commissioning gate on 2026-08-06. The root project
-now has a physically validated barrel-roll environment and commissioning
-generator, but no promoted dataset or trained policy exists. G4-G8 were not
-started during the G3 recovery.
+Implementation recorded a G3 commissioning pass on 2026-08-06. During the G4
+smoke run later that day, seeds 6 and 8 failed the unchanged classifier. The
+project owner approved the established accepted-only generation policy for
+this gate: seeds advance sequentially, every failed attempt remains in a
+manifest, and only classifier-passing rollouts count toward the requested data
+total. G3 is accepted under that revised reproducibility policy, and G4 is
+complete with ten validated smoke files. No promoted production dataset or
+trained policy exists.
 
 ## Implementation evidence (G0-G5 session)
 
@@ -99,7 +103,7 @@ started during the G3 recovery.
   and snapshots roll progress once per control interval so the progress reward
   covers all four physics substeps.
 
-### G3 — complete (G4-G8 not started)
+### G3 — complete under revised accepted-only generation policy
 
 - The first direct commissioning invocation failed before it could execute a
   physics step: `/home/roy/miniconda3/envs/mpc-rl/bin/python
@@ -185,6 +189,21 @@ started during the G3 recovery.
   skipped`. The four additional passes relative to the prior `85` count are
   expanded barrel focused tests. The three failures remain exactly the G0
   baseline failures. Root and MPX `git diff --check` both pass.
+- The first G4 schema-complete smoke command reused seeds `0` through `9`,
+  `max_attempts=10`, the same allocator setting, and the frozen controller and
+  classifier. It accepted only 8 trajectories. Seed 6 completed 70 transitions
+  but ended with a zero stable-contact streak (`incomplete_roll`); seed 8 made
+  a non-foot `geom_38` ground contact at 1.025 s and stopped after 52
+  transitions. No environment or MPX source differed from the saved boundary.
+  This invalidates the reproducibility precondition for G4; no retry or
+  replacement seed was used.
+- The project owner subsequently approved the same rejection policy used by
+  the existing trajectory pipeline: attempt seeds remain sequential, all
+  failures remain visible in per-worker and aggregate manifests, only
+  classifier-passing rollouts are saved, and generation continues without
+  per-seed tuning until the requested accepted count is reached. The 8/10 run
+  is retained as evidence rather than replaced; the G4 continuation starts at
+  seed 10.
 
 The coordinated feature branches already exist in the current worktree:
 
@@ -665,6 +684,32 @@ this gate; do not require broader MPX/Gym XML reconciliation and do not generate
 data.
 
 ### Gate G4: define and validate schema v1
+
+**Status (2026-08-06): complete under the approved accepted-only policy.** The
+smoke set contains ten strictly validated schema-v1 files and 700 direct
+transitions. Accepted seeds are `0,1,2,3,4,5,7,9,10,11`; seeds 6 and 8 remain
+as rejected records in the aggregate manifest. Seeds 10 and 11 both passed on
+their first attempts without tuning, so the complete history is 10 accepted
+files from 12 sequential attempts.
+
+The focused schema suite reports `19 passed`; it covers nonzero CLI failure and
+explicit schema/task/dimension/timing, non-finite, action, adjacency, phase,
+reward, done, contact, rotation, and landing corruptions. The combined relevant
+suite reports `108 passed, 3 failed, 1 skipped`; the three failures are exactly
+the recorded G0 baseline failures. All ten entries in `checksums.sha256` verify.
+The ignored smoke artifacts are under `data/go2_barrel_roll/v1_g4_smoke/`:
+
+- `generation_manifest_worker0.jsonl` and
+  `generation_manifest_worker1.jsonl` retain all attempts;
+- `generation_manifest_aggregate.jsonl` has SHA-256
+  `d400f0387cb5d0f7c83507b757085720e7adfed8d3133a9ae70688863fc4147b`;
+- `checksums.sha256` has SHA-256
+  `d4550837d7b80cc62f2022016d8d0b7de52dcf45127eb6c572843f0638325b91`;
+- `dataset_summary.json` records 10 files, 700 transitions, 12 attempts, two
+  rejections, and effective-config SHA-256
+  `b94f928e5f9d090ef458b7c8cb2949531040645e07a2318554f6d08967036a94`.
+
+G5 remains unstarted and requires separate authorization.
 
 Proposed files:
 

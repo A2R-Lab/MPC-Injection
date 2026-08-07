@@ -1,8 +1,12 @@
 # Go2 Barrel-Roll G3 MVP Recovery Plan
 
-**Status (2026-08-06): complete.** The rendered zero-spread rollout and the
-single-attempt seeds `0` through `9` gate pass the unchanged classifier. The
-commissioning evidence and frozen controller are recorded below.
+**Status (2026-08-06): complete under the approved accepted-only generation
+policy.** The rendered zero-spread rollout passed. A later schema-complete run
+failed seeds 6 and 8, after which the project owner approved sequential-seed
+rejection sampling: every failed attempt stays manifested, only unchanged-
+classifier successes are saved, and generation continues without per-seed
+tuning until the accepted-count target is reached. The frozen controller is
+unchanged.
 
 ## Purpose and endpoint
 
@@ -419,3 +423,38 @@ was performed.
 - broad XML parity work, architecture refactors, generic diagnostics
   infrastructure, or parameter sweeps; and
 - unrelated velocity-task, policy-export, or baseline-test cleanup.
+
+## G4 reproducibility audit (2026-08-06)
+
+The schema-complete smoke invocation was:
+
+```bash
+XLA_PYTHON_CLIENT_MEM_FRACTION=.25 \
+conda run --no-capture-output -n mpc-rl -- \
+python -m mpc_rl.planner.gen_traj_data_barrel_roll \
+  --num-trajectories=10 --start-seed=0 --max-attempts=10 \
+  --output-dir=data/go2_barrel_roll/v1_g4_smoke \
+  --manifest-filename=generation_manifest_worker0.jsonl --verbose=1
+```
+
+It exited nonzero with `accepted 8/10 barrel-roll attempts`. Seed 6 completed
+all 70 transitions with 6.070971 rad progress, no non-foot contact, and zero
+final stable-contact streak, so the unchanged classifier returned
+`incomplete_roll`. Seed 8 contacted non-foot `geom_38` at 1.025 s and stopped
+after 52 transitions with 5.898830 rad progress. The other eight files passed
+the strict schema-v1 validator. `git diff -- mpc_rl/envs deps/mpx` was empty,
+so the G4 implementation did not change the environment, controller,
+reference, classifier, reward, limits, sysID, contact convention, or timing.
+The exact-seeds requirement was subsequently superseded by explicit project-
+owner approval of the repository's established accepted-only trajectory
+policy. The failed seed 6 and 8 records remain evidence; G4 continues from seed
+10 without retries, replacement tuning, or controller changes. G5 remains
+separately gated.
+
+The continuation accepted seeds 10 and 11 on their first attempts. The final
+G4 smoke evidence therefore contains ten accepted schema-v1 files from twelve
+sequential attempts, with accepted seeds `0,1,2,3,4,5,7,9,10,11`. All ten files
+pass the strict validator and checksum index. The two worker manifests and the
+aggregate manifest retain the seed 6 `incomplete_roll` and seed 8 non-foot
+contact failures. This closes the revised G3 reproducibility requirement and
+unblocks the now-complete G4 without changing the controller or classifier.

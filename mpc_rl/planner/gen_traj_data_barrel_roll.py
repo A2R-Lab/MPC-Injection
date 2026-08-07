@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import sys
 from pathlib import Path
 
+import gym_quadruped
 import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -20,6 +23,10 @@ from mpc_rl.envs.barrel_roll_common import (
     desired_roll_at_time,
 )
 from mpc_rl.envs.barrel_roll_env import QuadrupedBarrelRollEnv
+from mpc_rl.planner.barrel_roll_dataset import (
+    atomic_save_npz,
+    build_provenance_fields,
+)
 
 
 TRACKING_KP = np.asarray(config.BARREL_TRACKING_KP, dtype=np.float64)
@@ -63,6 +70,8 @@ def generate_attempt(
     render: bool = False,
     nominal_spread_zero: bool = False,
     verbose: int = 1,
+    generator_command: str | None = None,
+    generator_config: dict | None = None,
 ):
     """Execute one seeded receding-horizon attempt in the RL task plant."""
     env = QuadrupedBarrelRollEnv(
@@ -497,14 +506,67 @@ def generate_attempt(
             tau_applied=tau,
             tau_mpx=tau_mpx,
             q_des=q_des,
+            dq_des=dq_des,
+            tau_raw=tau_raw,
             X_updates=np.asarray(X_updates),
             U_updates=np.asarray(U_updates),
+            physics_time=np.arange(
+                CONTROL_STEPS * env.decimation + 1, dtype=np.float64
+            ) * env.sim_dt,
+            control_time=np.arange(1, CONTROL_STEPS + 1, dtype=np.float64)
+            * env.control_dt,
+            phase_ctrl=np.asarray(
+                [
+                    min((step + 1) * env.control_dt / config.ROLL_END_TIME, 1.0)
+                    for step in range(CONTROL_STEPS)
+                ],
+                dtype=np.float64,
+            ),
+            desired_roll_ctrl=np.asarray(
+                [
+                    desired_roll_at_time((step + 1) * env.control_dt)
+                    for step in range(CONTROL_STEPS)
+                ],
+                dtype=np.float64,
+            ),
+            measured_roll_physics=measured_roll,
+            foot_contacts=contacts,
+            nonfoot_contact=nonfoot_contacts,
+            stable_contact_streak=np.asarray(stable_contact_streak, dtype=np.int64),
+            classifier_result=np.asarray(classifier_results, dtype=bool),
+            action_clipped=np.abs(residual_unclipped) > 1.0,
+            mpx_saturation_by_actuator=mpx_saturation,
+            applied_saturation_by_actuator=applied_saturation,
             solve_seconds=solve_times,
+            solve_iterations=np.asarray(
+                [item["iterations"] for item in solve_diagnostics], dtype=np.int64
+            ),
+            solve_iteration_limit=np.asarray(
+                [item["iteration_limit"] for item in solve_diagnostics],
+                dtype=np.int64,
+            ),
             solve_objective_norm_sq=np.asarray(
                 [item["final_objective_norm_sq"] for item in solve_diagnostics]
             ),
             solve_constraint_norm_sq=np.asarray(
                 [item["final_constraint_norm_sq"] for item in solve_diagnostics]
+            ),
+            solve_finite=np.asarray(
+                [item["finite"] for item in solve_diagnostics], dtype=bool
+            ),
+            solve_replanned=np.asarray(
+                [item["replanned"] for item in solve_diagnostics], dtype=bool
+            ),
+            solve_phase_index=np.asarray(
+                [item["phase_index"] for item in solve_diagnostics], dtype=np.int64
+            ),
+            solve_elapsed_time=np.asarray(
+                [item["elapsed_time"] for item in solve_diagnostics],
+                dtype=np.float64,
+            ),
+            warm_start_shift=np.asarray(
+                [item["warm_start_shift"] for item in solve_diagnostics],
+                dtype=np.int64,
             ),
             residual_actions_unclipped=residual_unclipped,
             schema_version=np.array(1),
@@ -513,9 +575,44 @@ def generate_attempt(
             rollout_seed=np.array(seed),
             sampled_spread=np.array(env._spread),
             success=np.array(True),
+            failure_reason=np.array(""),
             go2_sysid_enabled=np.array(True),
             tracking_kp=np.array(TRACKING_KP),
             tracking_kd=np.array(TRACKING_KD),
+            final_roll=np.asarray(final_roll),
+            final_pitch=np.asarray(final_pitch),
+            final_base_height=np.asarray(env.mjData.qpos[2]),
+            final_roll_progress=np.asarray(env._roll_progress),
+            action_clip_fraction=np.asarray(action_clip_fraction),
+            mpx_torque_saturation_fraction=np.asarray(mpx_saturation_fraction),
+            torque_saturation_fraction=np.asarray(torque_saturation_fraction),
+        )
+        rollout_xml_path = (
+            Path(gym_quadruped.__file__).resolve().parent
+            / "robot_model"
+            / env.robot_cfg.mjcf_filename
+        )
+        data.update(
+            build_provenance_fields(
+                env=env,
+                mpx_xml_path=Path(config.model_path),
+                rollout_xml_path=rollout_xml_path,
+                generator_source_path=Path(__file__),
+                generator_command=(
+                    generator_command
+                    if generator_command is not None
+                    else shlex.join([sys.executable, *sys.argv])
+                ),
+                generator_config=(
+                    generator_config
+                    if generator_config is not None
+                    else {
+                        "nominal_spread_zero": nominal_spread_zero,
+                        "render": render,
+                        "seed": seed,
+                    }
+                ),
+            )
         )
         return data, metrics, trace
     finally:
@@ -533,6 +630,7 @@ def main():
     parser.add_argument("--manifest-filename", default="generation_manifest.jsonl")
     parser.add_argument("--render", action="store_true")
     parser.add_argument("--nominal-spread-zero", action="store_true")
+    parser.add_argument("--write-commissioning-traces", action="store_true")
     parser.add_argument("--verbose", type=int, default=1)
     args = parser.parse_args()
 
@@ -540,6 +638,16 @@ def main():
     controller = mpc_wrapper.MPCControllerWrapper(config, use_go2_sysid=True)
     accepted = 0
     manifest_path = args.output_dir / args.manifest_filename
+    generator_command = shlex.join([sys.executable, *sys.argv])
+    generator_config = {
+        "manifest_filename": args.manifest_filename,
+        "max_attempts": args.max_attempts,
+        "nominal_spread_zero": args.nominal_spread_zero,
+        "num_trajectories": args.num_trajectories,
+        "render": args.render,
+        "start_seed": args.start_seed,
+        "write_commissioning_traces": args.write_commissioning_traces,
+    }
     with manifest_path.open("w", encoding="utf-8") as manifest:
         for attempt in range(args.max_attempts):
             seed = args.start_seed + attempt
@@ -550,6 +658,8 @@ def main():
                     render=args.render,
                     nominal_spread_zero=args.nominal_spread_zero,
                     verbose=args.verbose,
+                    generator_command=generator_command,
+                    generator_config={**generator_config, "seed": seed},
                 )
             except Exception as error:
                 data = None
@@ -563,11 +673,7 @@ def main():
             metrics, non_finite_metric_fields = _sanitize_metrics(metrics)
             if non_finite_metric_fields:
                 data = None
-            manifest.write(json.dumps(metrics, sort_keys=True, allow_nan=False) + "\n")
-            manifest.flush()
-            if args.verbose:
-                print(json.dumps(metrics, sort_keys=True, allow_nan=False))
-            if trace is not None:
+            if trace is not None and args.write_commissioning_traces:
                 trace_path = args.output_dir / (
                     f"commissioning_trace_seed_{seed:06d}.npz"
                 )
@@ -579,10 +685,15 @@ def main():
                     f"go2_barrel_roll_v1_dir_pos_seed_{seed:06d}_"
                     f"ep_{CONTROL_STEPS:03d}.npz"
                 )
-                temporary = path.with_suffix(".tmp.npz")
-                np.savez_compressed(temporary, **data)
-                temporary.replace(path)
+                atomic_save_npz(path, data)
+                metrics["schema_version"] = 1
+                metrics["task_id"] = "go2_barrel_roll"
+                metrics["trajectory_file"] = path.name
                 accepted += 1
+            manifest.write(json.dumps(metrics, sort_keys=True, allow_nan=False) + "\n")
+            manifest.flush()
+            if args.verbose:
+                print(json.dumps(metrics, sort_keys=True, allow_nan=False))
             if accepted >= args.num_trajectories:
                 break
     if accepted != args.num_trajectories:

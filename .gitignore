@@ -240,6 +240,7 @@ deploy/robots/go2/build/
 # Local/generated
 /.github/instructions/
 /data/quadruped_dr/
+/data/go2_barrel_roll/
 
 # Ignore serena
 .serena/
