@@ -336,10 +336,10 @@ saved action, and promotes it only after all checks pass. The first accepted
 seed is regenerated and compared exactly before the run continues.
 
 Commissioning-only controller studies can record instance-local MPX pitch,
-pitch-rate, vertical-position/velocity, and body-height reference overrides with
+pitch-rate, body/foot vertical tracking, and body-height reference overrides with
 `--mpx-qrot-pitch-cost`, `--mpx-qomega-pitch-cost`,
 `--mpx-qp-height-cost`, `--mpx-qdp-vertical-cost`, and
-`--mpx-robot-height-m`. Joint feedback studies can
+`--mpx-qleg-vertical-cost`, or `--mpx-robot-height-m`. Joint feedback studies can
 use scalar `--joint-kp` and `--joint-kd` values or explicit hip/thigh/calf triplets through
 `--joint-kp-by-type` and `--joint-kd-by-type`. These values are serialized in
 the acceptance declaration and realized controller metadata; a frozen

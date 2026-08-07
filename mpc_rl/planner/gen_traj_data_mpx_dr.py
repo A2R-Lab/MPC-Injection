@@ -75,6 +75,7 @@ def _controller_config_with_overrides(
     mpx_qomega_pitch_cost,
     mpx_qp_height_cost,
     mpx_qdp_vertical_cost,
+    mpx_qleg_vertical_cost,
     mpx_robot_height_m,
 ):
     """Return the stock MPX config or an instance-local reference/cost variant."""
@@ -83,6 +84,7 @@ def _controller_config_with_overrides(
         and mpx_qomega_pitch_cost is None
         and mpx_qp_height_cost is None
         and mpx_qdp_vertical_cost is None
+        and mpx_qleg_vertical_cost is None
         and mpx_robot_height_m is None
     ):
         return config
@@ -111,6 +113,11 @@ def _controller_config_with_overrides(
         if mpx_qdp_vertical_cost is None
         else float(mpx_qdp_vertical_cost)
     )
+    leg_vertical_cost = (
+        float(np.asarray(config.Qleg)[2, 2])
+        if mpx_qleg_vertical_cost is None
+        else float(mpx_qleg_vertical_cost)
+    )
     if not np.isfinite(pitch_cost) or pitch_cost < 0.0:
         raise ValueError("mpx_qrot_pitch_cost must be finite and non-negative")
     if not np.isfinite(robot_height) or robot_height <= 0.0:
@@ -128,12 +135,19 @@ def _controller_config_with_overrides(
         raise ValueError(
             "mpx_qdp_vertical_cost must be finite and non-negative"
         )
+    if not np.isfinite(leg_vertical_cost) or leg_vertical_cost < 0.0:
+        raise ValueError(
+            "mpx_qleg_vertical_cost must be finite and non-negative"
+        )
     qp = config.Qp.astype(config.W.dtype).at[2, 2].set(height_cost)
     qdp = (
         config.Qdp.astype(config.W.dtype)
         .at[2, 2]
         .set(vertical_velocity_cost)
     )
+    qleg = config.Qleg.astype(config.W.dtype)
+    for index in range(2, 3 * int(config.n_contact), 3):
+        qleg = qleg.at[index, index].set(leg_vertical_cost)
     qrot = config.Qrot.astype(config.W.dtype).at[1, 1].set(pitch_cost)
     qomega = (
         config.Qomega.astype(config.W.dtype)
@@ -147,7 +161,7 @@ def _controller_config_with_overrides(
         qdp,
         qomega,
         config.Qdq,
-        config.Qleg,
+        qleg,
         config.Qtau,
         config.Q_grf,
     )
@@ -162,6 +176,7 @@ def _controller_config_with_overrides(
         Qomega=qomega,
         Qp=qp,
         Qdp=qdp,
+        Qleg=qleg,
         W=weights,
         initial_height=robot_height,
         p0=p0,
@@ -353,6 +368,9 @@ def _controller_configuration_arrays(env, mpc) -> dict:
         ),
         "controller_qdp_vertical_cost": float(
             np.asarray(controller_config.Qdp, dtype=np.float64)[2, 2]
+        ),
+        "controller_qleg_vertical_cost": float(
+            np.asarray(controller_config.Qleg, dtype=np.float64)[2, 2]
         ),
         "controller_robot_height_m": float(mpc.robot_height),
         "environment_kp": np.asarray(env.kp, dtype=np.float64).copy(),
@@ -694,6 +712,7 @@ def generate_trajectory(
     mpx_qomega_pitch_cost=None,
     mpx_qp_height_cost=None,
     mpx_qdp_vertical_cost=None,
+    mpx_qleg_vertical_cost=None,
     mpx_robot_height_m=None,
     joint_kp=None,
     joint_kd=None,
@@ -781,6 +800,7 @@ def generate_trajectory(
                 mpx_qomega_pitch_cost,
                 mpx_qp_height_cost,
                 mpx_qdp_vertical_cost,
+                mpx_qleg_vertical_cost,
                 mpx_robot_height_m,
             )
             mpc = mpc_wrapper.MPCControllerWrapper(
@@ -1216,6 +1236,9 @@ def generate_trajectory(
                 ],
                 "mpx_qdp_vertical_cost": controller_configuration[
                     "controller_qdp_vertical_cost"
+                ],
+                "mpx_qleg_vertical_cost": controller_configuration[
+                    "controller_qleg_vertical_cost"
                 ],
                 "mpx_weight_matrix_sha256": controller_configuration[
                     "controller_weight_matrix_sha256"
@@ -1664,6 +1687,7 @@ def gen_traj_quadruped_dr(
     mpx_qomega_pitch_cost=None,
     mpx_qp_height_cost=None,
     mpx_qdp_vertical_cost=None,
+    mpx_qleg_vertical_cost=None,
     mpx_robot_height_m=None,
     joint_kp=None,
     joint_kd=None,
@@ -1737,6 +1761,9 @@ def gen_traj_quadruped_dr(
         mpx_qp_height_cost = controller_declaration["mpx_qp_height_cost"]
         mpx_qdp_vertical_cost = controller_declaration[
             "mpx_qdp_vertical_cost"
+        ]
+        mpx_qleg_vertical_cost = controller_declaration[
+            "mpx_qleg_vertical_cost"
         ]
         mpx_robot_height_m = controller_declaration["mpx_robot_height_m"]
         domain_rand_config_type = "disabled"
@@ -1883,6 +1910,7 @@ def gen_traj_quadruped_dr(
             mpx_qomega_pitch_cost,
             mpx_qp_height_cost,
             mpx_qdp_vertical_cost,
+            mpx_qleg_vertical_cost,
             mpx_robot_height_m,
         )
         shared_mpc = mpc_wrapper.MPCControllerWrapper(
@@ -1954,6 +1982,7 @@ def gen_traj_quadruped_dr(
             mpx_qomega_pitch_cost=mpx_qomega_pitch_cost,
             mpx_qp_height_cost=mpx_qp_height_cost,
             mpx_qdp_vertical_cost=mpx_qdp_vertical_cost,
+            mpx_qleg_vertical_cost=mpx_qleg_vertical_cost,
             mpx_robot_height_m=mpx_robot_height_m,
             joint_kp=joint_kp,
             joint_kd=joint_kd,
@@ -2089,6 +2118,7 @@ def gen_traj_quadruped_dr(
                     mpx_qomega_pitch_cost=mpx_qomega_pitch_cost,
                     mpx_qp_height_cost=mpx_qp_height_cost,
                     mpx_qdp_vertical_cost=mpx_qdp_vertical_cost,
+                    mpx_qleg_vertical_cost=mpx_qleg_vertical_cost,
                     mpx_robot_height_m=mpx_robot_height_m,
                     joint_kp=joint_kp,
                     joint_kd=joint_kd,
@@ -2172,6 +2202,7 @@ def gen_traj_quadruped_dr(
             "mpx_qomega_pitch_cost": mpx_qomega_pitch_cost,
             "mpx_qp_height_cost": mpx_qp_height_cost,
             "mpx_qdp_vertical_cost": mpx_qdp_vertical_cost,
+            "mpx_qleg_vertical_cost": mpx_qleg_vertical_cost,
             "mpx_robot_height_m": mpx_robot_height_m,
             "stage": stage,
             "start_seed": int(start_seed),
@@ -2318,6 +2349,12 @@ def main():
         type=float,
         default=None,
         help="Optional instance-local MPX body vertical-velocity cost",
+    )
+    parser.add_argument(
+        "--mpx-qleg-vertical-cost",
+        type=float,
+        default=None,
+        help="Optional instance-local MPX per-foot vertical tracking cost",
     )
     parser.add_argument(
         "--mpx-robot-height-m",
@@ -2486,6 +2523,7 @@ def main():
             mpx_qomega_pitch_cost=args.mpx_qomega_pitch_cost,
             mpx_qp_height_cost=args.mpx_qp_height_cost,
             mpx_qdp_vertical_cost=args.mpx_qdp_vertical_cost,
+            mpx_qleg_vertical_cost=args.mpx_qleg_vertical_cost,
             mpx_robot_height_m=args.mpx_robot_height_m,
         )
 
@@ -2513,6 +2551,7 @@ def main():
         mpx_qomega_pitch_cost=args.mpx_qomega_pitch_cost,
         mpx_qp_height_cost=args.mpx_qp_height_cost,
         mpx_qdp_vertical_cost=args.mpx_qdp_vertical_cost,
+        mpx_qleg_vertical_cost=args.mpx_qleg_vertical_cost,
         mpx_robot_height_m=args.mpx_robot_height_m,
         joint_kp=joint_kp,
         joint_kd=joint_kd,
