@@ -132,8 +132,30 @@ controlled representability recovery and must not be mixed with v1. Its 100k
 G6 retry passed the learning-progress gate by reaching a reproducible 15%
 held-out success at the success-selected 80k checkpoint, although the final
 policy regressed to 0%; checkpoint instability remains an explicit production
-risk. G7 production generation has not started. The non-training routing check
-is:
+risk. G7 then passed at root `6fdd5bee` and promoted the immutable production
+dataset to `data/go2_barrel_roll/v2`: 1,000 unique schema-v2 files, 70,000
+direct transitions, and 1,435 retained attempts (1,000 accepted and 435
+rejected). Mean action clipping is 0.4987% and the worst file is 1.7857%.
+The effective configuration SHA-256 is
+`8013d45f6ea6540242a0aa49f5cf728d736e08e451ae498edb697703da803c0d`,
+the aggregate-manifest SHA-256 is
+`8d67b8ab296bc4bd56cffac69e34a44f2b8da922b203e0b0b9c1b4ad931b5491`,
+and the checksum-index SHA-256 is
+`153334c544fec09e8aee4fa74223bde0f5b1c6b4f0018ce1e65328fbf0ccee70`.
+Verify the promoted artifact with:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/planner/barrel_roll_dataset.py data/go2_barrel_roll/v2
+
+(
+  cd data/go2_barrel_roll/v2 &&
+  sha256sum --check --strict checksums.sha256
+)
+```
+
+G8 production training has not started and requires a new instruction. The
+non-training routing check is:
 
 ```bash
 python mpc_rl/train.py \

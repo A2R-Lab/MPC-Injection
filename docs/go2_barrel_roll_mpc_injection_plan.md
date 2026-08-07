@@ -1058,12 +1058,100 @@ the pilot before scaling.
 
 ### Gate G7: generate and promote 1,000 accepted trajectories
 
-**Status: pending; dependency-unblocked by the schema-v2 G6 pass above.** Audit
-the G6 evidence and the current repository before generation. G7 freezes schema
-v2 and `action_scale=2.0`; it does not authorize changes to the controller,
-classifier, reward, observations, reset distribution, direct-transition
-semantics, LPF, PD gains, or clipping limits. The reserved evaluation seeds
-`1000000` through `1000099` remain prohibited for generation.
+**Status (2026-08-07): PASSED.** The user authorized root `6fdd5bee` as the
+frozen generation revision after the initial revision audit found that it was
+one unrelated visualizer commit beyond `9e1c13d5`. Frozen submodule revisions
+were MPX `6bc496d6`, primal-dual iLQR `273d78de`, gym-quadruped `6eaa8ea6`,
+and MuJoCo MPC `17be7ffb`. The required root suite reproduced exactly the three
+permitted baseline failures (`131 passed, 3 failed, 1 skipped`), and the
+focused MPX suite reported `8 passed, 7 deselected`. Strict revalidation of all
+100 G6 files and their checksum index reproduced 100 valid files, 7,000
+transitions, 148 attempts, 48 rejects, clipping statistics, diagnostics,
+evaluation history, and the two recorded hashes before production generation.
+
+The four generator invocations used the arguments shown below, with starts
+`10000`, `110000`, `210000`, and `310000`, 250 accepted files per worker,
+2,500-attempt limits, and unique worker manifests. Each invocation was prefixed
+with `/usr/bin/time -v env` to capture wall time and host memory. Worker 0 ran
+alone first.
+Its initial process used 8,548 MiB of GPU memory; total device use including
+the desktop was 11,612 MiB of 32,607 MiB. Two workers used 20,231 MiB total
+with 11,857 MiB free. Four workers would have exceeded device capacity, so
+concurrency was capped at two. Every process was a separate generator process
+and therefore owned its own MPX wrapper; no wrapper was shared.
+
+The G4/G6 resource audit found one-time JAX compilation maxima of 16.31 and
+15.89 seconds, single-worker replans near 9 ms, 67.6% G6 acceptance, and mean
+accepted-file size near 2.7 MB. Production workers completed as follows:
+
+| Worker | Attempts | Accepted | Rejected | Acceptance | Wall time | Mean replan | JAX/solve max |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 372 | 250 | 122 | 67.20% | 16:02 manifest window | 14.67 ms | 16.31 s |
+| 1 | 359 | 250 | 109 | 69.64% | 15:58 | 15.29 ms | 17.60 s |
+| 2 | 343 | 250 | 93 | 72.89% | 16:02 | 15.77 ms | 17.60 s |
+| 3 | 361 | 250 | 111 | 69.25% | 16:13 | 15.32 ms | 17.57 s |
+
+Observed peak host RSS was 3,054,396 KiB (2.91 GiB). Each accepted NPZ averages
+2,686,718 bytes; the 1,000 files total 2,686,718,482 bytes. Two-worker GPU
+contention increased replan time relative to the single-worker G6 evidence but
+did not cause resource failure, solver sharing, or a changed configuration.
+
+Aggregation used:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/planner/barrel_roll_dataset.py \
+  data/go2_barrel_roll/v2_staging --aggregate
+
+(
+  cd data/go2_barrel_roll/v2_staging &&
+  sha256sum --check --strict checksums.sha256
+)
+```
+
+Strict aggregation and a separate NPZ/JSONL/checksum reconciliation proved
+exactly 1,000 unique accepted schema-v2 files/seeds and 70,000 direct
+transitions from 1,435 unique attempts. Each worker contributed exactly 250
+accepted files. All files share effective configuration SHA-256
+`8013d45f6ea6540242a0aa49f5cf728d736e08e451ae498edb697703da803c0d`,
+root revision `6fdd5bee`, and generator-source SHA-256
+`7b52aa0b718b3c3b53ee89408e11ac95f9f6eab09b17e417f505e3a42a3c9067`.
+No accepted or attempted production seed overlaps seeds 0 through 308 or the
+held-out range `1000000` through `1000099`; no separate resource-smoke seeds
+were used.
+
+All 435 rejected attempts remain in the worker and byte-for-byte reconciled
+aggregate manifests: 283 `incomplete_roll`, 67 `non_finite_solver_output`, 39
+`non_foot_ground_contact:geom_18`, 11 `geom_38`, six each `geom_11` and
+`geom_42`, five `geom_14`, four `geom_23`, three `geom_8`, two each `geom_30`,
+`geom_35`, and `geom_50`, and one each `geom_26`, `geom_29`, `geom_47`,
+`geom_53`, and `geom_54`. Mean action clipping is
+`0.004986904761904763` (0.4987%) and the worst accepted file is
+`0.017857142857142856` (1.7857%), below the frozen 1% aggregate and 2%
+per-file limits. The aggregate-manifest SHA-256 is
+`8d67b8ab296bc4bd56cffac69e34a44f2b8da922b203e0b0b9c1b4ad931b5491`;
+the checksum-index SHA-256 is
+`153334c544fec09e8aee4fa74223bde0f5b1c6b4f0018ce1e65328fbf0ccee70`.
+Every indexed NPZ checksum verifies before and after promotion.
+
+During generation, the separately authorized lateral-push evaluator work made
+the root dirty for 559 later files; 441 earlier files record a clean root.
+Those edits did not touch the generator or its dependencies: every file has
+the same root commit, generator-source hash, schema, and effective configuration
+hash. The unrelated changes were validated and committed separately as
+`6d370fcf`, outside the G7 evidence commit.
+
+After every validation above passed and the destination absence check
+succeeded, promotion used the required same-filesystem rename:
+
+```bash
+set -euo pipefail
+test ! -e data/go2_barrel_roll/v2
+mv -- data/go2_barrel_roll/v2_staging data/go2_barrel_roll/v2
+```
+
+The promoted ignored directory is the immutable production dataset. G8 was not
+started; it requires a new instruction.
 
 After the 100k pilot passes, collect 1,000 accepted trajectories (70,000 direct
 transitions). Run multiple terminals with disjoint, generously separated seed
@@ -1141,8 +1229,8 @@ conda run -n mpc-rl python mpc_rl/train.py \
   --suffix=go2-barrel-roll-v2
 ```
 
-The flags in this command are implemented, but the production run is not
-authorized until G7 passes and its promoted checksum index is frozen.
+The flags in this command are implemented and G7 has frozen the promoted
+checksum index, but G8 was not started and still requires a new instruction.
 
 For each seed:
 
