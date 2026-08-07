@@ -154,8 +154,19 @@ conda run --no-capture-output -n mpc-rl python \
 )
 ```
 
-G8 production training has not started and requires a new instruction. The
-non-training routing check is:
+G8 production training uses the predeclared seeds `1`, `2`, and `3`. The
+sequential runner revalidates the immutable dataset, records provenance and
+resource usage, refuses to overwrite an existing campaign, and stops on the
+first failed run:
+
+```bash
+./run_go2_barrel_roll_sac_mpc.sh
+```
+
+It writes ignored policies, checkpoints, evaluation JSONL, selected-checkpoint
+reports, and labelled representative outcome videos under
+`logs/go2_barrel_roll_g8_production/`. The non-training production routing
+check is:
 
 ```bash
 python mpc_rl/train.py \
@@ -168,7 +179,7 @@ python mpc_rl/train.py \
     --inject_type=percentage \
     --percentage=25 \
     --quadruped_mpc_replay_mode=direct \
-    --data_dir=data/go2_barrel_roll/v2_g4_smoke \
+    --data_dir=data/go2_barrel_roll/v2 \
     --domain_rand=False \
     --domain_rand_config_type=disabled \
     --use_go2_sysid=True
