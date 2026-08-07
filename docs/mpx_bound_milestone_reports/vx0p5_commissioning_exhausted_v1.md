@@ -1,5 +1,8 @@
 # MPX 0.5 m/s bounding commissioning: no passing candidate
 
+Superseded by `vx0p5_commissioning_exhausted_v2.md`, which records the
+subsequent targeted MPX cost/reference diagnostics and required-horizon run.
+
 Status: blocked before freeze. No 0.5 m/s commissioning trajectory passed the
 predeclared automatic predicate, so no visual pass, frozen declaration, pilot,
 or production generation was started.
