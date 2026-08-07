@@ -297,3 +297,51 @@ This milestone is complete only when:
 - domain-randomized or multi-speed generation;
 - learned-policy evaluation;
 - production artifact publication or real-robot deployment.
+
+## Canonical command-line implementation
+
+The canonical implementation remains
+`mpc_rl/planner/gen_traj_data_mpx_dr.py`. Fixed-command runs are opt-in, so
+invocations that omit the new command, gait, and acceptance options retain the
+legacy sampled-command defaults, filenames, action interface, and DR preset.
+
+An unfrozen commissioning attempt uses the plan thresholds directly and writes
+all generated artifacts under the stage directory:
+
+```bash
+PYTHONPATH="$PWD/deps/mpx:$PWD/deps/gym-quadruped:$PWD" \
+conda run --no-capture-output -n mpc-rl \
+python -m mpc_rl.planner.gen_traj_data_mpx_dr \
+  --num-trajectories 1 \
+  --episode-length 1000 \
+  --start-seed 1000 \
+  --max-attempts 1 \
+  --output-dir data/quadruped_bound/nominal_vx0p5/commissioning \
+  --target-command 0.5 0 0 \
+  --command-ramp-control-steps 50 \
+  --gait bound_front_first \
+  --duty-factor 0.5 \
+  --step-frequency-hz 3 \
+  --step-height-m 0.03 \
+  --commissioning-acceptance \
+  --stage commissioning
+```
+
+The commissioning flag is deliberately invalid for pilot or production. Those
+stages require `--acceptance-declaration <path>` referencing a frozen JSON
+declaration. The generator validates the declaration, forces nominal dynamics,
+the accepted action interface, the declared command schedule and gait, writes a
+candidate through `.staging/`, loads it with `allow_pickle=False`, replays every
+saved action, and promotes it only after all checks pass. The first accepted
+seed is regenerated and compared exactly before the run continues.
+
+Seed namespaces are enforced as disjoint ranges: commissioning uses
+`0..99,999`, pilot uses `100,000..199,999`, and production begins at `200,000`.
+
+Each stage directory contains `generation_manifest.jsonl` with one explicit
+passed/failed record per attempt, `validation_results.jsonl` with per-file
+integrity and replay results, `validation_summary.json` with aggregate metrics
+and provenance, and `checksums.sha256.json`. Trajectory filenames encode the
+gait, fixed command, seed, and horizon. These generated files remain excluded
+from Git by the repository's `*.npz` rule; bulk JSONL artifacts must likewise
+remain uncommitted.

@@ -28,6 +28,11 @@ from mpc_rl.envs.domain_randomization import (
 )
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
 from mpc_rl.planner.gen_traj_data_mpx_dr import generate_trajectory
+from mpc_rl.planner.mpx_bounding_data import (
+    load_npz_pickle_free,
+    validate_acceptance_declaration,
+    validate_bounding_trajectory_data,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -218,6 +223,8 @@ def _replay_saved_actions(
 
         qpos = []
         qvel = []
+        qpos_substeps = []
+        qvel_substeps = []
         policy_obs = []
         privileged_obs = []
         rewards = []
@@ -227,6 +234,8 @@ def _replay_saved_actions(
         torque_saturation_mask = []
         action_clipping_mask = []
         push_delta_qvel = []
+        foot_contacts_substeps = []
+        non_foot_ground_contact_substeps = []
 
         available_steps = int(np.asarray(trajectory["actions"]).shape[0])
         replay_steps = min(control_steps, available_steps)
@@ -247,6 +256,8 @@ def _replay_saved_actions(
             diagnostics = info["substep_diagnostics"]
             qpos.append(env.mjData.qpos.copy())
             qvel.append(env.mjData.qvel.copy())
+            qpos_substeps.append(diagnostics["qpos"].copy())
+            qvel_substeps.append(diagnostics["qvel"].copy())
             policy_obs.append(obs["policy"].copy())
             privileged_obs.append(obs["privileged"].copy())
             rewards.append(float(reward))
@@ -260,6 +271,10 @@ def _replay_saved_actions(
                 diagnostics["action_clipping_mask"].copy()
             )
             push_delta_qvel.append(diagnostics["push_delta_qvel"].copy())
+            foot_contacts_substeps.append(diagnostics["foot_contacts"].copy())
+            non_foot_ground_contact_substeps.append(
+                diagnostics["non_foot_ground_contact"].copy()
+            )
 
         return {
             "initial_policy_obs": initial_obs["policy"].copy(),
@@ -270,6 +285,8 @@ def _replay_saved_actions(
             "control_steps": replay_steps,
             "qpos": np.asarray(qpos, dtype=np.float64),
             "qvel": np.asarray(qvel, dtype=np.float64),
+            "qpos_substeps": np.asarray(qpos_substeps, dtype=np.float64),
+            "qvel_substeps": np.asarray(qvel_substeps, dtype=np.float64),
             "policy_observation": np.asarray(policy_obs, dtype=np.float64),
             "privileged_observation": np.asarray(
                 privileged_obs, dtype=np.float64
@@ -283,6 +300,12 @@ def _replay_saved_actions(
             ),
             "action_clipping_mask": np.asarray(action_clipping_mask, dtype=bool),
             "push_delta_qvel": np.asarray(push_delta_qvel, dtype=np.float64),
+            "foot_contacts_substeps": np.asarray(
+                foot_contacts_substeps, dtype=bool
+            ),
+            "non_foot_ground_contact_substeps": np.asarray(
+                non_foot_ground_contact_substeps, dtype=bool
+            ),
         }
     finally:
         env.close()
@@ -389,6 +412,189 @@ def _compare_horizon(
         "push_event_mismatch_count": push_event_mismatches,
         "passed": bool(complete and numeric_pass and discrete_pass),
     }
+
+
+def _compact_numeric_metrics(expected: np.ndarray, actual: np.ndarray) -> dict:
+    metrics = _numeric_metrics(expected, actual)
+    metrics.pop("per_control_step_max_abs", None)
+    return metrics
+
+
+def validate_full_saved_action_replay(
+    trajectory: dict,
+    declaration: dict,
+) -> dict:
+    """Replay every saved action and apply the already accepted parity limits."""
+    declaration = validate_acceptance_declaration(declaration)
+    tolerance_declaration = json.loads(
+        MPX_BOUND_ACTION_INTERFACE_TOLERANCES.read_text(encoding="utf-8")
+    )
+    control_steps = int(declaration["episode_length"])
+    replay = _replay_saved_actions(
+        trajectory,
+        domain_rand_config_type="disabled",
+        deterministic_push_schedule={},
+        seed=int(np.asarray(trajectory["seed"]).item()),
+        control_steps=control_steps,
+        action_interface_id=MPX_BOUND_ACTION_INTERFACE_ID,
+    )
+    decimation = int(declaration["simulation_substeps_per_control_step"])
+    numeric_sources = {
+        "qpos": np.asarray(trajectory["qpos"], dtype=np.float64).T[
+            1 : control_steps * decimation + 1
+        ].reshape(control_steps, decimation, -1),
+        "qvel": np.asarray(trajectory["qvel"], dtype=np.float64).T[
+            1 : control_steps * decimation + 1
+        ].reshape(control_steps, decimation, -1),
+        "policy_observation": np.asarray(
+            trajectory["next_policy_obs"], dtype=np.float64
+        ),
+        "privileged_observation": np.asarray(
+            trajectory["next_privileged_obs"], dtype=np.float64
+        ),
+        "reward": np.asarray(trajectory["rewards"], dtype=np.float64),
+        "applied_torque": np.asarray(
+            trajectory["applied_torques_ctrl"], dtype=np.float64
+        ),
+        "push_delta_qvel": np.asarray(
+            trajectory["push_delta_qvel"], dtype=np.float64
+        ),
+    }
+    numeric_replay = {
+        "qpos": replay["qpos_substeps"],
+        "qvel": replay["qvel_substeps"],
+        "policy_observation": replay["policy_observation"],
+        "privileged_observation": replay["privileged_observation"],
+        "reward": replay["reward"],
+        "applied_torque": replay["applied_torque"],
+        "push_delta_qvel": replay["push_delta_qvel"],
+    }
+    numeric_results = {}
+    numeric_pass = True
+    for field, tolerance in tolerance_declaration["numeric_fields"].items():
+        metrics = _compact_numeric_metrics(
+            numeric_sources[field], numeric_replay[field]
+        )
+        metrics["tolerance"] = tolerance
+        metrics["passed"] = _metric_passes(metrics, tolerance)
+        numeric_results[field] = metrics
+        numeric_pass = numeric_pass and metrics["passed"]
+
+    initial_policy = _compact_numeric_metrics(
+        np.asarray(trajectory["policy_obs"])[0], replay["initial_policy_obs"]
+    )
+    initial_privileged = _compact_numeric_metrics(
+        np.asarray(trajectory["privileged_obs"])[0],
+        replay["initial_privileged_obs"],
+    )
+    initial_policy["passed"] = _metric_passes(
+        initial_policy, tolerance_declaration["numeric_fields"]["policy_observation"]
+    )
+    initial_privileged["passed"] = _metric_passes(
+        initial_privileged,
+        tolerance_declaration["numeric_fields"]["privileged_observation"],
+    )
+
+    termination_mismatches = int(
+        np.count_nonzero(
+            np.asarray(trajectory["terminated_ctrl"], dtype=bool)
+            != replay["termination"]
+        )
+    )
+    truncation_mismatches = int(
+        np.count_nonzero(
+            np.asarray(trajectory["truncated_ctrl"], dtype=bool)
+            != replay["truncation"]
+        )
+    )
+    foot_contact_mismatches = int(
+        np.count_nonzero(
+            np.asarray(trajectory["foot_contacts_substeps"], dtype=bool)
+            != replay["foot_contacts_substeps"]
+        )
+    )
+    non_foot_contact_mismatches = int(
+        np.count_nonzero(
+            np.asarray(
+                trajectory["non_foot_ground_contact_substeps"], dtype=bool
+            )
+            != replay["non_foot_ground_contact_substeps"]
+        )
+    )
+    saturation_mismatch_fraction = float(
+        np.mean(
+            np.asarray(trajectory["torque_saturation_mask"], dtype=bool)
+            != replay["torque_saturation_mask"]
+        )
+    )
+    replay_action_clipping_fraction = float(
+        np.mean(replay["action_clipping_mask"])
+    )
+    masks = tolerance_declaration["mask_tolerances"]
+    complete = replay["control_steps"] == control_steps
+    discrete_pass = bool(
+        termination_mismatches == 0
+        and truncation_mismatches == 0
+        and foot_contact_mismatches == 0
+        and non_foot_contact_mismatches == 0
+        and saturation_mismatch_fraction
+        <= masks["torque_saturation_mismatch_fraction"]
+        and replay_action_clipping_fraction
+        <= masks["replay_action_clipping_fraction"]
+    )
+    passed = bool(
+        complete
+        and numeric_pass
+        and initial_policy["passed"]
+        and initial_privileged["passed"]
+        and discrete_pass
+    )
+    return {
+        "passed": passed,
+        "requested_control_steps": control_steps,
+        "replayed_control_steps": int(replay["control_steps"]),
+        "complete": complete,
+        "forced_saved_initial_state": bool(replay["forced_initial_state"]),
+        "reset_qpos": {
+            key: value
+            for key, value in replay["reset_qpos_metrics"].items()
+            if key != "per_control_step_max_abs"
+        },
+        "reset_qvel": {
+            key: value
+            for key, value in replay["reset_qvel_metrics"].items()
+            if key != "per_control_step_max_abs"
+        },
+        "initial_policy_observation": initial_policy,
+        "initial_privileged_observation": initial_privileged,
+        "numeric_fields": numeric_results,
+        "termination_mismatch_count": termination_mismatches,
+        "truncation_mismatch_count": truncation_mismatches,
+        "foot_contact_mismatch_count": foot_contact_mismatches,
+        "non_foot_contact_mismatch_count": non_foot_contact_mismatches,
+        "torque_saturation_mismatch_fraction": saturation_mismatch_fraction,
+        "replay_action_clipping_fraction": replay_action_clipping_fraction,
+    }
+
+
+def validate_bounding_trajectory_file(
+    path: str | Path,
+    declaration: dict,
+) -> dict:
+    """Load pickle-free, validate integrity, and fully replay one trajectory."""
+    trajectory = load_npz_pickle_free(path)
+    pre_replay = validate_bounding_trajectory_data(trajectory, declaration)
+    blocking = [
+        reason
+        for reason in pre_replay["failure_reasons"]
+        if reason != "full_saved_action_replay_not_run"
+    ]
+    if blocking:
+        return pre_replay
+    replay = validate_full_saved_action_replay(trajectory, declaration)
+    return validate_bounding_trajectory_data(
+        trajectory, declaration, replay_report=replay
+    )
 
 
 def _scenario_conversion_limits(tolerances: dict, scenario_name: str) -> dict:
