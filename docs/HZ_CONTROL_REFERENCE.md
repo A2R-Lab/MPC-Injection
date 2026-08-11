@@ -10,6 +10,9 @@ There are three different update rates to keep separate:
 |---|---|---:|---|
 | RL policy in training | `mpc_rl/envs/velocity_tracking_env.py` | 50 Hz | Chooses a new 12D action / joint target residual |
 | Simulated PD in training | `mpc_rl/envs/velocity_tracking_env.py` | 200 Hz | Recomputes torques at each MuJoCo physics step while holding the latest policy target |
+| Go2 barrel-roll policy | `mpc_rl/envs/barrel_roll_env.py` | 50 Hz for 2.50 s | Runs 125 policy steps per schema-v3 episode |
+| Go2 barrel-roll demonstration MPC | `mpc_rl/planner/gen_traj_data_barrel_roll.py` | 50 Hz replanning, 100 Hz plan nodes | Replans only through the 1.40 s maneuver, then holds the terminal-padded final-stance plan through 2.50 s |
+| Go2 barrel-roll demonstration plant | `mpc_rl/planner/gen_traj_data_barrel_roll.py` | 200 Hz | Applies direct MPC/tracking torque for 500 MuJoCo physics steps |
 | RL policy in deployment | `deploy/robots/go2/config/policy/velocity/v0/params/deploy.yaml` | 50 Hz | Runs ONNX and updates desired joint positions |
 | Low command publishing in deployment | `deploy/include/FSM/CtrlFSM.h` and `deploy/robots/go2/src/State_RLBase.cpp` | 1 kHz | Rewrites the latest desired joint position into `LowCmd` |
 | Actual motor-side PD on robot | Unitree firmware / motor controller | Not directly set here | Tracks `q`, `dq`, `kp`, `kd`, and `tau` from `LowCmd` |
@@ -46,6 +49,12 @@ So with `sim_dt = 0.005` and `decimation = 4`:
 
 - policy update rate: 50 Hz
 - simulated PD torque update rate: 200 Hz
+
+The schema-v3 Go2 barrel-roll task uses those same outer and inner rates but a
+fixed 2.50 s horizon: 125 policy transitions and 500 physics transitions. Its
+MPC maneuver remains 1.40 s long. Demonstration generation stops replanning at
+that boundary and repeats the terminal-padded final-stance plan with the same
+PD feedback for the remaining 1.10 s.
 
 ## Action Low-Pass Filter
 

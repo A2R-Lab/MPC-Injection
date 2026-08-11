@@ -74,6 +74,18 @@ torque = kp * (q_target - q) + kd * (0 - dq)
 If filtering is disabled, `alpha` is treated as `1.0` and the raw target passes
 through unchanged.
 
+### Go2 barrel-roll distinction
+
+The online schema-v3 barrel-roll policy uses this same 5 Hz target LPF at a
+50 Hz action rate. MPC demonstration generation intentionally retains the
+schema-v2 execution pipeline instead: it applies the MPC feedforward plus
+tracking-PD torque directly at the 200 Hz plant and saves a clipped inverse-PD
+residual action label for replay. The saved action is metadata-compatible with
+the policy space but does not reproduce the direct-torque transition through
+the online LPF; schema metadata therefore keeps
+`saved_action_reproduces_lpf_transition=false`. Fixing that known mismatch
+would change the dataset contract and is explicitly deferred beyond schema v3.
+
 ## Deployment Example
 
 The deployment code mirrors the same action-target filter in C++:

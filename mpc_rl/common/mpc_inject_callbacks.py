@@ -519,8 +519,10 @@ class PercentMPCInjectCallback(BaseCallback):
     This callback is designed to work with SAC_MPC's train() method, which checks the
     MPC percentage before sampling and calls _inject_mpc_trajectories() if needed.
     
-    The callback itself doesn't trigger on timesteps - instead, SAC_MPC calls it
-    directly when the MPC percentage falls below the target.
+    SAC_MPC calls the callback directly when the MPC percentage falls below the
+    target. Barrel-roll additionally performs one bootstrap injection when the
+    rollout reaches ``learning_starts`` so exact-threshold smoke runs exercise
+    the same direct replay path.
     
     The MPC planner generates optimal trajectories which are added to the replay buffer
     to provide high-quality demonstration data that can accelerate learning.
@@ -577,6 +579,7 @@ class PercentMPCInjectCallback(BaseCallback):
         self._warned_dr_mismatch = False
         self._warned_sysid_mismatch = False
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
+        self._learning_start_bootstrap_done = False
         # ReplayBuffer.add() always writes a full row of n_envs transitions.
         # For quadruped percentage injection, accumulate unique MPC transitions
         # here and flush them in n_env-sized batches instead of tiling one demo
@@ -758,13 +761,39 @@ class PercentMPCInjectCallback(BaseCallback):
     def _on_step(self) -> bool:
         """
         Called after each environment step.
-        
-        This callback doesn't inject on a schedule - instead, it's called directly
-        by SAC_MPC.train() when the MPC percentage falls below target.
-        
-        We keep this method to satisfy the BaseCallback interface, but it just
-        passes through.
+
+        SAC_MPC.train() maintains the requested percentage after learning starts.
+        Barrel-roll also bootstraps once when the rollout reaches that threshold:
+        a run ending exactly at ``learning_starts`` otherwise exits before the
+        first train call and never exercises direct injection.
         """
+        if self._learning_start_bootstrap_done:
+            return True
+        if not (
+            self.domain == "quadruped"
+            and self.expected_quadruped_task == "go2_barrel_roll"
+            and self.quadruped_mpc_replay_mode == "direct"
+        ):
+            return True
+
+        learning_starts = getattr(self.model, "learning_starts", None)
+        if learning_starts is None or self.num_timesteps < int(learning_starts):
+            return True
+
+        self._learning_start_bootstrap_done = True
+        replay_buffer = getattr(self.model, "replay_buffer", None)
+        if replay_buffer is None or not hasattr(replay_buffer, "get_mpc_percentage"):
+            raise RuntimeError(
+                "barrel-roll percentage injection requires a tagged replay buffer"
+            )
+        if replay_buffer.get_mpc_percentage() < self.target_percentage:
+            if self.verbose > 0:
+                print(
+                    "Bootstrapping barrel-roll MPC replay at learning_starts "
+                    f"({self.num_timesteps} steps)"
+                )
+            self._inject_mpc_trajectories()
+
         return True  # Continue training
 
     def _flush_quadruped_pending_transitions(self) -> int:
@@ -851,9 +880,28 @@ class PercentMPCInjectCallback(BaseCallback):
             or trajectory_task == "go2_barrel_roll"
         )
         if is_barrel_roll:
+            trajectory_schema = (
+                int(np.asarray(traj_data["schema_version"]).item())
+                if "schema_version" in traj_data
+                else None
+            )
             measured_roll_ctrl = np.asarray(traj_data["measured_roll_physics"], dtype=np.float64)[4::4]
-            contacts_ctrl = np.asarray(traj_data["foot_contacts"], dtype=bool)[3::4]
+            contacts_ctrl = (
+                np.asarray(traj_data["filtered_foot_contacts_ctrl"], dtype=bool)
+                if "filtered_foot_contacts_ctrl" in traj_data
+                else np.asarray(traj_data["foot_contacts"], dtype=bool)[3::4]
+            )
+            raw_contacts_ctrl = (
+                np.asarray(traj_data["raw_foot_contacts_ctrl"], dtype=bool)[1:]
+                if "raw_foot_contacts_ctrl" in traj_data
+                else np.asarray(traj_data["foot_contacts"], dtype=bool)[3::4]
+            )
             stable_ctrl = np.asarray(traj_data["stable_contact_streak"], dtype=np.int64)
+            final_hold_streak_ctrl = (
+                np.asarray(traj_data["final_hold_streak"], dtype=np.int64)
+                if "final_hold_streak" in traj_data
+                else stable_ctrl
+            )
             phase_ctrl = np.asarray(traj_data["phase_ctrl"], dtype=np.float64)
             desired_roll_ctrl = np.asarray(traj_data["desired_roll_ctrl"], dtype=np.float64)
             classifier_ctrl = np.asarray(traj_data["classifier_result"], dtype=bool)
@@ -867,6 +915,48 @@ class PercentMPCInjectCallback(BaseCallback):
             )
             success = bool(np.asarray(traj_data["success"]).item())
             failure_reason = str(np.asarray(traj_data["failure_reason"]).item()) or None
+            reward_components_ctrl = {
+                name: np.asarray(traj_data[key], dtype=np.float64)
+                for name, key in (
+                    ("roll_tracking", "reward_roll_tracking"),
+                    ("rate_tracking", "reward_rate_tracking"),
+                    ("action_change", "reward_action_change"),
+                    ("signed_progress", "reward_signed_progress"),
+                    ("standing_score", "reward_standing_score"),
+                    ("foot_score", "reward_foot_score"),
+                    ("height_score", "reward_height_score"),
+                    ("tilt_score", "reward_tilt_score"),
+                    ("linear_speed_score", "reward_linear_speed_score"),
+                    ("angular_speed_score", "reward_angular_speed_score"),
+                    ("joint_speed_score", "reward_joint_speed_score"),
+                    ("terminal_outcome", "reward_terminal_outcome"),
+                )
+                if key in traj_data
+            }
+            hold_conditions_ctrl = {
+                name: np.asarray(traj_data[f"hold_{name}_valid"], dtype=bool)
+                for name in (
+                    "rotation",
+                    "foot_support",
+                    "height",
+                    "tilt",
+                    "base_linear_speed",
+                    "base_angular_speed",
+                    "joint_speed",
+                )
+                if f"hold_{name}_valid" in traj_data
+            }
+            hold_metrics_ctrl = {
+                name: np.asarray(traj_data[f"{name}_ctrl"], dtype=np.float64)
+                for name in (
+                    "base_height",
+                    "body_up_tilt",
+                    "base_linear_speed",
+                    "base_angular_speed",
+                    "joint_velocity_norm",
+                )
+                if f"{name}_ctrl" in traj_data
+            }
 
         transitions_added = 0
         for step in range(policy_obs.shape[0]):
@@ -878,16 +968,35 @@ class PercentMPCInjectCallback(BaseCallback):
                 info.update(
                     {
                         "task_id": "go2_barrel_roll",
+                        "schema_version": trajectory_schema,
                         "phase": float(phase_ctrl[step]),
                         "desired_roll": float(desired_roll_ctrl[step]),
                         "roll_progress": float(measured_roll_ctrl[step]),
                         "roll_error": float(desired_roll_ctrl[step] - measured_roll_ctrl[step]),
                         "contact_state": contacts_ctrl[step].copy(),
+                        "raw_contact_state": raw_contacts_ctrl[step].copy(),
                         "stability_count": int(stable_ctrl[step]),
+                        "final_hold_streak": int(final_hold_streak_ctrl[step]),
+                        "hold_conditions": {
+                            name: bool(values[step])
+                            for name, values in hold_conditions_ctrl.items()
+                        },
+                        "hold_valid": bool(
+                            hold_conditions_ctrl
+                            and all(values[step] for values in hold_conditions_ctrl.values())
+                        ),
                         "is_success": bool(success and classifier_ctrl[step] and done),
                         "failure_reason": failure_reason if done else None,
                         "action_clip_fraction": float(action_clip_ctrl[step]),
                         "torque_saturation_fraction": float(torque_sat_ctrl[step]),
+                        "reward_components": {
+                            name: float(values[step])
+                            for name, values in reward_components_ctrl.items()
+                        },
+                        **{
+                            name: float(values[step])
+                            for name, values in hold_metrics_ctrl.items()
+                        },
                     }
                 )
 
@@ -1237,13 +1346,19 @@ class PercentMPCInjectCallback(BaseCallback):
                     current_mpc_count = stats["mpc_transitions"]
                     current_total = stats["total_transitions"]
                     
-                    # Estimate after adding 1 more trajectory (~1000 transitions).
+                    # Estimate after adding one more trajectory.
                     # Quadruped injection packs unique MPC transitions into the
                     # n_envs slots of each replay row, so one trajectory remains
-                    # ~1000 counted transitions instead of 1000 * n_envs tiled
-                    # copies. Other domains still tile each step across all slots.
+                    # one counted transition per saved control step instead of
+                    # n_envs tiled copies. Other domains still use the historical
+                    # ~1000-step estimate and tile each step across all slots.
                     n_envs = self.model.replay_buffer.n_envs
-                    traj_transitions = 1000 if is_quadruped else 1000 * n_envs
+                    if is_quadruped and self.expected_quadruped_task == "go2_barrel_roll":
+                        from mpc_rl.envs.barrel_roll_common import CONTROL_STEPS
+
+                        traj_transitions = CONTROL_STEPS
+                    else:
+                        traj_transitions = 1000 if is_quadruped else 1000 * n_envs
                     estimated_new_mpc = current_mpc_count + traj_transitions
                     # When the buffer is full, adding rows overwrites old ones;
                     # total stays at buffer_capacity * n_envs.

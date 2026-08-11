@@ -1420,3 +1420,490 @@ Before claiming completion, report:
 - pilot and three-seed production training configurations;
 - all three 100-episode held-out success rates and their median;
 - remaining risks, failed gates, fallbacks used, and deviations from this plan.
+
+## G9: minimal schema-v3 recovery
+
+**Status: passed. Gates G9.1 through G9.6 completed on 2026-08-07/08; the
+official seed-1 policy scored 100/100 on the untouched final test.** This
+recovery deliberately
+keeps the proven schema-v2 recipe intact except where the G8 landing analysis
+showed that the task contract must change. Preserve the immutable schema-v2
+dataset and G8 campaign.
+
+### Objective and intentionally narrow change set
+
+Train two concurrent Go2 SAC-MPC policies and obtain at least one deterministic
+policy with at least 80 successes over an untouched 100-seed test set. The
+first schema-v3 attempt changes only:
+
+1. extend both RL episodes and accepted MPC trajectories from `1.40` s to
+   `2.50` s;
+2. replace the reward with minimal roll-position/rate tracking plus action
+   smoothing;
+3. replace the brittle contact-streak classifier with a lenient terminal
+   outcome; and
+4. train seeds `1` and `2` concurrently after a two-process resource smoke.
+
+Keep schema v2's MPC maneuver, direct-torque demonstration execution,
+inverse-PD saved action labels, 45D actor, 4D privileged critic, action scale,
+5 Hz online LPF, SAC-MPC hyperparameters, 25% injection, and accepted-success-
+only dataset recipe. Pure RL is not claimed incapable of learning this reward;
+MPC injection remains to reduce exploration cost.
+
+### Locked schema-v3 task contract
+
+#### Timing, MPC continuation, and observations
+
+- Preserve the existing MPC and desired-roll schedule: roll begins at `0.20` s,
+  reaches `2*pi` at `0.80` s, and the MPC reference horizon ends at `1.40` s.
+- Introduce a distinct `2.50` s episode horizon: 125 control steps at 50 Hz and
+  500 physics steps at 200 Hz.
+- From `1.40` through `2.50` s, repeat the existing terminal-padded final-stance
+  plan with the same PD feedback. Do not continue MPC replanning or introduce a
+  separate stance controller.
+- Preserve the 45D actor and 4D privileged critic layouts. Redefine only the
+  existing actor phase scalar as `clip(time / 2.5, 0, 1)`; keep every other
+  observation field unchanged.
+
+#### Reward
+
+Remove `signed_progress`. At every control step compute:
+
+```text
+roll_tracking = exp(-((roll_progress - desired_roll) / 0.5)^2)
+rate_tracking = 0.25 * exp(-(norm(base_angular_velocity
+                                  - desired_angular_velocity) / 1.0)^2)
+action_change = -0.02 * norm(action - previous_action)^2
+reward = roll_tracking + rate_tracking + action_change + terminal_outcome
+```
+
+`desired_roll` is the existing smooth signed reference and remains exactly
+`2*pi` after `0.80` s. `desired_angular_velocity` is its analytic derivative on
+the roll axis with zero desired pitch/yaw rates. `terminal_outcome` is `+50`
+for success and `-50` for failure. Log all four components separately.
+
+Visible post-touchdown motion that does not produce a terminal fall remains an
+official success, but angular motion and command chatter reduce its dense
+return. Do not add translational-speed, joint-speed, contact, support, torque,
+or event-gated reward terms in this first recovery.
+
+#### Success and termination
+
+Except for non-finite physics, do not terminate before control step 125.
+At `2.50` s, success requires all of:
+
+- positive unwrapped roll progress in `[1.75*pi, 2.5*pi]`;
+- base height at least `0.16` m; and
+- body-up/world-up tilt no greater than 60 degrees.
+
+Do not require a foot count, contact streak, roll/pitch component threshold,
+velocity threshold, or joint-motion threshold. Non-foot ground contacts are
+diagnostics only and must not terminate the episode. Use deterministic failure
+precedence: `non_finite_state`, `rotation_out_of_band`,
+`fallen_low_height`, then `fallen_tilt`.
+
+### Schema-v3 dataset and compatibility
+
+- Add schema version 3 without modifying retained v1/v2 files or their strict
+  validation behavior. G9 training must reject v1/v2 input datasets.
+- Record both the `1.40` s MPC maneuver horizon and `2.50` s episode horizon in
+  effective configuration and provenance.
+- Preserve `action_scale=2.0`, 5 Hz LPF metadata, direct MPC torque execution,
+  inverse-PD saved action labels, and
+  `saved_action_reproduces_lpf_transition=False`. The known action/transition
+  mismatch is deliberately deferred so the first recovery remains close to
+  schema v2.
+- Save accepted successes only. Rejected attempts remain in complete manifests
+  but do not become injectable trajectory files.
+- A valid trajectory contains 125 control transitions, 500 physics
+  transitions, final-only termination at step 125, and no truncation.
+
+### Gate G9.1: implementation and regression tests
+
+1. Update shared task constants, environment reward/success/info behavior,
+   schema/generator arrays, strict validation, evaluation diagnostics, and
+   TensorBoard component logging.
+2. Unit-test the `2.50` s timing, analytic desired roll rate, normalized phase,
+   reward components, terminal outcomes, rotation/height/tilt boundaries, and
+   contact-independent success.
+3. Test that non-foot contact no longer terminates, while non-finite physics
+   still fails immediately.
+4. Test schema-v3 shapes, provenance, reward recomputation, final-only done,
+   corruption rejection, sorted direct injection, and exact 25% composition.
+5. Preserve passing v1/v2 validation and existing quadruped behavior outside
+   the versioned barrel-roll task.
+6. Use retained accepted schema-v2 seed `10002` as the dynamics regression.
+   The v3 commissioning trace's first 70 steps of `qpos`, `qvel`, applied
+   torque, and saved action must match the retained v2 archive with
+   `atol=1e-10` and `rtol=0`. Reward, observation phase, done flags, and the
+   added tail are expected to differ.
+
+Do not advance if the original 1.40 s maneuver changes or relevant tests fail.
+
+### Gate G9.2: controller commissioning and data smoke
+
+1. Produce one finite rendered nominal `2.50` s attempt.
+2. Collect ten accepted varied trajectories within at most 30 deterministic
+   attempts and strictly validate every archive.
+3. Generate a separate 100-success smoke dataset. Report acceptance rate,
+   rejection categories, generation time, GPU/host memory, file size, terminal
+   metrics, and reward-component distributions.
+4. Require finite states/actions/rewards, no termination before step 125, and
+   new terminal success in every accepted file.
+5. Require the median magnitude of cumulative action-change cost to remain at
+   most 10% of the median cumulative positive dense reward. This is a sanity
+   gate, not permission to tune against policy evaluations.
+
+Stop and diagnose rather than changing the maneuver, reward, observations, or
+acceptance thresholds if this gate fails.
+
+### Gate G9.3: immutable production dataset
+
+Generate exactly 1,000 accepted schema-v3 trajectories in staging with four
+isolated workers, each owning its own MPC wrapper:
+
+| Worker | Start seed | Accepted target | Maximum attempts |
+| ---: | ---: | ---: | ---: |
+| 0 | 4000000 | 250 | 2500 |
+| 1 | 4100000 | 250 | 2500 |
+| 2 | 4200000 | 250 | 2500 |
+| 3 | 4300000 | 250 | 2500 |
+
+Before promotion, prove exactly 1,000 unique files/seeds and 125,000 direct
+transitions; strictly validate every file; reconcile all files with worker and
+aggregate manifests; report every rejection reason; create and verify the
+checksum index and effective-configuration hash; and prove no generation seed
+overlaps commissioning, validation, or final-test ranges. Atomically promote
+staging to `data/go2_barrel_roll/v3` only after all checks pass. Never overwrite
+`data/go2_barrel_roll/v2`.
+
+### Gate G9.4: concurrent resource smoke
+
+Run two non-production 10,000-step SAC-MPC jobs concurrently with separate run
+directories. Both must exit successfully, retain finite diagnostics, and reach
+the 25% injection target. During overlap require peak combined GPU memory below
+28 GB, host available memory of at least 16 GiB, and no OOM or new swap
+pressure. Record GPU/RAM/CPU samples and per-process `/usr/bin/time -v` output.
+
+If either process fails, terminate the other, preserve both logs, and do not
+start production. Do not infer concurrency safety solely from the historical
+single-process utilization.
+
+### Gate G9.5: two-seed concurrent production
+
+Launch training seeds `1` and `2` simultaneously on the same GPU with isolated
+log directories and the following unchanged recipe:
+
+- SAC-MPC, 500,000 environment steps per seed, and four environments per seed;
+- 25% schema-v3 direct MPC injection;
+- disabled domain randomization and enabled Go2 sysID;
+- unchanged schema-v2 SAC hyperparameters;
+- model/normalization checkpoints every 25,000 steps;
+- fixed-seed validation every 10,000 steps including step zero; and
+- `save_replay_buffer_checkpoints=False` and
+  `save_replay_buffer_final=False`.
+
+The runner must refuse to overwrite an existing campaign, validate hard-coded
+dataset checksum/configuration identities, record code/submodule provenance,
+capture each process's status and resources, and fail safely if either process
+exits unsuccessfully. The selected policy for each seed is the earliest
+checkpoint that achieves that seed's best validation success rate; do not use
+`final_model.zip` unless it independently wins validation.
+
+### Gate G9.6: untouched evaluation and acceptance
+
+- Use reset seeds `2000000` through `2000099` only for checkpoint validation.
+- After both selected checkpoints are locked, evaluate each exactly once on
+  untouched final-test seeds `3000000` through `3000099`.
+- Report both policies without discarding the weaker seed.
+- G9 passes if at least one policy scores at least 80/100 on the final test.
+- If both pass, choose the official artifact by final-test success rate, then
+  validation success rate, then lower training seed.
+- Render the official policy on fixed final-test seeds `3000000` through
+  `3000009`. Human review checks for classifier/video contradictions but does
+  not replace the 100-seed result.
+
+If neither policy reaches 80/100, stop and preserve the campaign. Produce a
+diagnostic comparison of failure categories, terminal height/tilt/progress,
+base and joint motion, action change, reward components, value/critic behavior,
+and representative videos. Do not automatically launch a seed sweep, reward
+sweep, 9D critic, executable-action dataset, or other schema-v4 fallback.
+
+### G9 completion and reporting requirements
+
+Do not claim completion until the relevant gates pass. Update this section
+after every gate with exact commands, results, artifact paths, test counts,
+dataset counts/checksums/rejection reasons, resource measurements, both
+validation and final-test rates, videos, deviations, and remaining risks.
+
+The retained G8 campaign, schema-v2 data, and user-owned untracked policy
+directory remain untouched. Domain randomization, torque actions, LPF/action-
+scale changes, imitation loss, 9D critic observations, actor changes, broad
+training refactors, and real-robot deployment are explicit non-goals for G9.
+
+### G9 execution record
+
+#### G9.1 passed: implementation and regression
+
+Schema v3 now uses 125 control/500 physics steps, preserves the 1.40 s MPC
+maneuver and terminal-padded hold, normalizes actor phase over 2.50 s, logs the
+four locked reward components, and applies the final-only lenient classifier.
+The validator retains strict schema-v1/v2 behavior and rejects those schemas
+for G9 injection.
+
+The focused command below passed `59` tests:
+
+```bash
+conda run --no-capture-output -n mpc-rl python -m pytest -q \
+  deps/mpx/tests/test_barrel_roll_config.py \
+  tests/test_barrel_roll_env.py \
+  tests/test_barrel_roll_data.py \
+  tests/test_go2_barrel_roll_g9_evaluation.py \
+  tests/mpc_inject_test.py
+```
+
+The retained dynamics comparison passed with zero maximum absolute error for
+all four locked arrays:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/planner/barrel_roll_dataset.py \
+  logs/go2_barrel_roll_g9/regression_retained_prefix/go2_barrel_roll_v3_dir_pos_seed_010002_ep_125.npz \
+  --compare-retained-v2 \
+  data/go2_barrel_roll/v2/go2_barrel_roll_v2_dir_pos_seed_010002_ep_070.npz
+```
+
+The result was `actions=0`, `qpos=0`, `qvel=0`, and `tau_applied=0`. Because
+independent GPU MPC re-solves were not bit-deterministic across fresh processes,
+this commissioning-only regression explicitly replays the retained 70-step
+controller prefix and then applies the schema-v3 terminal-padded tail. Production
+generation does not use this prefix mode. Independent nominal and varied
+schema-v3 solves passed G9.2.
+
+The final broader unchanged-behavior command reported `118 passed, 1 skipped, 1
+failed`. The failure is an unchanged pre-G9 velocity reward assertion expecting
+`w_track_lin_vel=3.0` while both HEAD and the implementation contain `4.0`.
+The architecture module separately reported `29 passed, 1 failed`; its
+unchanged assertion expects a 512x512 SAC-MPC network while HEAD, the retained
+G8 models, and the locked G9 recipe use the SB3 256x256 default. Neither stale
+assertion was weakened or used to change G9 behavior.
+
+#### G9.2 passed: controller commissioning and data smoke
+
+The three generation commands were:
+
+```bash
+conda run --no-capture-output -n mpc-rl -- python \
+  mpc_rl/planner/gen_traj_data_barrel_roll.py \
+  --num-trajectories 1 --start-seed 10002 --max-attempts 1 \
+  --output-dir logs/go2_barrel_roll_g9/commissioning_nominal_attempt3 \
+  --manifest-filename generation_manifest.jsonl --nominal-spread-zero \
+  --write-commissioning-traces \
+  --render-video logs/go2_barrel_roll_g9/commissioning_nominal_attempt3/nominal_seed_10002.mp4 \
+  --verbose 1
+
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/planner/gen_traj_data_barrel_roll.py \
+  --num-trajectories=10 --start-seed=500000 --max-attempts=30 \
+  --output-dir=logs/go2_barrel_roll_g9/commissioning_varied10_attempt2 \
+  --manifest-filename=generation_manifest.jsonl
+
+env XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_ALLOCATOR=platform \
+  conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/planner/gen_traj_data_barrel_roll.py \
+  --num-trajectories=100 --start-seed=600000 --max-attempts=1000 \
+  --output-dir=logs/go2_barrel_roll_g9/data_smoke100 \
+  --manifest-filename=generation_manifest.jsonl
+```
+
+The finite rendered nominal attempt is under
+`logs/go2_barrel_roll_g9/commissioning_nominal_attempt3/`. Seed `10002`
+completed 125 steps with progress `6.2289368057` rad, height `0.2461523497` m,
+tilt `0.2007339141` rad, and action-change/positive-dense ratio `0.00551264`.
+The 125-frame, 50 fps, 2.50 s video
+`nominal_seed_10002.mp4` has SHA-256
+`c30510890d6a4a2386e3e02a62a378375122c95634f4e51ddde1a18151f09f2f`.
+
+The varied commissioning set under
+`logs/go2_barrel_roll_g9/commissioning_varied10_attempt2/` accepted the first
+10 of 10 attempts (the gate allowed 30), strictly validated all 1,250
+transitions, and verified its checksum index. Its action-change sanity ratio
+was `0.00529570`, generation wall time was `42.16` s, and trajectory storage
+was `41,218,318` bytes.
+
+The separate smoke at `logs/go2_barrel_roll_g9/data_smoke100/` accepted 100 of
+117 attempts (`85.4701%`) and strictly validated 12,500 transitions. Rejections
+were 11 `rotation_out_of_band`, 5 `non_finite_solver_output`, and 1
+`fallen_low_height`. Generation took `4:16.03`, produced `415,988,935` bytes,
+used at most `1,851` MiB GPU memory and `2,844,340` KiB process RSS, retained at
+least `53,305,664` KiB host-available memory, and caused no swap increase or
+process swaps. The median cumulative action-change magnitude was only
+`0.00541355` of median cumulative positive dense reward. Exact reward and
+terminal distributions are recorded in `dataset_summary.json` and
+`gate_report.json`; the checksum-index SHA-256 is
+`821719a267e7ef48b8764c3acec92a121784dd14f8770deee464ee0cf3d3b7a1`.
+
+#### G9.3 passed: immutable production dataset
+
+The following fixed runner was launched after G9.1/G9.2 passed:
+
+```bash
+./run_go2_barrel_roll_g9_dataset.sh
+```
+
+The four isolated workers accepted exactly 250 trajectories each after 290,
+301, 300, and 304 attempts respectively. The aggregate therefore contains
+exactly 1,000 unique schema-v3 files and 125,000 direct transitions from 1,195
+attempts (`83.6820%` acceptance). Rejections were 114
+`rotation_out_of_band`, 61 `non_finite_solver_output`, 15
+`fallen_low_height`, and 5 `fallen_tilt`.
+
+The runner strictly validated every file, reconciled every accepted filename
+and seed with its worker and aggregate manifests, proved the generation seeds
+disjoint from all commissioning/validation/final-test seeds, verified the
+checksum index, and atomically renamed staging to
+`data/go2_barrel_roll/v3`. The promoted identities are:
+
+- effective configuration:
+  `65a7727010fa9a1052894ac0d74ced21e827a5ad84be978756724f0ff597a548`;
+- checksum index:
+  `3c4401e353b3195e7c8801ae29257e84598f099c3bfab05b37dcb1c80c62c2cc`;
+- aggregate manifest:
+  `85eb1703d145f814f23f430d0d16f9e8697f99d61806917b454efe0c380d11d9`;
+- dataset summary:
+  `613082fede0ef384c5caeced16c36806bf17c560b3b805470c58127d72fa98f1`.
+
+Trajectory storage is `4,152,409,904` bytes. The production action-change
+sanity ratio is `0.00534603`; mean/worst saved-action clipping is
+`0.002908`/`0.05`. Worker wall times were `35:13.31`, `35:41.72`, `35:45.85`,
+and `35:51.37`, with zero process swaps and about 2.84 GiB maximum RSS each.
+Across 2,050 four-worker overlap samples, peak GPU use was 4,333 MiB, minimum
+host-available memory was 45,525,348 KiB, and swap use stayed exactly
+1,625,680 KiB. `data/go2_barrel_roll/v2/checksums.sha256` remains unchanged at
+`153334c544fec09e8aee4fa74223bde0f5b1c6b4f0018ce1e65328fbf0ccee70`.
+
+#### G9.4 passed: concurrent resource smoke
+
+```bash
+./run_go2_barrel_roll_g9_campaign.sh smoke
+```
+
+The fixed runner completed both 10,000-step seed jobs concurrently and wrote
+`logs/go2_barrel_roll_g9/resource_smoke/COMPLETE`. Each run recorded validation
+at exactly steps 0 and 10,000 with 100 held-out episodes per point, saved its
+final model and normalization state, saved no replay buffer or off-schedule
+checkpoint, retained finite rollout/reward/Q diagnostics, and finished at
+`24.992499%` MPC replay against the locked 25% target.
+
+Across 168 two-process overlap samples, peak GPU use was 2,295 MiB, minimum
+host-available memory was 51,188,796 KiB, and swap use stayed exactly at the
+1,625,680 KiB baseline. Seed wall times were `2:53.47` and `2:54.09`, maximum
+RSS was 2,679,524 and 2,710,736 KiB, both processes reported zero swaps, and
+the OOM scan was empty.
+
+Two failed attempts are retained rather than overwritten. The first, under
+`resource_smoke_failed_shared_xml_20260807_2232`, exposed concurrent environment
+construction truncating a shared generated MuJoCo XML; model loading now uses
+unique, automatically removed scratch XML files. The second, under
+`resource_smoke_failed_zero_injection_20260807_2235`, proved that a run ending
+exactly at `learning_starts=10000` exited before `SAC_MPC.train()` could inject.
+Barrel-roll percentage replay now bootstraps once at that threshold, and its
+overshoot predictor uses the locked 125-transition schema-v3 trajectory length.
+Targeted regressions and the complete 59-test focused suite passed after both
+fixes; the successful smoke then exercised them concurrently.
+
+#### G9.5 passed: two-seed concurrent production
+
+```bash
+./run_go2_barrel_roll_g9_campaign.sh production
+```
+
+The runner trained seeds 1 and 2
+concurrently for exactly 500,000 steps each and wrote
+`logs/go2_barrel_roll_g9_production/COMPLETE`. Each run has exactly 51
+100-episode validation records at steps 0 through 500,000, 20 model and 20
+normalization checkpoints at the 25,000-step cadence, a final model and
+normalization state, and no replay-buffer artifact. All frozen configuration
+and dataset identities passed the runner audit.
+
+Both validation histories first reached their maximum 100/100 rate before the
+end of training: seed 1 at step 220,000 and seed 2 at step 230,000. Those exact
+`best_model` snapshots were retained. Later rates were highly non-monotonic,
+including 0/100 for both policies at step 440,000, demonstrating why
+`final_model.zip` was not substituted for the specified earliest-best
+selection.
+
+Seed wall times were `1:39:26` and `1:39:11`; maximum RSS was 3,711,752 and
+3,738,628 KiB, both processes reported zero swaps, and both exited zero. Across
+5,766 two-process overlap samples, peak GPU use was 2,446 MiB, minimum
+host-available memory was 49,251,960 KiB, and swap stayed exactly at the
+1,625,680 KiB baseline. The final replay percentage was `25.00015%` for both,
+all recorded reward/loss/Q ranges were finite, and the OOM scan was empty.
+
+#### G9.6 passed: locked untouched evaluation and acceptance
+
+The production runner invoked the following evaluator after both jobs and the
+campaign validator completed:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/evaluate_go2_barrel_roll_g9.py \
+  --campaign-dir=logs/go2_barrel_roll_g9_production
+```
+
+Before final scoring, the evaluator locked both selections and their model,
+normalization, configuration, selection, and validation-history hashes in
+`final_evaluation/selection_lock.json`. Its SHA-256 is
+`fa73f7a881dc022a12cf493f5df0f0c5983c06a76b2d8cb477ec7760441310b8`.
+Each selected policy was then scored exactly once on untouched seeds `3000000`
+through `3000099`:
+
+| Training seed | Selected step | Validation | Untouched final | Failures |
+| --- | ---: | ---: | ---: | --- |
+| 1 | 220,000 | 100/100 | **100/100** | none |
+| 2 | 230,000 | 100/100 | **98/100** | seed 3000071 `fallen_low_height`; seed 3000094 `rotation_out_of_band` |
+
+Both pass the 80/100 threshold. Seed 1 is official by final-test success rate.
+Its model SHA-256 is
+`63e63f4621d8976720825a1c01293d635705df033dc2b008f402a301f831ed79` and
+its normalization-state SHA-256 is
+`017904abbbb200566a9299eb48eb9d11c3be6007f39953abfa4b0a4f67a78faa`.
+The final summary SHA-256 is
+`947cb79908fbae2cccc3893c3a915ae3c437f561abfc0229618d7828bdcf20cc`.
+
+The explicit rerender of official seeds `3000000` through `3000009` produced
+ten 125-frame/50 fps videos, all classified successful; their individual
+hashes are in `final_evaluation/summary.json`. Frame-sequence review shows a
+real lateral roll through side/back orientations followed by an upright return,
+and all ten terminal frames agree with the classifier. These rerenders are
+labelled separately and were not counted as another scored final-test pass.
+
+#### G9 final requirement audit
+
+| Gate | Result | Durable evidence |
+| --- | --- | --- |
+| G9.1 implementation/regression | Passed | 59 focused tests; retained-prefix arrays bit-exact |
+| G9.2 commissioning/smoke | Passed | nominal video, 10/10 varied, 100/117 data smoke |
+| G9.3 production data | Passed | 1,000 files, 125,000 transitions, hashes and manifests verified |
+| G9.4 resource smoke | Passed | two concurrent 10k runs, `resource_smoke/COMPLETE` |
+| G9.5 production training | Passed | two concurrent 500k runs, 51 validations and 20 checkpoint pairs each |
+| G9.6 untouched acceptance | Passed | seed 1: 100/100; seed 2: 98/100; official videos reviewed |
+
+The retained schema-v2 checksum index remains unchanged at
+`153334c544fec09e8aee4fa74223bde0f5b1c6b4f0018ce1e65328fbf0ccee70`;
+the G8 campaign was not rerun or overwritten.
+
+The final post-campaign audit strictly revalidated all 1,000 schema-v3 files
+and all 1,000 checksum entries, reran the retained-prefix comparison with zero
+maximum error for `actions`, `qpos`, `qvel`, and `tau_applied`, and passed
+`git diff --check`, shell syntax checks, and Python byte-compilation. The only
+test failures are the two unchanged baseline assertions documented under G9.1.
+
+Remaining risk is explicit: this is a simulation result, not a real-robot
+deployment claim. The locked classifier permits visible terminal motion; the
+official final set had terminal base angular speed as high as `7.4962` rad/s
+and joint-velocity norm as high as `24.6426`, although all ten reviewed videos
+showed a real roll and upright return. Schema v3 also intentionally retains
+`saved_action_reproduces_lpf_transition=False`; executable-action relabelling,
+motion-gated success, real-hardware validation, and any schema-v4 recovery are
+outside G9.

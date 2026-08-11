@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
+from time import perf_counter
 from pathlib import Path
 
+# Four production workers share one GPU.  Avoid JAX's default large up-front
+# reservation while leaving solver numerics and controller configuration intact.
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+
 import gym_quadruped
+import mediapy as media
 import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -19,15 +27,22 @@ from mpc_rl.envs.barrel_roll_common import (
     ACTION_SCALE,
     CONTROL_DT,
     CONTROL_STEPS,
+    EPISODE_HORIZON,
+    LEGACY_CONTROL_STEPS,
     MANEUVER_HORIZON,
     ROLL_DIRECTION_SIGN,
     SCHEMA_VERSION,
+    SCHEMA_V2_VERSION,
+    body_up_tilt_from_quaternion,
     desired_roll_at_time,
+    find_nonfoot_ground_contact,
+    maneuver_phase_at_time,
 )
 from mpc_rl.envs.barrel_roll_env import QuadrupedBarrelRollEnv
 from mpc_rl.planner.barrel_roll_dataset import (
     atomic_save_npz,
     build_provenance_fields,
+    validate_barrel_roll_file,
 )
 
 
@@ -65,30 +80,83 @@ def _inverse_pd_residual_action(
     return unclipped, np.clip(unclipped, -1.0, 1.0)
 
 
+def _render_saved_control_endpoints(
+    env: QuadrupedBarrelRollEnv,
+    qpos: np.ndarray,
+    qvel: np.ndarray,
+    video_path: Path,
+) -> int:
+    """Render the exact 125 saved control-endpoint states of an accepted rollout."""
+    frames = []
+    for control_step in range(CONTROL_STEPS):
+        state_index = (control_step + 1) * env.decimation
+        env.mjData.qpos[:] = qpos[:, state_index]
+        env.mjData.qvel[:] = qvel[:, state_index]
+        env.mjData.qacc[:] = 0.0
+        env.mjData.time = (control_step + 1) * env.control_dt
+        mujoco.mj_forward(env.mjModel, env.mjData)
+        frame = env.render()
+        if frame is None:
+            raise RuntimeError(
+                f"saved rollout rendering returned no frame at step {control_step + 1}"
+            )
+        frames.append(frame)
+    video_path = Path(video_path)
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    media.write_video(str(video_path), frames, fps=50)
+    return len(frames)
+
+
 def generate_attempt(
     seed: int,
     mpc: mpc_wrapper.MPCControllerWrapper,
     *,
     render: bool = False,
+    render_video_path: Path | None = None,
+    render_accepted_video_path: Path | None = None,
     nominal_spread_zero: bool = False,
     verbose: int = 1,
     generator_command: str | None = None,
     generator_config: dict | None = None,
+    retained_v2_prefix: Path | None = None,
 ):
     """Execute one seeded receding-horizon attempt in the RL task plant."""
+    attempt_started = perf_counter()
+    render_mode = (
+        "rgb_array"
+        if render_video_path is not None or render_accepted_video_path is not None
+        else ("human" if render else None)
+    )
     env = QuadrupedBarrelRollEnv(
-        render_mode="human" if render else None,
+        render_mode=render_mode,
         use_go2_sysid=True,
         action_scale=ACTION_SCALE,
     )
     try:
+        retained_prefix = None
+        if retained_v2_prefix is not None:
+            retained_v2_prefix = Path(retained_v2_prefix)
+            report = validate_barrel_roll_file(retained_v2_prefix)
+            if not report.valid:
+                raise ValueError(
+                    "invalid retained schema-v2 prefix: " + "; ".join(report.errors)
+                )
+            with np.load(retained_v2_prefix, allow_pickle=False) as loaded:
+                retained_prefix = {key: loaded[key] for key in loaded.files}
+            if int(retained_prefix["schema_version"]) != SCHEMA_V2_VERSION:
+                raise ValueError("retained prefix must use schema version 2")
+            if int(retained_prefix["rollout_seed"]) != seed:
+                raise ValueError("retained prefix rollout seed does not match attempt seed")
+            if nominal_spread_zero:
+                raise ValueError("retained prefix is incompatible with nominal_spread_zero")
         reset_options = {"spread": 0.0} if nominal_spread_zero else None
         obs, _ = env.reset(seed=seed, options=reset_options)
         initial_qpos = env.mjData.qpos.copy()
         initial_qvel = env.mjData.qvel.copy()
         mpc.reset(initial_qpos, initial_qvel)
-        if render:
+        if render and render_video_path is None:
             env.render()
+        rendered_frames = []
 
         transitions = {
             key: []
@@ -101,6 +169,16 @@ def generate_attempt(
                 "rewards",
                 "terminated_ctrl",
                 "truncated_ctrl",
+                "reward_roll_tracking",
+                "reward_signed_progress",
+                "reward_standing_score",
+                "reward_terminal_outcome",
+                "reward_foot_score",
+                "reward_height_score",
+                "reward_tilt_score",
+                "reward_linear_speed_score",
+                "reward_angular_speed_score",
+                "reward_joint_speed_score",
             )
         }
         qpos = np.zeros((env.mjModel.nq, CONTROL_STEPS * env.decimation + 1))
@@ -126,7 +204,32 @@ def generate_attempt(
         U_updates = []
         solve_diagnostics = []
         stable_contact_streak = []
+        final_hold_streak = []
         classifier_results = []
+        raw_foot_contacts_ctrl = [env._previous_barrel_raw_contacts.copy()]
+        filtered_foot_contacts_ctrl = []
+        hold_conditions_ctrl = {
+            name: []
+            for name in (
+                "rotation",
+                "foot_support",
+                "height",
+                "tilt",
+                "base_linear_speed",
+                "base_angular_speed",
+                "joint_speed",
+            )
+        }
+        hold_metrics_ctrl = {
+            name: []
+            for name in (
+                "base_height",
+                "body_up_tilt",
+                "base_linear_speed",
+                "base_angular_speed",
+                "joint_velocity_norm",
+            )
+        }
         residual_actions_unclipped = []
         min_base_height = float(initial_qpos[2])
         torque_saturation_count = 0
@@ -139,9 +242,14 @@ def generate_attempt(
         first_nonfoot_time = None
         replanning_active = True
         replan_stop_time = None
+        retained_tail_plan = None
 
         for control_step in range(CONTROL_STEPS):
             elapsed_time = control_step * CONTROL_DT
+            if replanning_active and elapsed_time >= MANEUVER_HORIZON:
+                replanning_active = False
+                if replan_stop_time is None:
+                    replan_stop_time = MANEUVER_HORIZON
             stop_replanning_after_update = bool(
                 replanning_active
                 and elapsed_time >= config.BARREL_REPLAN_EARLIEST_STOP_TIME
@@ -151,17 +259,100 @@ def generate_attempt(
             transitions["policy_obs"].append(obs["policy"].copy())
             transitions["privileged_obs"].append(obs["privileged"].copy())
 
-            plan = mpc.run_barrel_roll(
-                env.mjData.qpos.copy(),
-                env.mjData.qvel.copy(),
-                elapsed_time=elapsed_time,
-                iterations=(
-                    config.BARREL_INITIAL_SOLVE_ITERATIONS
-                    if control_step == 0
-                    else 1
-                ),
-                replan=replanning_active,
-            )
+            if retained_prefix is not None and control_step < LEGACY_CONTROL_STEPS:
+                physics_start = control_step * env.decimation
+                plan = {
+                    "tau": retained_prefix["tau_mpx"][
+                        :, physics_start : physics_start + env.decimation : 2
+                    ].T,
+                    "q": retained_prefix["q_des"][
+                        :, physics_start : physics_start + env.decimation : 2
+                    ].T,
+                    "dq": retained_prefix["dq_des"][
+                        :, physics_start : physics_start + env.decimation : 2
+                    ].T,
+                    "X": retained_prefix["X_updates"][control_step],
+                    "U": retained_prefix["U_updates"][control_step],
+                    "diagnostics": {
+                        "iterations": int(retained_prefix["solve_iterations"][control_step]),
+                        "iteration_limit": int(
+                            retained_prefix["solve_iteration_limit"][control_step]
+                        ),
+                        "replanned": bool(retained_prefix["solve_replanned"][control_step]),
+                        "phase_index": int(retained_prefix["solve_phase_index"][control_step]),
+                        "elapsed_time": float(
+                            retained_prefix["solve_elapsed_time"][control_step]
+                        ),
+                        "warm_start_shift": int(
+                            retained_prefix["warm_start_shift"][control_step]
+                        ),
+                        "final_objective_norm_sq": float(
+                            retained_prefix["solve_objective_norm_sq"][control_step]
+                        ),
+                        "final_constraint_norm_sq": float(
+                            retained_prefix["solve_constraint_norm_sq"][control_step]
+                        ),
+                        "finite": bool(retained_prefix["solve_finite"][control_step]),
+                        "solve_seconds": float(
+                            retained_prefix["solve_seconds"][control_step]
+                        ),
+                    },
+                }
+            elif retained_prefix is not None:
+                if retained_tail_plan is None:
+                    shift = 2
+
+                    def shift_and_pad(array):
+                        return np.concatenate(
+                            (array[shift:], np.repeat(array[-1:], shift, axis=0)),
+                            axis=0,
+                        )
+
+                    tail_x = shift_and_pad(retained_prefix["X_updates"][-1])
+                    tail_u = shift_and_pad(retained_prefix["U_updates"][-1])
+                    retained_tail_plan = {
+                        "tau": tail_u[:2, : env.num_joints],
+                        "q": tail_x[1:3, 7 : 7 + env.num_joints],
+                        "dq": tail_x[
+                            1:3,
+                            13 + env.num_joints : 13 + 2 * env.num_joints,
+                        ],
+                        "X": tail_x,
+                        "U": tail_u,
+                    }
+                plan = {
+                    **retained_tail_plan,
+                    "diagnostics": {
+                        "iterations": 0,
+                        "iteration_limit": 0,
+                        "replanned": False,
+                        "phase_index": config.N,
+                        "elapsed_time": MANEUVER_HORIZON,
+                        "warm_start_shift": (
+                            2 if control_step == LEGACY_CONTROL_STEPS else 0
+                        ),
+                        "final_objective_norm_sq": float(
+                            retained_prefix["solve_objective_norm_sq"][-1]
+                        ),
+                        "final_constraint_norm_sq": float(
+                            retained_prefix["solve_constraint_norm_sq"][-1]
+                        ),
+                        "finite": True,
+                        "solve_seconds": 0.0,
+                    },
+                }
+            else:
+                plan = mpc.run_barrel_roll(
+                    env.mjData.qpos.copy(),
+                    env.mjData.qvel.copy(),
+                    elapsed_time=elapsed_time,
+                    iterations=(
+                        config.BARREL_INITIAL_SOLVE_ITERATIONS
+                        if control_step == 0
+                        else 1
+                    ),
+                    replan=replanning_active,
+                )
             if stop_replanning_after_update:
                 replanning_active = False
                 replan_stop_time = elapsed_time
@@ -256,20 +447,15 @@ def generate_attempt(
                 qvel[:, sim_step + 1] = env.mjData.qvel
                 measured_roll[sim_step + 1] = env._roll_progress
                 contacts[sim_step] = env._get_foot_contacts()
-                if (
-                    env._physics_failure_reason is not None
-                    and env._physics_failure_reason.startswith(
-                        "non_foot_ground_contact:"
-                    )
-                ):
-                    contact_name = env._physics_failure_reason.split(":", 1)[1]
+                contact_name = find_nonfoot_ground_contact(env)
+                if contact_name is not None:
                     nonfoot_contacts[sim_step] = contact_name
                     if first_nonfoot_contact is None:
                         first_nonfoot_contact = contact_name
                         first_nonfoot_time = float(env.mjData.time)
                 min_base_height = min(min_base_height, float(env.mjData.qpos[2]))
 
-                if render:
+                if render and render_video_path is None:
                     env.render()
                     if env.viewer is not None and not env.viewer.is_running():
                         viewer_closed = True
@@ -289,15 +475,49 @@ def generate_attempt(
             info = env._get_info()
             env._swing_peak *= ~env._current_contacts
             stable_contact_streak.append(env._stability_count)
+            final_hold_streak.append(env._final_hold_streak)
             classifier_results.append(env._terminal_success())
+            raw_foot_contacts_ctrl.append(info["raw_contact_state"].copy())
+            filtered_foot_contacts_ctrl.append(info["contact_state"].copy())
+            for name in hold_conditions_ctrl:
+                hold_conditions_ctrl[name].append(info["hold_conditions"][name])
+            for name in hold_metrics_ctrl:
+                hold_metrics_ctrl[name].append(info[name])
 
             transitions["actions"].append(action.copy())
             transitions["rewards"].append(reward)
             transitions["terminated_ctrl"].append(terminated)
             transitions["truncated_ctrl"].append(False)
+            transitions["reward_roll_tracking"].append(
+                env._reward_components["roll_tracking"]
+            )
+            transitions["reward_signed_progress"].append(
+                env._reward_components["signed_progress"]
+            )
+            transitions["reward_standing_score"].append(
+                env._reward_components["standing_score"]
+            )
+            transitions["reward_terminal_outcome"].append(
+                env._reward_components["terminal_outcome"]
+            )
+            for name in (
+                "foot_score",
+                "height_score",
+                "tilt_score",
+                "linear_speed_score",
+                "angular_speed_score",
+                "joint_speed_score",
+            ):
+                transitions[f"reward_{name}"].append(
+                    env._reward_components[name]
+                )
             transitions["next_policy_obs"].append(next_obs["policy"].copy())
             transitions["next_privileged_obs"].append(next_obs["privileged"].copy())
             obs = next_obs
+            if render_video_path is not None:
+                frame = env.render()
+                if frame is not None:
+                    rendered_frames.append(frame)
 
             if verbose > 1:
                 print(
@@ -348,7 +568,17 @@ def generate_attempt(
             dtype=np.float64,
         )
         final_roll, final_pitch = env._upright_errors()
+        final_tilt = body_up_tilt_from_quaternion(env.mjData.qpos[3:7])
         final_contacts = env._filtered_barrel_contacts.copy()
+        reward_roll_tracking = np.asarray(
+            transitions["reward_roll_tracking"], dtype=np.float64
+        )
+        reward_signed_progress = np.asarray(
+            transitions["reward_signed_progress"], dtype=np.float64
+        )
+        reward_standing_score = np.asarray(
+            transitions["reward_standing_score"], dtype=np.float64
+        )
         metrics = {
             "seed": seed,
             "accepted": success,
@@ -358,7 +588,12 @@ def generate_attempt(
             "final_roll": final_roll,
             "final_pitch": final_pitch,
             "final_base_height": float(env.mjData.qpos[2]),
+            "final_tilt": final_tilt,
+            "final_base_linear_speed": float(np.linalg.norm(env.mjData.qvel[:3])),
+            "final_base_angular_speed": float(np.linalg.norm(env.mjData.qvel[3:6])),
+            "final_joint_velocity_norm": float(np.linalg.norm(env.mjData.qvel[6:])),
             "stable_contact_streak": int(env._stability_count),
+            "final_hold_streak": int(env._final_hold_streak),
             "final_contacts": final_contacts.tolist(),
             "classifier_result": bool(env._terminal_success()),
             "nonfoot_contact_count": int(
@@ -419,7 +654,15 @@ def generate_attempt(
                 sum(item["replanned"] for item in solve_diagnostics)
             ),
             "maneuver_horizon": MANEUVER_HORIZON,
+            "episode_horizon": EPISODE_HORIZON,
+            "cumulative_roll_tracking": float(np.sum(reward_roll_tracking)),
+            "cumulative_signed_progress": float(np.sum(reward_signed_progress)),
+            "cumulative_standing_score": float(np.sum(reward_standing_score)),
+            "attempt_seconds": float(perf_counter() - attempt_started),
         }
+        if render_video_path is not None:
+            metrics["rendered_frame_count"] = len(rendered_frames)
+            metrics["video_complete"] = len(rendered_frames) == CONTROL_STEPS
         valid_state_count = applied_physics_steps + 1
         valid_control_count = completed_steps
         state_times = np.arange(valid_state_count, dtype=np.float64) * env.sim_dt
@@ -479,6 +722,27 @@ def generate_attempt(
             "stable_contact_streak": np.asarray(
                 stable_contact_streak[:valid_control_count], dtype=np.int64
             ),
+            "final_hold_streak": np.asarray(
+                final_hold_streak[:valid_control_count], dtype=np.int64
+            ),
+            "raw_foot_contacts_ctrl": np.asarray(
+                raw_foot_contacts_ctrl[: valid_control_count + 1], dtype=bool
+            ),
+            "filtered_foot_contacts_ctrl": np.asarray(
+                filtered_foot_contacts_ctrl[:valid_control_count], dtype=bool
+            ),
+            **{
+                f"hold_{name}_valid": np.asarray(
+                    values[:valid_control_count], dtype=bool
+                )
+                for name, values in hold_conditions_ctrl.items()
+            },
+            **{
+                f"{name}_ctrl": np.asarray(
+                    values[:valid_control_count], dtype=np.float64
+                )
+                for name, values in hold_metrics_ctrl.items()
+            },
             "classifier_result": np.asarray(
                 classifier_results[:valid_control_count], dtype=bool
             ),
@@ -498,7 +762,24 @@ def generate_attempt(
                 config.BARREL_REPLAN_STABLE_STEPS
             ),
             "maneuver_horizon": np.asarray(MANEUVER_HORIZON),
+            "episode_horizon": np.asarray(EPISODE_HORIZON),
         }
+        if render_video_path is not None:
+            if success and len(rendered_frames) != CONTROL_STEPS:
+                raise RuntimeError(
+                    "successful rollout did not render exactly "
+                    f"{CONTROL_STEPS} frames: {len(rendered_frames)}"
+                )
+            if rendered_frames:
+                render_video_path = Path(render_video_path)
+                render_video_path.parent.mkdir(parents=True, exist_ok=True)
+                media.write_video(str(render_video_path), rendered_frames, fps=50)
+        if render_accepted_video_path is not None and success:
+            rendered_count = _render_saved_control_endpoints(
+                env, qpos, qvel, render_accepted_video_path
+            )
+            metrics["rendered_frame_count"] = rendered_count
+            metrics["video_complete"] = rendered_count == CONTROL_STEPS
         if not success:
             return None, metrics, trace
 
@@ -520,7 +801,7 @@ def generate_attempt(
             * env.control_dt,
             phase_ctrl=np.asarray(
                 [
-                    min((step + 1) * env.control_dt / config.ROLL_END_TIME, 1.0)
+                    maneuver_phase_at_time((step + 1) * env.control_dt)
                     for step in range(CONTROL_STEPS)
                 ],
                 dtype=np.float64,
@@ -536,6 +817,11 @@ def generate_attempt(
             foot_contacts=contacts,
             nonfoot_contact=nonfoot_contacts,
             stable_contact_streak=np.asarray(stable_contact_streak, dtype=np.int64),
+            final_hold_streak=np.asarray(final_hold_streak, dtype=np.int64),
+            raw_foot_contacts_ctrl=np.asarray(raw_foot_contacts_ctrl, dtype=bool),
+            filtered_foot_contacts_ctrl=np.asarray(
+                filtered_foot_contacts_ctrl, dtype=bool
+            ),
             classifier_result=np.asarray(classifier_results, dtype=bool),
             action_clipped=np.abs(residual_unclipped) > 1.0,
             mpx_saturation_by_actuator=mpx_saturation,
@@ -585,11 +871,33 @@ def generate_attempt(
             final_roll=np.asarray(final_roll),
             final_pitch=np.asarray(final_pitch),
             final_base_height=np.asarray(env.mjData.qpos[2]),
+            final_tilt=np.asarray(final_tilt),
             final_roll_progress=np.asarray(env._roll_progress),
             action_clip_fraction=np.asarray(action_clip_fraction),
             mpx_torque_saturation_fraction=np.asarray(mpx_saturation_fraction),
             torque_saturation_fraction=np.asarray(torque_saturation_fraction),
+            nonfoot_contact_count=np.asarray(
+                np.count_nonzero(nonfoot_contacts != "")
+            ),
+            final_base_linear_speed=np.asarray(
+                np.linalg.norm(env.mjData.qvel[:3])
+            ),
+            final_base_angular_speed=np.asarray(
+                np.linalg.norm(env.mjData.qvel[3:6])
+            ),
+            final_joint_velocity_norm=np.asarray(
+                np.linalg.norm(env.mjData.qvel[6:])
+            ),
+            terminal_final_hold_streak=np.asarray(env._final_hold_streak),
         )
+        data.update({
+            f"hold_{name}_valid": np.asarray(values, dtype=bool)
+            for name, values in hold_conditions_ctrl.items()
+        })
+        data.update({
+            f"{name}_ctrl": np.asarray(values, dtype=np.float64)
+            for name, values in hold_metrics_ctrl.items()
+        })
         rollout_xml_path = (
             Path(gym_quadruped.__file__).resolve().parent
             / "robot_model"
@@ -628,12 +936,17 @@ def main():
     parser.add_argument("--start-seed", type=int, default=0)
     parser.add_argument("--max-attempts", type=int, default=1)
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("data/go2_barrel_roll/v2")
+        "--output-dir", type=Path, default=Path("data/go2_barrel_roll/v4")
     )
     parser.add_argument("--manifest-filename", default="generation_manifest.jsonl")
     parser.add_argument("--render", action="store_true")
+    video_group = parser.add_mutually_exclusive_group()
+    video_group.add_argument("--render-video", type=Path)
+    video_group.add_argument("--render-video-dir", type=Path)
+    video_group.add_argument("--render-accepted-video-dir", type=Path)
     parser.add_argument("--nominal-spread-zero", action="store_true")
     parser.add_argument("--write-commissioning-traces", action="store_true")
+    parser.add_argument("--retained-v2-prefix", type=Path)
     parser.add_argument("--verbose", type=int, default=1)
     args = parser.parse_args()
 
@@ -641,6 +954,16 @@ def main():
     controller = mpc_wrapper.MPCControllerWrapper(config, use_go2_sysid=True)
     accepted = 0
     manifest_path = args.output_dir / args.manifest_filename
+    if manifest_path.exists():
+        raise FileExistsError(f"refusing to overwrite manifest: {manifest_path}")
+    if args.render_video is not None and args.render_video.exists():
+        raise FileExistsError(f"refusing to overwrite rendered video: {args.render_video}")
+    if args.render_video is not None and args.max_attempts != 1:
+        parser.error("--render-video requires --max-attempts=1; use --render-video-dir otherwise")
+    if args.render_video_dir is not None:
+        args.render_video_dir.mkdir(parents=True, exist_ok=True)
+    if args.render_accepted_video_dir is not None:
+        args.render_accepted_video_dir.mkdir(parents=True, exist_ok=True)
     generator_command = shlex.join([sys.executable, *sys.argv])
     generator_config = {
         "manifest_filename": args.manifest_filename,
@@ -648,21 +971,58 @@ def main():
         "nominal_spread_zero": args.nominal_spread_zero,
         "num_trajectories": args.num_trajectories,
         "render": args.render,
+        "render_video": str(args.render_video) if args.render_video is not None else None,
+        "render_video_dir": (
+            str(args.render_video_dir)
+            if args.render_video_dir is not None
+            else None
+        ),
+        "render_accepted_video_dir": (
+            str(args.render_accepted_video_dir)
+            if args.render_accepted_video_dir is not None
+            else None
+        ),
         "start_seed": args.start_seed,
         "write_commissioning_traces": args.write_commissioning_traces,
+        "retained_v2_prefix": (
+            str(args.retained_v2_prefix)
+            if args.retained_v2_prefix is not None
+            else None
+        ),
     }
     with manifest_path.open("w", encoding="utf-8") as manifest:
         for attempt in range(args.max_attempts):
             seed = args.start_seed + attempt
+            attempt_video_path = args.render_video
+            accepted_video_path = None
+            if args.render_video_dir is not None:
+                attempt_video_path = (
+                    args.render_video_dir / f"mpc_seed_{seed:07d}.mp4"
+                )
+                if attempt_video_path.exists():
+                    raise FileExistsError(
+                        f"refusing to overwrite rendered video: {attempt_video_path}"
+                    )
+            elif args.render_accepted_video_dir is not None:
+                accepted_video_path = (
+                    args.render_accepted_video_dir / f"mpc_seed_{seed:07d}.mp4"
+                )
+                if accepted_video_path.exists():
+                    raise FileExistsError(
+                        f"refusing to overwrite rendered video: {accepted_video_path}"
+                    )
             try:
                 data, metrics, trace = generate_attempt(
                     seed,
                     controller,
                     render=args.render,
+                    render_video_path=attempt_video_path,
+                    render_accepted_video_path=accepted_video_path,
                     nominal_spread_zero=args.nominal_spread_zero,
                     verbose=args.verbose,
                     generator_command=generator_command,
                     generator_config={**generator_config, "seed": seed},
+                    retained_v2_prefix=args.retained_v2_prefix,
                 )
             except Exception as error:
                 data = None
@@ -674,6 +1034,10 @@ def main():
                     "go2_sysid_enabled": True,
                 }
             metrics, non_finite_metric_fields = _sanitize_metrics(metrics)
+            if attempt_video_path is not None and attempt_video_path.exists():
+                metrics["video_file"] = str(attempt_video_path)
+            if accepted_video_path is not None and accepted_video_path.exists():
+                metrics["video_file"] = str(accepted_video_path)
             if non_finite_metric_fields:
                 data = None
             if trace is not None and args.write_commissioning_traces:

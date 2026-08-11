@@ -228,6 +228,30 @@ class TestFixedCommands:
 class TestEnvSanity:
     """Basic gym.Env contract tests."""
 
+    def test_model_load_uses_unique_removed_scratch_xml(self, monkeypatch):
+        """Each model load must use and remove its own XML scratch file."""
+        real_mkstemp = tempfile.mkstemp
+        scratch_paths = []
+
+        def tracking_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            scratch_paths.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(
+            "mpc_rl.envs.velocity_tracking_env.tempfile.mkstemp",
+            tracking_mkstemp,
+        )
+
+        first = QuadrupedVelocityTrackingEnv(robot="go2", scene="flat")
+        first.close()
+        second = QuadrupedVelocityTrackingEnv(robot="go2", scene="flat")
+        second.close()
+
+        assert len(scratch_paths) == 2
+        assert scratch_paths[0] != scratch_paths[1]
+        assert all(not path.exists() for path in scratch_paths)
+
     def test_observation_space_dict(self, env):
         """Observation space should be a Dict with 'policy' and 'privileged'."""
         assert "policy" in env.observation_space.spaces
@@ -323,20 +347,20 @@ class TestRewardConfiguration:
         """Shared full reward should use the locomotion tune."""
         cfg = QuadrupedVelocityTrackingEnv._default_reward_cfg()
 
-        assert cfg["w_track_lin_vel"] == pytest.approx(3.0)
-        assert cfg["w_lin_vel_forward"] == pytest.approx(5.0)
-        assert cfg["w_track_ang_vel"] == pytest.approx(1.5)
-        assert cfg["w_flat_orientation"] == pytest.approx(-0.5)
-        assert cfg["w_pose"] == pytest.approx(0.35)
+        assert cfg["w_track_lin_vel"] == pytest.approx(4.0)
+        assert cfg["w_lin_vel_forward"] == pytest.approx(6.0)
+        assert cfg["w_track_ang_vel"] == pytest.approx(2.5)
+        assert cfg["w_flat_orientation"] == pytest.approx(-0.7)
+        assert cfg["w_pose"] == pytest.approx(0.42)
         assert cfg["w_track_base_height"] == pytest.approx(1.0)
         assert cfg["base_height_target"] == pytest.approx(0.27)
         assert cfg["base_height_sigma"] == pytest.approx(0.01)
-        assert cfg["w_body_ang_vel"] == pytest.approx(-0.12)
-        assert cfg["w_angular_momentum"] == pytest.approx(-0.012)
+        assert cfg["w_body_ang_vel"] == pytest.approx(-0.16)
+        assert cfg["w_angular_momentum"] == pytest.approx(-0.014)
         assert cfg["w_action_rate"] == pytest.approx(-0.045)
         assert cfg["w_feet_air_time"] == pytest.approx(0.75)
-        assert cfg["w_feet_clearance"] == pytest.approx(-0.8)
-        assert cfg["w_feet_slip"] == pytest.approx(-0.1)
+        assert cfg["w_feet_clearance"] == pytest.approx(-1.0)
+        assert cfg["w_feet_slip"] == pytest.approx(-0.12)
 
     def test_simple_reward_dispatch_still_bypasses_full_reward(self, env):
         """The MPC-injection simple reward guard must remain intact."""

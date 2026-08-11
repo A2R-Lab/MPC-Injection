@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -448,6 +449,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             self.mjData.ctrl[:] = torques
             mujoco.mj_step(self.mjModel, self.mjData)
             self._after_physics_substep()
+            if self._physics_substeps_should_stop():
+                break
 
         self._step_count += 1
         self._steps_since_command_resample += 1
@@ -803,11 +806,24 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         include.attrib["file"] = str(robot_xml_path.absolute().resolve())
         root.insert(0, include)
 
-        # Write combined scene to temp file and load
-        combined_scene_path = procedural_assets_path / f"{self.robot_name}-{scene}-veltrack.xml"
-        scene_env.write(combined_scene_path)
-
-        self.mjModel = mujoco.MjModel.from_xml_path(str(combined_scene_path.absolute()))
+        # MuJoCo resolves relative assets from the XML's directory, so keep the
+        # scratch file beside the procedural assets.  The path must be unique:
+        # concurrent training/evaluation processes otherwise truncate and parse
+        # the same file at the same time.
+        combined_scene_fd, combined_scene_name = tempfile.mkstemp(
+            dir=procedural_assets_path,
+            prefix=f".{self.robot_name}-{scene}-veltrack-",
+            suffix=".xml",
+        )
+        os.close(combined_scene_fd)
+        combined_scene_path = Path(combined_scene_name)
+        try:
+            scene_env.write(combined_scene_path)
+            self.mjModel = mujoco.MjModel.from_xml_path(
+                str(combined_scene_path.absolute())
+            )
+        finally:
+            combined_scene_path.unlink(missing_ok=True)
         if self.robot_name.lower() == "go2" and self.use_go2_sysid:
             apply_go2_sysid_joint_dynamics(self.mjModel)
         self.mjData = mujoco.MjData(self.mjModel)
@@ -1004,6 +1020,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         override it without copying the control loop.
         """
         return None
+
+    def _physics_substeps_should_stop(self) -> bool:
+        """Allow task-specific immediate failures to stop the control step."""
+        return False
 
     def _before_control_step(self) -> None:
         """Optional task hook invoked once before the physics substeps."""

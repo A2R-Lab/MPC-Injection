@@ -122,8 +122,8 @@ Test a trained quadruped model locally with:
 python mpc_rl/play_quad.py --model=logs/quadruped-velocity_tracking-*-*-*
 ```
 
-The gated Go2 barrel-roll route uses `quadruped-barrel_roll`. It is SAC-MPC
-only and requires schema-v2 direct replay at 25%, Go2, disabled domain
+The retained G6-G8 Go2 barrel-roll route uses `quadruped-barrel_roll`. It is
+SAC-MPC only and requires schema-v2 direct replay at 25%, Go2, disabled domain
 randomization, enabled Go2 sysID, `action_scale=2.0`, and the task's fixed
 70-step horizon. The historical schema-v1/`action_scale=0.5` G6 pilot is
 **blocked**, not passed: held-out success remained 0% while every demonstration
@@ -160,6 +160,126 @@ even a hypothetical 100% seed 3 would leave the median at 1%, the project owner
 authorized stopping before seed 3. Do not rerun or overwrite the retained
 campaign under `logs/go2_barrel_roll_g8_production/`.
 
+G9 schema-v3 recovery is **complete**. It keeps the 1.40 s MPC maneuver but
+extends each episode and accepted trajectory to 2.50 s: 125 policy steps at
+50 Hz and 500 MuJoCo/PD steps at 200 Hz. After 1.40 s, generation repeats the
+terminal-padded final-stance plan without further MPC replanning. Schema v3
+also uses the locked roll/rate/action-change reward and a final-only classifier
+based on roll progress, base height, and body-up tilt. It preserves the 45D
+actor, 4D privileged critic, 5 Hz online target LPF, direct-torque demonstration
+execution, inverse-PD saved labels, 25% direct injection, disabled DR, and Go2
+sysID.
+
+All G9.1 through G9.6 gates passed. The immutable promoted dataset at
+`data/go2_barrel_roll/v3` contains
+exactly 1,000 accepted trajectories and 125,000 direct transitions. The fixed
+data runner now refuses to overwrite staging, v3, or its audit:
+
+```bash
+./run_go2_barrel_roll_g9_dataset.sh
+```
+
+After promotion, validate both the schema and content hashes with:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/planner/barrel_roll_dataset.py data/go2_barrel_roll/v3
+
+(
+  cd data/go2_barrel_roll/v3 &&
+  sha256sum --check --strict checksums.sha256
+)
+```
+
+The G9 campaign runner has separate concurrent `smoke` and `production` modes.
+It hard-checks the promoted dataset identity, refuses existing campaigns, runs
+training seeds 1 and 2 together, samples resources, disables replay-buffer
+saves, and terminates the peer process if either job fails:
+
+```bash
+./run_go2_barrel_roll_g9_campaign.sh smoke
+./run_go2_barrel_roll_g9_campaign.sh production
+```
+
+Production selects the earliest checkpoint reaching each seed's best rate over
+validation seeds `2000000` through `2000099`. It then locks both selections and
+scores each exactly once on final-test seeds `3000000` through `3000099` via
+`mpc_rl/evaluate_go2_barrel_roll_g9.py`. Seed 1 selected step 220,000 and scored
+100/100; seed 2 selected step 230,000 and scored 98/100. The official seed-1
+model therefore exceeds the 80/100 acceptance threshold. Exact gate evidence,
+artifact hashes, resource measurements, and video review are maintained in
+`docs/go2_barrel_roll_mpc_injection_plan.md`.
+
+Schema-v4 0% training uses the audited
+`mpc_rl/run_go2_barrel_roll_v4_0pct.py` launcher. The launcher preserves the
+hash-locked v4 training source, requires the same immutable v4 dataset and
+frozen hyperparameters, and writes `COMPLETE` only if the observed MPC replay
+percentage stayed exactly 0 throughout training. The normal v4 production
+route remains fixed at 25%.
+
+Train seed 1 of the 0% baseline with:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/run_go2_barrel_roll_v4_0pct.py \
+  --env_name=quadruped-barrel_roll \
+  --algorithm=SAC-MPC \
+  --robot=go2 \
+  --use_go2_sysid=true \
+  --seed=1 \
+  --total_timesteps=500000 \
+  --num_envs=4 \
+  --max_episode_steps=125 \
+  --logdir=logs/go2_barrel_roll_v4_0pct/seed1 \
+  --suffix=v4-0pct-seed1 \
+  --enable_logging=true \
+  --learning_rate=0.0003 \
+  --buffer_size=1000000 \
+  --learning_starts=10000 \
+  --batch_size=256 \
+  --tau=0.005 \
+  --gamma=0.99 \
+  --gradient_steps=-1 \
+  --policy_delay=2 \
+  --inject_type=percentage \
+  --percentage=0 \
+  --random_select=true \
+  --data_dir=data/go2_barrel_roll/v4 \
+  --quadruped_mpc_replay_mode=direct \
+  --checkpoint_freq=25000 \
+  --eval_freq=10000 \
+  --save_replay_buffer_checkpoints=false \
+  --save_replay_buffer_final=false \
+  --domain_rand=false \
+  --domain_rand_config_type=disabled
+```
+
+After it completes, render ten non-scored rollouts from the selected best
+checkpoint, record one of those seeds as a Viser trajectory, and launch Viser:
+
+```bash
+conda run --no-capture-output -n mpc-rl python \
+  mpc_rl/evaluate_go2_barrel_roll_v4_0pct.py \
+  --run-dir=logs/go2_barrel_roll_v4_0pct/seed1
+
+conda run --no-capture-output -n mpc-rl python \
+  body_trajs/record_go2_barrel_roll_policy.py \
+  --run-dir=logs/go2_barrel_roll_v4_0pct/seed1 \
+  --seed=7000000 \
+  --output-dir=body_trajs/model_traj_data_quadruped/v4_0pct
+
+conda run --no-capture-output -n mpc-rl python \
+  viser/viser_quadruped_viz_trajs.py \
+  --trajectory=/absolute/path/printed/by/the/recorder.npz \
+  --port=8081
+```
+
+The video summary lists `successful_seeds`; substitute one of them for
+`7000000` and add `--require-success` to the recorder when a successful
+trajectory is required. The default video seeds `7000000` through `7000009`
+are disjoint from v4 validation (`2000000`-`2000099`) and sealed final-test
+(`8000000`-`8000099`) seeds.
+
 The frozen sequential runner revalidates the immutable dataset, records
 provenance and resource usage, refuses to overwrite an existing campaign, and
 stops on the first failed run:
@@ -189,9 +309,9 @@ python mpc_rl/train.py \
     --use_go2_sysid=True
 ```
 
-Barrel-roll checkpoints are selected by success rate over the reserved fixed
-seeds `1000000` through `1000099`. Barrel videos are seed-labelled and do not
-set or display velocity commands.
+The retained G8 checkpoints were selected over seeds `1000000` through
+`1000099`. G9 uses the disjoint ranges documented above. Barrel videos are
+seed-labelled and do not set or display velocity commands.
 
 ## Deploy
 

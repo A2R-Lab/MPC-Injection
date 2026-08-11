@@ -56,10 +56,41 @@ class QuadrupedTensorboardCallback(BaseCallback):
         roll_errors = []
         contact_fractions = []
         stability_counts = []
+        hold_valid_flags = []
+        hold_condition_flags = {
+            name: []
+            for name in (
+                "rotation",
+                "foot_support",
+                "height",
+                "tilt",
+                "base_linear_speed",
+                "base_angular_speed",
+                "joint_speed",
+            )
+        }
+        body_up_tilts = []
+        base_linear_speeds = []
+        base_angular_speeds = []
+        joint_velocity_norms = []
         success_flags = []
         failure_reasons = Counter()
         roll_tracking_terms = []
+        rate_tracking_terms = []
+        action_change_terms = []
         signed_progress_terms = []
+        standing_score_terms = []
+        standing_subscore_terms = {
+            name: []
+            for name in (
+                "foot_score",
+                "height_score",
+                "tilt_score",
+                "linear_speed_score",
+                "angular_speed_score",
+                "joint_speed_score",
+            )
+        }
         terminal_outcome_terms = []
         action_clip_fractions = []
         torque_saturation_fractions = []
@@ -85,6 +116,21 @@ class QuadrupedTensorboardCallback(BaseCallback):
                     contact_fractions.append(float(np.mean(info["contact_state"])))
                 if info.get("stability_count") is not None:
                     stability_counts.append(float(info["stability_count"]))
+                if info.get("hold_valid") is not None:
+                    hold_valid_flags.append(float(bool(info["hold_valid"])))
+                conditions = info.get("hold_conditions")
+                if isinstance(conditions, dict):
+                    for name, values in hold_condition_flags.items():
+                        if conditions.get(name) is not None:
+                            values.append(float(bool(conditions[name])))
+                if info.get("body_up_tilt") is not None:
+                    body_up_tilts.append(float(info["body_up_tilt"]))
+                if info.get("base_linear_speed") is not None:
+                    base_linear_speeds.append(float(info["base_linear_speed"]))
+                if info.get("base_angular_speed") is not None:
+                    base_angular_speeds.append(float(info["base_angular_speed"]))
+                if info.get("joint_velocity_norm") is not None:
+                    joint_velocity_norms.append(float(info["joint_velocity_norm"]))
                 if info.get("is_success") is not None:
                     success_flags.append(float(bool(info["is_success"])))
                 if info.get("failure_reason"):
@@ -155,8 +201,17 @@ class QuadrupedTensorboardCallback(BaseCallback):
             if reward_components is not None:
                 if "roll_tracking" in reward_components:
                     roll_tracking_terms.append(float(reward_components["roll_tracking"]))
+                if "rate_tracking" in reward_components:
+                    rate_tracking_terms.append(float(reward_components["rate_tracking"]))
+                if "action_change" in reward_components:
+                    action_change_terms.append(float(reward_components["action_change"]))
                 if "signed_progress" in reward_components:
                     signed_progress_terms.append(float(reward_components["signed_progress"]))
+                if "standing_score" in reward_components:
+                    standing_score_terms.append(float(reward_components["standing_score"]))
+                for name, values in standing_subscore_terms.items():
+                    if name in reward_components:
+                        values.append(float(reward_components[name]))
                 if "terminal_outcome" in reward_components:
                     terminal_outcome_terms.append(float(reward_components["terminal_outcome"]))
 
@@ -216,6 +271,27 @@ class QuadrupedTensorboardCallback(BaseCallback):
                 self.logger.record("barrel_roll/contact_fraction", float(np.mean(contact_fractions)))
             if stability_counts:
                 self.logger.record("barrel_roll/stability_count_mean", float(np.mean(stability_counts)))
+            if hold_valid_flags:
+                self.logger.record(
+                    "barrel_roll/hold_valid_fraction",
+                    float(np.mean(hold_valid_flags)),
+                )
+            for name, values in hold_condition_flags.items():
+                if values:
+                    self.logger.record(
+                        f"barrel_roll/hold_condition/{name}_valid_fraction",
+                        float(np.mean(values)),
+                    )
+            for metric_name, values in (
+                ("body_up_tilt_mean", body_up_tilts),
+                ("base_linear_speed_mean", base_linear_speeds),
+                ("base_angular_speed_mean", base_angular_speeds),
+                ("joint_velocity_norm_mean", joint_velocity_norms),
+            ):
+                if values:
+                    self.logger.record(
+                        f"barrel_roll/{metric_name}", float(np.mean(values))
+                    )
             if success_flags:
                 self.logger.record("barrel_roll/success_fraction", float(np.mean(success_flags)))
             metric_failure_reasons = Counter()
@@ -225,8 +301,21 @@ class QuadrupedTensorboardCallback(BaseCallback):
                 self.logger.record(f"barrel_roll/failure_reason/{reason}", float(count))
             if roll_tracking_terms:
                 self.logger.record("reward/roll_tracking", float(np.mean(roll_tracking_terms)))
+            if rate_tracking_terms:
+                self.logger.record("reward/rate_tracking", float(np.mean(rate_tracking_terms)))
+            if action_change_terms:
+                self.logger.record("reward/action_change", float(np.mean(action_change_terms)))
             if signed_progress_terms:
-                self.logger.record("reward/signed_progress", float(np.mean(signed_progress_terms)))
+                self.logger.record(
+                    "reward/signed_progress", float(np.mean(signed_progress_terms))
+                )
+            if standing_score_terms:
+                self.logger.record(
+                    "reward/standing_score", float(np.mean(standing_score_terms))
+                )
+            for name, values in standing_subscore_terms.items():
+                if values:
+                    self.logger.record(f"reward/{name}", float(np.mean(values)))
             if terminal_outcome_terms:
                 self.logger.record("reward/terminal_outcome", float(np.mean(terminal_outcome_terms)))
             if action_clip_fractions:

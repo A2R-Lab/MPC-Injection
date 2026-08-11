@@ -96,13 +96,20 @@ from mpc_rl.envs.barrel_roll_common import (
     ACTION_SCALE as BARREL_ROLL_ACTION_SCALE,
     CONTROL_DT as BARREL_ROLL_CONTROL_DT,
     CONTROL_STEPS as BARREL_ROLL_CONTROL_STEPS,
+    FINAL_HOLD_START_TIME as BARREL_ROLL_FINAL_HOLD_START_TIME,
+    HOLD_CONDITION_PRECEDENCE as BARREL_ROLL_HOLD_CONDITIONS,
+    HOLD_FAILURE_REASONS as BARREL_ROLL_HOLD_FAILURE_REASONS,
     ROLL_START_TIME as BARREL_ROLL_START_TIME,
     SCHEMA_VERSION as BARREL_ROLL_SCHEMA_VERSION,
     SPREAD_RANGE as BARREL_ROLL_SPREAD_RANGE,
-    SUCCESS_CONFIG as BARREL_ROLL_SUCCESS_CONFIG,
     TASK_ID as BARREL_ROLL_TASK_ID,
 )
-from mpc_rl.planner.barrel_roll_dataset import expected_effective_config, sha256_file
+from mpc_rl.planner.barrel_roll_dataset import (
+    canonical_json,
+    expected_effective_config,
+    sha256_bytes,
+    sha256_file,
+)
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -280,10 +287,30 @@ _DOMAIN_RAND_OBS_NOISE = flags.DEFINE_float(
 )
 
 
-# Reserved evaluation seeds are intentionally far outside the commissioned and
-# planned generation ranges (0+, 100_000+, 200_000+, and 300_000+).  Dataset
-# generation must continue to treat this range as reserved.
-BARREL_ROLL_EVAL_SEEDS = tuple(range(1_000_000, 1_000_100))
+# G9 checkpoint validation and final-test ranges are disjoint and immutable.
+BARREL_ROLL_VALIDATION_SEEDS = tuple(range(2_000_000, 2_000_100))
+BARREL_ROLL_FINAL_TEST_SEEDS = tuple(range(8_000_000, 8_000_100))
+BARREL_ROLL_VALIDATION_STEPS = tuple(range(0, 500_001, 10_000))
+# Backward-compatible internal name used by the existing callback API.
+BARREL_ROLL_EVAL_SEEDS = BARREL_ROLL_VALIDATION_SEEDS
+BARREL_ROLL_RUNTIME_SOURCE_PATHS = (
+    "mpc_rl/train.py",
+    "mpc_rl/asym_policies/__init__.py",
+    "mpc_rl/asym_policies/asymmetric_policy.py",
+    "mpc_rl/common/__init__.py",
+    "mpc_rl/common/mpc_inject_callbacks.py",
+    "mpc_rl/common/quadruped_tensorboard_callback.py",
+    "mpc_rl/common/tagged_dict_replay_buffer.py",
+    "mpc_rl/common/tagged_replay_buffer.py",
+    "mpc_rl/envs/__init__.py",
+    "mpc_rl/envs/barrel_roll_common.py",
+    "mpc_rl/envs/barrel_roll_env.py",
+    "mpc_rl/envs/domain_randomization.py",
+    "mpc_rl/envs/go2_sysid.py",
+    "mpc_rl/envs/velocity_tracking_env.py",
+    "mpc_rl/planner/barrel_roll_dataset.py",
+    "mpc_rl/sac_mpc/sb3_sac_mpc.py",
+)
 _QUADRUPED_TASKS = ("velocity_tracking", "barrel_roll")
 
 
@@ -330,8 +357,29 @@ def validate_barrel_roll_training_options(
     domain_rand_config_type: str,
     use_go2_sysid: bool,
     data_dir: str | None,
+    training_seed: int = 1,
+    total_timesteps: int = 500_000,
+    num_envs: int = 4,
+    max_episode_steps: int = BARREL_ROLL_CONTROL_STEPS,
+    eval_freq: int = 10_000,
+    checkpoint_freq: int = 25_000,
+    enable_logging: bool = True,
+    save_replay_buffer_checkpoints: bool = False,
+    save_replay_buffer_final: bool = False,
+    random_select: bool = True,
+    play_only: bool = False,
+    load_run_name: str | None = None,
+    checkpoint_evals: str | None = None,
+    learning_rate: float = 3.0e-4,
+    buffer_size: int = 1_000_000,
+    learning_starts: int = 10_000,
+    batch_size: int = 256,
+    tau: float = 0.005,
+    gamma: float = 0.99,
+    gradient_steps: int = -1,
+    policy_delay: int = 2,
 ) -> None:
-    """Reject options that would silently violate the frozen barrel task."""
+    """Reject options outside the frozen schema-v4 25%-injection task."""
     incompatible = []
     if robot.lower() != "go2":
         incompatible.append("robot must be 'go2'")
@@ -352,6 +400,38 @@ def validate_barrel_roll_training_options(
             f"data_dir must point to validated schema-v{BARREL_ROLL_SCHEMA_VERSION} "
             "barrel data"
         )
+    locked_values = {
+        "training seed": (training_seed, (1, 2)),
+        "total_timesteps": (total_timesteps, 500_000),
+        "num_envs": (num_envs, 4),
+        "max_episode_steps": (max_episode_steps, BARREL_ROLL_CONTROL_STEPS),
+        "eval_freq": (eval_freq, 10_000),
+        "checkpoint_freq": (checkpoint_freq, 25_000),
+        "enable_logging": (enable_logging, True),
+        "save_replay_buffer_checkpoints": (
+            save_replay_buffer_checkpoints,
+            False,
+        ),
+        "save_replay_buffer_final": (save_replay_buffer_final, False),
+        "random_select": (random_select, True),
+        "play_only": (play_only, False),
+        "load_run_name": (load_run_name, None),
+        "checkpoint_evals": (checkpoint_evals, None),
+        "learning_rate": (learning_rate, 3.0e-4),
+        "buffer_size": (buffer_size, 1_000_000),
+        "learning_starts": (learning_starts, 10_000),
+        "batch_size": (batch_size, 256),
+        "tau": (tau, 0.005),
+        "gamma": (gamma, 0.99),
+        "gradient_steps": (gradient_steps, -1),
+        "policy_delay": (policy_delay, 2),
+    }
+    for name, (actual, expected) in locked_values.items():
+        if name == "training seed":
+            if actual not in expected:
+                incompatible.append("training seed must be 1 or 2")
+        elif actual != expected:
+            incompatible.append(f"{name} must be {expected!r}")
     if incompatible:
         raise ValueError("Incompatible barrel-roll options: " + "; ".join(incompatible))
 
@@ -372,9 +452,16 @@ def barrel_roll_config_snapshot(data_dir: str, target_percentage: int) -> dict:
             "target_mpc_percentage": target_percentage,
         },
         "evaluation": {
-            "checkpoint_metric": "success_rate",
+            "checkpoint_selection_order": [
+                "strict_success_rate_desc",
+                "mean_final_hold_standing_score_desc",
+                "timesteps_asc",
+            ],
+            "steps": list(BARREL_ROLL_VALIDATION_STEPS),
             "num_episodes": len(BARREL_ROLL_EVAL_SEEDS),
             "seeds": list(BARREL_ROLL_EVAL_SEEDS),
+            "final_test_num_episodes": len(BARREL_ROLL_FINAL_TEST_SEEDS),
+            "final_test_seeds": list(BARREL_ROLL_FINAL_TEST_SEEDS),
         },
     }
 
@@ -389,8 +476,22 @@ def _git_repository_snapshot(path: Path) -> dict:
     ).stdout.strip()
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise RuntimeError(f"invalid Git revision for {path}: {commit!r}")
+    status_command = [
+        "git",
+        "-C",
+        str(path),
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ]
+    if path.resolve() == Path(__file__).resolve().parents[1]:
+        status_command.extend([
+            "--",
+            ".",
+            ":(exclude)deploy/robots/go2/config/policy/velocity/policies/**",
+        ])
     status = subprocess.run(
-        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"],
+        status_command,
         check=True,
         capture_output=True,
         text=True,
@@ -401,18 +502,74 @@ def _git_repository_snapshot(path: Path) -> dict:
     }
 
 
+def _barrel_roll_runtime_source_hashes(repo_root: Path) -> dict[str, str]:
+    """Hash every repository source file used by schema-v4 training."""
+    runtime_source_hashes = {}
+    for relative_path in BARREL_ROLL_RUNTIME_SOURCE_PATHS:
+        source_path = repo_root / relative_path
+        if not source_path.is_file():
+            raise FileNotFoundError(
+                f"barrel-roll runtime source is missing: {source_path}"
+            )
+        runtime_source_hashes[relative_path] = sha256_file(source_path)
+    return runtime_source_hashes
+
+
 def barrel_roll_run_provenance(data_dir: str) -> dict:
-    """Validate and serialize G8 source and immutable-dataset provenance."""
+    """Validate and serialize v4 source and immutable-dataset provenance."""
     repo_root = Path(__file__).resolve().parents[1]
     dataset_dir = Path(data_dir)
     summary_path = dataset_dir / "dataset_summary.json"
     checksum_path = dataset_dir / "checksums.sha256"
-    if not summary_path.is_file() or not checksum_path.is_file():
+    complete_path = dataset_dir / "COMPLETE"
+    if (
+        not summary_path.is_file()
+        or not checksum_path.is_file()
+        or not complete_path.is_file()
+    ):
         raise ValueError(
             f"barrel-roll production data must contain dataset_summary.json and "
-            f"checksums.sha256: {dataset_dir}"
+            f"checksums.sha256 plus the atomic-promotion COMPLETE marker: "
+            f"{dataset_dir}"
         )
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    expected_config_hash = sha256_bytes(
+        canonical_json(expected_effective_config()).encode("utf-8")
+    )
+    expected_summary_fields = {
+        "schema_version": BARREL_ROLL_SCHEMA_VERSION,
+        "file_count": 2_000,
+        "transition_count": 250_000,
+        "effective_config_sha256": expected_config_hash,
+    }
+    mismatches = {
+        key: {"expected": expected, "actual": summary.get(key)}
+        for key, expected in expected_summary_fields.items()
+        if summary.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(
+            "barrel-roll production dataset identity mismatch: "
+            + canonical_json(mismatches)
+        )
+    summary_hash = sha256_file(summary_path)
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    expected_complete_fields = {
+        "status": "complete",
+        "file_count": 2_000,
+        "transition_count": 250_000,
+        "dataset_summary_sha256": summary_hash,
+    }
+    complete_mismatches = {
+        key: {"expected": expected, "actual": complete.get(key)}
+        for key, expected in expected_complete_fields.items()
+        if complete.get(key) != expected
+    }
+    if complete_mismatches:
+        raise ValueError(
+            "barrel-roll production COMPLETE marker mismatch: "
+            + canonical_json(complete_mismatches)
+        )
     actual_checksum_hash = sha256_file(checksum_path)
     if summary.get("checksum_index_sha256") != actual_checksum_hash:
         raise ValueError(
@@ -429,9 +586,11 @@ def barrel_roll_run_provenance(data_dir: str) -> dict:
         raise ValueError(
             "barrel-roll aggregate-manifest hash does not match dataset_summary.json"
         )
+    runtime_source_hashes = _barrel_roll_runtime_source_hashes(repo_root)
 
     return {
         "argv": list(sys.argv),
+        "runtime_source_sha256": runtime_source_hashes,
         "source": {
             "root": _git_repository_snapshot(repo_root),
             "mpx": _git_repository_snapshot(repo_root / "deps" / "mpx"),
@@ -453,7 +612,8 @@ def barrel_roll_run_provenance(data_dir: str) -> dict:
             "checksum_index_sha256": actual_checksum_hash,
             "aggregate_manifest": aggregate_name,
             "aggregate_manifest_sha256": actual_aggregate_hash,
-            "dataset_summary_sha256": sha256_file(summary_path),
+            "dataset_summary_sha256": summary_hash,
+            "complete_marker_sha256": sha256_file(complete_path),
         },
     }
 
@@ -610,12 +770,77 @@ class ExactTimestepCheckpointCallback(BaseCallback):
         return True
 
 
-def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -> dict:
-    """Evaluate fixed seeds and retain per-episode G8 outcome diagnostics."""
+def evaluate_barrel_roll_policy(
+    model,
+    eval_env,
+    seeds=BARREL_ROLL_EVAL_SEEDS,
+    *,
+    include_critic: bool = False,
+) -> dict:
+    """Evaluate fixed seeds under the complete strict schema-v4 contract."""
+    reward_component_names = (
+        "roll_tracking",
+        "signed_progress",
+        "standing_score",
+        "terminal_outcome",
+        "foot_score",
+        "height_score",
+        "tilt_score",
+        "linear_speed_score",
+        "angular_speed_score",
+        "joint_speed_score",
+    )
+    standing_subscore_names = reward_component_names[4:]
+    motion_names = (
+        "base_height",
+        "body_up_tilt",
+        "base_linear_speed",
+        "base_angular_speed",
+        "joint_velocity_norm",
+        "action_change_norm",
+    )
+
+    def distribution(values) -> dict[str, float] | None:
+        array = np.asarray(values, dtype=np.float64)
+        if array.size == 0:
+            return None
+        if not np.isfinite(array).all():
+            raise RuntimeError("barrel-roll evaluation distribution is non-finite")
+        return {
+            "min": float(np.min(array)),
+            "p05": float(np.quantile(array, 0.05)),
+            "median": float(np.median(array)),
+            "p95": float(np.quantile(array, 0.95)),
+            "max": float(np.max(array)),
+            "mean": float(np.mean(array)),
+        }
+
     episode_rewards = []
     successes = []
     failure_reasons = Counter()
     episodes = []
+    all_endpoint_metrics = {
+        "roll_progress": [],
+        **{name: [] for name in motion_names},
+    }
+    all_final_hold_metrics = {
+        "roll_progress": [],
+        **{name: [] for name in motion_names},
+    }
+    all_filtered_contacts = []
+    all_raw_contacts = []
+    all_final_hold_filtered_contacts = []
+    all_final_hold_raw_contacts = []
+    final_hold_condition_failures = Counter()
+    terminal_window_condition_failures = Counter()
+    cumulative_condition_failures = Counter()
+    has_critic = all(
+        hasattr(model, attribute) for attribute in ("policy", "critic", "device")
+    )
+    if include_critic and not has_critic:
+        raise ValueError("critic diagnostics requested for a model without a critic")
+    critic_available = bool(include_critic)
+    all_critic_values: list[list[float]] = []
 
     for seed in seeds:
         eval_env.seed(int(seed))
@@ -627,30 +852,143 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
         touchdown_step = None
         stabilization_step = None
         post_start_contact_break = False
+        cumulative_reward_components = {
+            name: 0.0 for name in reward_component_names
+        }
+        final_hold_standing_scores = []
+        final_hold_subscores = {name: [] for name in standing_subscore_names}
+        final_hold_condition_valid_counts = Counter()
+        final_hold_endpoint_count = 0
+        episode_critic_values: list[list[float]] = []
         while not bool(done[0]):
             action, _ = model.predict(obs, deterministic=True)
+            if critic_available:
+                with th.no_grad():
+                    obs_tensor, _ = model.policy.obs_to_tensor(obs)
+                    action_tensor = th.as_tensor(
+                        action, dtype=th.float32, device=model.device
+                    )
+                    q_tensors = model.critic(obs_tensor, action_tensor)
+                q_values = [
+                    float(np.asarray(value.detach().cpu()).reshape(-1)[0])
+                    for value in q_tensors
+                ]
+                if not q_values or not np.all(np.isfinite(q_values)):
+                    raise RuntimeError(
+                        f"barrel-roll evaluation seed {seed} returned non-finite "
+                        "critic values"
+                    )
+                episode_critic_values.append(q_values)
             obs, reward, done, infos = eval_env.step(action)
             episode_reward += float(reward[0])
             control_step += 1
             step_info = infos[0]
-            if isinstance(step_info, dict):
-                contacts = np.asarray(step_info.get("contact_state", []), dtype=bool)
-                all_contacts = contacts.shape == (4,) and bool(np.all(contacts))
-                if (
-                    contacts.shape == (4,)
-                    and control_step * BARREL_ROLL_CONTROL_DT >= BARREL_ROLL_START_TIME
-                    and not all_contacts
-                ):
-                    post_start_contact_break = True
-                if touchdown_step is None and post_start_contact_break and all_contacts:
-                    touchdown_step = control_step
-                stability_count = int(step_info.get("stability_count", 0))
-                if (
-                    stabilization_step is None
-                    and touchdown_step is not None
-                    and stability_count >= BARREL_ROLL_SUCCESS_CONFIG.stable_control_steps
-                ):
-                    stabilization_step = control_step
+            if not isinstance(step_info, dict):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned non-dict info"
+                )
+            contacts = np.asarray(step_info.get("contact_state", []), dtype=bool)
+            raw_contacts = np.asarray(
+                step_info.get("raw_contact_state", []), dtype=bool
+            )
+            if contacts.shape != (4,) or raw_contacts.shape != (4,):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned invalid contacts"
+                )
+            all_filtered_contacts.append(contacts.copy())
+            all_raw_contacts.append(raw_contacts.copy())
+            all_contacts = bool(np.all(contacts))
+            if (
+                control_step * BARREL_ROLL_CONTROL_DT >= BARREL_ROLL_START_TIME
+                and not all_contacts
+            ):
+                post_start_contact_break = True
+            if touchdown_step is None and post_start_contact_break and all_contacts:
+                touchdown_step = control_step
+            stability_count = int(step_info.get("stability_count", 0))
+            if (
+                stabilization_step is None
+                and touchdown_step is not None
+                and stability_count >= 5
+            ):
+                stabilization_step = control_step
+
+            step_components = step_info.get("reward_components")
+            if not isinstance(step_components, dict):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} omitted reward components"
+                )
+            for name in reward_component_names:
+                if step_components.get(name) is None:
+                    raise RuntimeError(
+                        f"barrel-roll evaluation seed {seed} omitted reward "
+                        f"component {name}"
+                    )
+                value = float(step_components[name])
+                if not np.isfinite(value):
+                    raise RuntimeError(
+                        f"barrel-roll evaluation seed {seed} returned non-finite "
+                        f"reward component {name}"
+                    )
+                cumulative_reward_components[name] += value
+            expected_reward = sum(
+                float(step_components[name])
+                for name in (
+                    "roll_tracking",
+                    "signed_progress",
+                    "standing_score",
+                    "terminal_outcome",
+                )
+            )
+            if not np.isclose(
+                float(reward[0]), expected_reward, atol=1.0e-5, rtol=0.0
+            ):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} reward/component mismatch"
+                )
+
+            endpoint_values = {"roll_progress": float(step_info["roll_progress"])}
+            endpoint_values.update({name: float(step_info[name]) for name in motion_names})
+            if not all(np.isfinite(value) for value in endpoint_values.values()):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned non-finite endpoint metrics"
+                )
+            for name, value in endpoint_values.items():
+                all_endpoint_metrics[name].append(value)
+
+            hold_conditions = step_info.get("hold_conditions")
+            if not isinstance(hold_conditions, dict) or any(
+                name not in hold_conditions for name in BARREL_ROLL_HOLD_CONDITIONS
+            ):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} omitted hold conditions"
+                )
+            final_hold_active = bool(step_info.get("final_hold_active", False))
+            expected_final_hold_active = (
+                control_step * BARREL_ROLL_CONTROL_DT
+                > BARREL_ROLL_FINAL_HOLD_START_TIME
+            )
+            if final_hold_active != expected_final_hold_active:
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned inconsistent "
+                    "final_hold_active"
+                )
+            if final_hold_active:
+                final_hold_endpoint_count += 1
+                all_final_hold_filtered_contacts.append(contacts.copy())
+                all_final_hold_raw_contacts.append(raw_contacts.copy())
+                for name, value in endpoint_values.items():
+                    all_final_hold_metrics[name].append(value)
+                final_hold_standing_scores.append(
+                    float(step_components["standing_score"])
+                )
+                for name in standing_subscore_names:
+                    final_hold_subscores[name].append(float(step_components[name]))
+                for name in BARREL_ROLL_HOLD_CONDITIONS:
+                    valid = bool(hold_conditions[name])
+                    final_hold_condition_valid_counts[name] += int(valid)
+                    if not valid:
+                        final_hold_condition_failures[name] += 1
             if bool(done[0]):
                 terminal_info = step_info
 
@@ -659,7 +997,16 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
                 f"barrel-roll evaluation seed {seed} did not return terminal is_success"
             )
         terminal_values = {}
-        for key in ("roll_progress", "roll_error"):
+        for key in (
+            "roll_progress",
+            "roll_error",
+            "base_height",
+            "body_up_tilt",
+            "base_linear_speed",
+            "base_angular_speed",
+            "joint_velocity_norm",
+            "action_change_norm",
+        ):
             if terminal_info.get(key) is None:
                 raise RuntimeError(
                     f"barrel-roll evaluation seed {seed} did not return terminal {key}"
@@ -681,6 +1028,62 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
         if not success:
             failure_reason = str(terminal_info.get("failure_reason") or "unknown")
             failure_reasons[failure_reason] += 1
+        if success and control_step != BARREL_ROLL_CONTROL_STEPS:
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} reported early success at "
+                f"step {control_step}"
+            )
+        if (
+            not success
+            and control_step != BARREL_ROLL_CONTROL_STEPS
+            and failure_reason not in {"non_finite_state", "non_foot_ground_contact"}
+        ):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} terminated early for "
+                f"non-immediate failure {failure_reason}"
+            )
+        terminal_hold_conditions = terminal_info.get("hold_conditions")
+        if not isinstance(terminal_hold_conditions, dict) or any(
+            name not in terminal_hold_conditions
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        ):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} omitted terminal hold conditions"
+            )
+        terminal_window_failures = terminal_info.get(
+            "final_hold_window_failure_counts"
+        )
+        if not isinstance(terminal_window_failures, dict):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} omitted final-window failures"
+            )
+        terminal_cumulative_failures = terminal_info.get(
+            "hold_condition_failure_counts"
+        )
+        if not isinstance(terminal_cumulative_failures, dict):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} omitted cumulative hold failures"
+            )
+        terminal_window_condition_failures.update({
+            name: int(terminal_window_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        })
+        cumulative_condition_failures.update({
+            name: int(terminal_cumulative_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        })
+        critic_summary = None
+        if episode_critic_values:
+            critic_array = np.asarray(episode_critic_values, dtype=np.float64)
+            critic_summary = [
+                {
+                    "min": float(np.min(critic_array[:, index])),
+                    "max": float(np.max(critic_array[:, index])),
+                    "mean": float(np.mean(critic_array[:, index])),
+                }
+                for index in range(critic_array.shape[1])
+            ]
+            all_critic_values.extend(episode_critic_values)
         episodes.append({
             "seed": int(seed),
             "success": success,
@@ -689,6 +1092,56 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
             "control_steps": control_step,
             "terminal_roll_progress": terminal_values["roll_progress"],
             "terminal_roll_error": terminal_values["roll_error"],
+            "terminal_base_height": terminal_values["base_height"],
+            "terminal_body_up_tilt": terminal_values["body_up_tilt"],
+            "terminal_base_linear_speed": terminal_values["base_linear_speed"],
+            "terminal_base_angular_speed": terminal_values["base_angular_speed"],
+            "terminal_joint_velocity_norm": terminal_values["joint_velocity_norm"],
+            "terminal_action_change_norm": terminal_values["action_change_norm"],
+            "terminal_filtered_contacts": np.asarray(
+                terminal_info["contact_state"], dtype=bool
+            ).tolist(),
+            "terminal_raw_contacts": np.asarray(
+                terminal_info["raw_contact_state"], dtype=bool
+            ).tolist(),
+            "terminal_hold_conditions": {
+                name: bool(terminal_hold_conditions[name])
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "terminal_final_hold_window_failure_counts": {
+                name: int(terminal_window_failures.get(name, 0))
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "terminal_cumulative_hold_condition_failure_counts": {
+                name: int(terminal_cumulative_failures.get(name, 0))
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "terminal_nonfoot_ground_contact_count": int(
+                terminal_info.get("nonfoot_ground_contact_count", 0)
+            ),
+            "final_hold_endpoint_count": final_hold_endpoint_count,
+            "final_hold_streak": int(terminal_info.get("final_hold_streak", 0)),
+            "mean_final_hold_standing_score": (
+                float(np.mean(final_hold_standing_scores))
+                if final_hold_standing_scores
+                else 0.0
+            ),
+            "mean_final_hold_standing_subscores": {
+                name: (
+                    float(np.mean(values)) if values else 0.0
+                )
+                for name, values in final_hold_subscores.items()
+            },
+            "final_hold_condition_valid_fractions": {
+                name: (
+                    final_hold_condition_valid_counts[name]
+                    / final_hold_endpoint_count
+                    if final_hold_endpoint_count
+                    else 0.0
+                )
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "reward_components": cumulative_reward_components,
             "touchdown_step": touchdown_step,
             "touchdown_time_s": (
                 touchdown_step * BARREL_ROLL_CONTROL_DT
@@ -702,9 +1155,12 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
                 else None
             ),
             "terminal_stability_count": int(terminal_info.get("stability_count", 0)),
+            "critic_values": critic_summary,
         })
 
     terminal_errors = [episode["terminal_roll_error"] for episode in episodes]
+    terminal_heights = [episode["terminal_base_height"] for episode in episodes]
+    terminal_tilts = [episode["terminal_body_up_tilt"] for episode in episodes]
     touchdown_times = [
         episode["touchdown_time_s"]
         for episode in episodes
@@ -716,6 +1172,43 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
         if episode["stabilization_time_s"] is not None
     ]
 
+    aggregate_critic_summary = None
+    if all_critic_values:
+        critic_array = np.asarray(all_critic_values, dtype=np.float64)
+        aggregate_critic_summary = [
+            {
+                "min": float(np.min(critic_array[:, index])),
+                "max": float(np.max(critic_array[:, index])),
+                "mean": float(np.mean(critic_array[:, index])),
+            }
+            for index in range(critic_array.shape[1])
+        ]
+
+    known_failure_reasons = (
+        "non_finite_state",
+        "non_foot_ground_contact",
+        *BARREL_ROLL_HOLD_FAILURE_REASONS.values(),
+        "final_hold_streak_too_short",
+        "unknown",
+    )
+    failure_reason_report = {
+        reason: int(failure_reasons.get(reason, 0))
+        for reason in known_failure_reasons
+    }
+    failure_reason_report.update({
+        reason: int(count)
+        for reason, count in failure_reasons.items()
+        if reason not in failure_reason_report
+    })
+    filtered_contacts_array = np.asarray(all_filtered_contacts, dtype=np.float64)
+    raw_contacts_array = np.asarray(all_raw_contacts, dtype=np.float64)
+    final_filtered_array = np.asarray(
+        all_final_hold_filtered_contacts, dtype=np.float64
+    ).reshape(-1, 4)
+    final_raw_array = np.asarray(
+        all_final_hold_raw_contacts, dtype=np.float64
+    ).reshape(-1, 4)
+
     return {
         "success_rate": float(np.mean(successes)),
         "mean_reward": float(np.mean(episode_rewards)),
@@ -723,11 +1216,106 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
         "min_return": float(np.min(episode_rewards)),
         "max_return": float(np.max(episode_rewards)),
         "episode_rewards": episode_rewards,
-        "failure_reasons": dict(failure_reasons),
+        "failure_reasons": failure_reason_report,
         "seeds": list(seeds),
         "episodes": episodes,
         "mean_terminal_roll_error": float(np.mean(terminal_errors)),
         "mean_abs_terminal_roll_error": float(np.mean(np.abs(terminal_errors))),
+        "mean_terminal_base_height": float(np.mean(terminal_heights)),
+        "mean_terminal_body_up_tilt": float(np.mean(terminal_tilts)),
+        "mean_final_hold_standing_score": float(np.mean([
+            episode["mean_final_hold_standing_score"] for episode in episodes
+        ])),
+        "mean_cumulative_reward_components": {
+            name: float(np.mean([
+                episode["reward_components"][name] for episode in episodes
+            ]))
+            for name in reward_component_names
+        },
+        "reward_component_distributions": {
+            name: distribution([
+                episode["reward_components"][name] for episode in episodes
+            ])
+            for name in reward_component_names
+        },
+        "standing_subscore_distributions": {
+            name: distribution([
+                episode["mean_final_hold_standing_subscores"][name]
+                for episode in episodes
+            ])
+            for name in standing_subscore_names
+        },
+        "return_distribution": distribution(episode_rewards),
+        "roll_progress_distributions": {
+            "all_control_endpoints": distribution(
+                all_endpoint_metrics["roll_progress"]
+            ),
+            "final_hold_endpoints": distribution(
+                all_final_hold_metrics["roll_progress"]
+            ),
+            "terminal": distribution([
+                episode["terminal_roll_progress"] for episode in episodes
+            ]),
+        },
+        "motion_distributions": {
+            "all_control_endpoints": {
+                name: distribution(all_endpoint_metrics[name])
+                for name in motion_names
+            },
+            "final_hold_endpoints": {
+                name: distribution(all_final_hold_metrics[name])
+                for name in motion_names
+            },
+            "terminal": {
+                name: distribution([
+                    episode[f"terminal_{name}"] for episode in episodes
+                ])
+                for name in motion_names
+            },
+        },
+        "final_hold_streak_distribution": distribution([
+            episode["final_hold_streak"] for episode in episodes
+        ]),
+        "final_hold_condition_failure_endpoints": {
+            name: int(final_hold_condition_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        },
+        "terminal_window_condition_failure_counts": {
+            name: int(terminal_window_condition_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        },
+        "cumulative_hold_condition_failure_counts": {
+            name: int(cumulative_condition_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        },
+        "contact_summary": {
+            "control_endpoint_count": int(filtered_contacts_array.shape[0]),
+            "filtered_contact_fraction_by_foot": np.mean(
+                filtered_contacts_array, axis=0
+            ).tolist(),
+            "raw_contact_fraction_by_foot": np.mean(
+                raw_contacts_array, axis=0
+            ).tolist(),
+            "final_hold_endpoint_count": int(final_filtered_array.shape[0]),
+            "final_hold_filtered_contact_fraction_by_foot": (
+                np.mean(final_filtered_array, axis=0).tolist()
+                if final_filtered_array.size
+                else [0.0] * 4
+            ),
+            "final_hold_raw_contact_fraction_by_foot": (
+                np.mean(final_raw_array, axis=0).tolist()
+                if final_raw_array.size
+                else [0.0] * 4
+            ),
+            "terminal_all_filtered_feet_count": int(sum(
+                all(episode["terminal_filtered_contacts"])
+                for episode in episodes
+            )),
+            "nonfoot_ground_contact_episode_count": int(sum(
+                episode["terminal_nonfoot_ground_contact_count"] > 0
+                for episode in episodes
+            )),
+        },
         "touchdown_count": len(touchdown_times),
         "mean_touchdown_time_s": (
             float(np.mean(touchdown_times)) if touchdown_times else None
@@ -736,6 +1324,8 @@ def evaluate_barrel_roll_policy(model, eval_env, seeds=BARREL_ROLL_EVAL_SEEDS) -
         "mean_stabilization_time_s": (
             float(np.mean(stabilization_times)) if stabilization_times else None
         ),
+        "critic_available": critic_available,
+        "critic_values": aggregate_critic_summary,
     }
 
 
@@ -751,8 +1341,238 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     temporary_path.replace(path)
 
 
+def write_barrel_roll_training_completion(logdir: Path | str, model) -> dict:
+    """Validate one exact production run and create its write-once marker."""
+    logdir = Path(logdir)
+    complete_path = logdir / "COMPLETE"
+    if complete_path.exists():
+        raise FileExistsError(
+            f"refusing to overwrite barrel-roll completion marker: {complete_path}"
+        )
+    if int(model.num_timesteps) != 500_000:
+        raise RuntimeError(
+            f"barrel-roll run ended at {model.num_timesteps}/500000 timesteps"
+        )
+
+    required_paths = {
+        "config": logdir / "config.json",
+        "final_model": logdir / "final_model.zip",
+        "final_vecnormalize": logdir / "vec_normalize.pkl",
+        "selected_model": logdir / "best_model/best_model.zip",
+        "selected_vecnormalize": logdir / "best_model/vec_normalize.pkl",
+        "selection": logdir / "best_model/selection.json",
+        "evaluation_history": logdir / "barrel_roll_eval_history.jsonl",
+        "diagnostics": logdir / "barrel_roll_pilot_diagnostics.json",
+    }
+    missing = [str(path) for path in required_paths.values() if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            "barrel-roll run is missing required artifacts: " + ", ".join(missing)
+        )
+    replay_artifacts = sorted(logdir.rglob("*replay_buffer*"))
+    if replay_artifacts:
+        raise RuntimeError(
+            "barrel-roll run unexpectedly saved replay buffers: "
+            + ", ".join(str(path) for path in replay_artifacts)
+        )
+
+    config = json.loads(required_paths["config"].read_text(encoding="utf-8"))
+    expected_config_values = {
+        "algorithm": "SAC-MPC",
+        "env_name": "quadruped-barrel_roll",
+        "total_timesteps": 500_000,
+        "num_envs": 4,
+        "max_episode_steps": BARREL_ROLL_CONTROL_STEPS,
+        "eval_freq": 10_000,
+        "checkpoint_freq": 25_000,
+        "inject_type": "percentage",
+        "percentage": 25,
+        "random_select": True,
+        "quadruped_mpc_replay_mode": "direct",
+        "use_go2_sysid": True,
+        "save_replay_buffer_checkpoints": False,
+        "save_replay_buffer_final": False,
+    }
+    config_mismatches = {
+        name: {"expected": expected, "actual": config.get(name)}
+        for name, expected in expected_config_values.items()
+        if config.get(name) != expected
+    }
+    if config.get("seed") not in (1, 2):
+        config_mismatches["seed"] = {
+            "expected": [1, 2],
+            "actual": config.get("seed"),
+        }
+    if config_mismatches:
+        raise RuntimeError(
+            "barrel-roll completed with incompatible config: "
+            + canonical_json(config_mismatches)
+        )
+    run_provenance = config.get("barrel_roll", {}).get("run_provenance", {})
+    recorded_source_hashes = run_provenance.get("runtime_source_sha256")
+    current_source_hashes = _barrel_roll_runtime_source_hashes(
+        Path(__file__).resolve().parents[1]
+    )
+    if recorded_source_hashes != current_source_hashes:
+        raise RuntimeError(
+            "barrel-roll runtime source changed during training: "
+            + canonical_json({
+                "recorded": recorded_source_hashes,
+                "current": current_source_hashes,
+            })
+        )
+
+    records = []
+    for line_number, line in enumerate(
+        required_paths["evaluation_history"].read_text(encoding="utf-8").splitlines(),
+        1,
+    ):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"invalid evaluation history at line {line_number}: {error}"
+            ) from error
+        records.append(record)
+    steps = tuple(int(record.get("timesteps", -1)) for record in records)
+    if steps != BARREL_ROLL_VALIDATION_STEPS:
+        raise RuntimeError(
+            "barrel-roll evaluation history does not cover exact 0:10000:500000 steps"
+        )
+    for record in records:
+        if record.get("seeds") != list(BARREL_ROLL_VALIDATION_SEEDS):
+            raise RuntimeError("barrel-roll evaluation history used wrong seeds")
+        if len(record.get("episodes", [])) != len(BARREL_ROLL_VALIDATION_SEEDS):
+            raise RuntimeError("barrel-roll evaluation history omitted episodes")
+        required_diagnostics = (
+            "failure_reasons",
+            "final_hold_streak_distribution",
+            "standing_subscore_distributions",
+            "motion_distributions",
+            "reward_component_distributions",
+            "roll_progress_distributions",
+            "contact_summary",
+            "return_distribution",
+        )
+        missing_diagnostics = [
+            name for name in required_diagnostics if record.get(name) is None
+        ]
+        if missing_diagnostics:
+            raise RuntimeError(
+                "barrel-roll evaluation history omitted diagnostics: "
+                + ", ".join(missing_diagnostics)
+            )
+        for name in ("success_rate", "mean_final_hold_standing_score"):
+            value = float(record[name])
+            if not np.isfinite(value):
+                raise RuntimeError(f"barrel-roll evaluation has non-finite {name}")
+
+    winner = max(
+        records,
+        key=lambda record: (
+            float(record["success_rate"]),
+            float(record["mean_final_hold_standing_score"]),
+            -int(record["timesteps"]),
+        ),
+    )
+    selection = json.loads(required_paths["selection"].read_text(encoding="utf-8"))
+    expected_selection = {
+        "selection_order": [
+            "strict_success_rate_desc",
+            "mean_final_hold_standing_score_desc",
+            "timesteps_asc",
+        ],
+        "success_rate": winner["success_rate"],
+        "mean_final_hold_standing_score": winner[
+            "mean_final_hold_standing_score"
+        ],
+        "timesteps": winner["timesteps"],
+    }
+    if selection != expected_selection:
+        raise RuntimeError(
+            "barrel-roll selected checkpoint does not match locked order: "
+            + canonical_json({"expected": expected_selection, "actual": selection})
+        )
+
+    checkpoint_steps = tuple(range(25_000, 500_001, 25_000))
+    checkpoint_models = [
+        logdir / f"checkpoints/model_{step}_steps.zip" for step in checkpoint_steps
+    ]
+    checkpoint_stats = [
+        logdir / f"checkpoints/model_vecnormalize_{step}_steps.pkl"
+        for step in checkpoint_steps
+    ]
+    missing_checkpoints = [
+        str(path)
+        for path in (*checkpoint_models, *checkpoint_stats)
+        if not path.is_file()
+    ]
+    if missing_checkpoints:
+        raise RuntimeError(
+            "barrel-roll run is missing exact checkpoints: "
+            + ", ".join(missing_checkpoints)
+        )
+    tensorboard_events = sorted(
+        path for path in (logdir / "tensorboard").rglob("events.out.tfevents.*")
+        if path.is_file() and path.stat().st_size > 0
+    )
+    if not tensorboard_events:
+        raise RuntimeError("barrel-roll run has no nonempty TensorBoard event file")
+    diagnostics = json.loads(
+        required_paths["diagnostics"].read_text(encoding="utf-8")
+    )
+    if diagnostics.get("status") != "complete":
+        raise RuntimeError("barrel-roll training diagnostics are not complete")
+
+    artifact_hashes = {
+        name: sha256_file(path) for name, path in required_paths.items()
+    }
+    artifact_hashes.update({
+        "checkpoint_models_index": sha256_bytes(
+            canonical_json([
+                {"path": str(path.relative_to(logdir)), "sha256": sha256_file(path)}
+                for path in checkpoint_models
+            ]).encode("utf-8")
+        ),
+        "checkpoint_vecnormalize_index": sha256_bytes(
+            canonical_json([
+                {"path": str(path.relative_to(logdir)), "sha256": sha256_file(path)}
+                for path in checkpoint_stats
+            ]).encode("utf-8")
+        ),
+        "tensorboard_event_index": sha256_bytes(
+            canonical_json([
+                {"path": str(path.relative_to(logdir)), "sha256": sha256_file(path)}
+                for path in tensorboard_events
+            ]).encode("utf-8")
+        ),
+    })
+    marker = {
+        "status": "complete",
+        "completed_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "training_seed": int(config["seed"]),
+        "timesteps": int(model.num_timesteps),
+        "validation_steps": list(BARREL_ROLL_VALIDATION_STEPS),
+        "selected_timesteps": int(selection["timesteps"]),
+        "selected_success_rate": float(selection["success_rate"]),
+        "selected_mean_final_hold_standing_score": float(
+            selection["mean_final_hold_standing_score"]
+        ),
+        "artifact_hashes": artifact_hashes,
+        "replay_buffers_saved": False,
+    }
+    with complete_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(marker, indent=2, sort_keys=True, allow_nan=False))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return marker
+
+
 class BarrelRollEvalCallback(BaseCallback):
-    """Checkpoint barrel policies using fixed-seed success rate."""
+    """Checkpoint by strict success, standing score, then earliest step."""
 
     def __init__(
         self,
@@ -779,6 +1599,7 @@ class BarrelRollEvalCallback(BaseCallback):
         )
         self.seeds = tuple(int(seed) for seed in seeds)
         self.best_success_rate = -np.inf
+        self.best_final_hold_standing_score = -np.inf
         self.last_result = None
 
     def _init_callback(self) -> None:
@@ -794,6 +1615,10 @@ class BarrelRollEvalCallback(BaseCallback):
             history.write(json.dumps(result, sort_keys=True, allow_nan=False) + "\n")
             history.flush()
         self.logger.record("eval/barrel_roll_success_rate", result["success_rate"])
+        self.logger.record(
+            "eval/mean_final_hold_standing_score",
+            result["mean_final_hold_standing_score"],
+        )
         self.logger.record("eval/mean_reward", result["mean_reward"])
         metric_failure_reasons = Counter()
         for reason, count in result["failure_reasons"].items():
@@ -801,10 +1626,21 @@ class BarrelRollEvalCallback(BaseCallback):
         for reason, count in metric_failure_reasons.items():
             self.logger.record(f"eval/failure_reason/{reason}", float(count))
 
-        # Mean reward is diagnostic only.  A model becomes best strictly when
-        # held-out success rate improves.
-        if result["success_rate"] > self.best_success_rate:
+        candidate_key = (
+            float(result["success_rate"]),
+            float(result["mean_final_hold_standing_score"]),
+        )
+        best_key = (
+            float(self.best_success_rate),
+            float(self.best_final_hold_standing_score),
+        )
+        # Evaluations are chronological, so refusing equal keys preserves the
+        # earliest training step as the final tie-break.
+        if candidate_key > best_key:
             self.best_success_rate = result["success_rate"]
+            self.best_final_hold_standing_score = result[
+                "mean_final_hold_standing_score"
+            ]
             self.model.save(self.best_model_save_path / "best_model")
             vec_normalize = self.model.get_vec_normalize_env()
             if vec_normalize is not None:
@@ -812,8 +1648,15 @@ class BarrelRollEvalCallback(BaseCallback):
             _atomic_write_json(
                 self.best_model_save_path / "selection.json",
                 {
-                    "checkpoint_metric": "success_rate",
+                    "selection_order": [
+                        "strict_success_rate_desc",
+                        "mean_final_hold_standing_score_desc",
+                        "timesteps_asc",
+                    ],
                     "success_rate": result["success_rate"],
+                    "mean_final_hold_standing_score": result[
+                        "mean_final_hold_standing_score"
+                    ],
                     "timesteps": int(self.num_timesteps),
                 },
             )
@@ -1527,7 +2370,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             eval_env,
             training=False,  # Don't update stats during evaluation
             norm_obs=True,
-            norm_reward=True,
+            norm_reward=not (is_quadruped and task == "barrel_roll"),
         )
         # Reseed after VecNormalize wrapping
         #eval_env.seed(seed + 1000)
@@ -2086,14 +2929,30 @@ def main(argv):
             domain_rand_config_type=_DOMAIN_RAND_CONFIG_TYPE.value,
             use_go2_sysid=_USE_GO2_SYSID.value,
             data_dir=_DATA_DIR.value,
+            training_seed=_SEED.value,
+            total_timesteps=_TOTAL_TIMESTEPS.value,
+            num_envs=_NUM_ENVS.value,
+            max_episode_steps=_MAX_EPISODE_STEPS.value,
+            eval_freq=_EVAL_FREQ.value,
+            checkpoint_freq=_CHECKPOINT_FREQ.value,
+            enable_logging=_ENABLE_LOGGING.value,
+            save_replay_buffer_checkpoints=(
+                _SAVE_REPLAY_BUFFER_CHECKPOINTS.value
+            ),
+            save_replay_buffer_final=_SAVE_REPLAY_BUFFER_FINAL.value,
+            random_select=_RANDOM_SELECT.value,
+            play_only=_PLAY_ONLY.value,
+            load_run_name=_LOAD_RUN_NAME.value,
+            checkpoint_evals=_CHECKPOINT_EVALS.value,
+            learning_rate=_LEARNING_RATE.value,
+            buffer_size=_BUFFER_SIZE.value,
+            learning_starts=_LEARNING_STARTS.value,
+            batch_size=_BATCH_SIZE.value,
+            tau=_TAU.value,
+            gamma=_GAMMA.value,
+            gradient_steps=_GRADIENT_STEPS.value,
+            policy_delay=_POLICY_DELAY.value,
         )
-        if (
-            flags.FLAGS["max_episode_steps"].present
-            and _MAX_EPISODE_STEPS.value != BARREL_ROLL_CONTROL_STEPS
-        ):
-            raise ValueError(
-                f"barrel-roll requires max_episode_steps={BARREL_ROLL_CONTROL_STEPS}"
-            )
 
     checkpoint_eval_steps = parse_checkpoint_eval_steps(_CHECKPOINT_EVALS.value)
     if checkpoint_eval_steps:
@@ -2119,7 +2978,11 @@ def main(argv):
             percentage=_PERCENTAGE.value if _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] else None
         )
         logdir = Path(_LOGDIR.value) / run_name
-        logdir.mkdir(parents=True, exist_ok=True)
+        if is_barrel_roll and logdir.exists():
+            raise FileExistsError(
+                f"refusing to overwrite barrel-roll run directory: {logdir}"
+            )
+        logdir.mkdir(parents=True, exist_ok=not is_barrel_roll)
         print(f"Created new run: {run_name}")
     
     print(f"Log directory: {logdir}")
@@ -2192,6 +3055,10 @@ def main(argv):
             "task": task,
             "total_timesteps": _TOTAL_TIMESTEPS.value,
             "num_envs": _NUM_ENVS.value,
+            "max_episode_steps": _MAX_EPISODE_STEPS.value,
+            "checkpoint_freq": _CHECKPOINT_FREQ.value,
+            "eval_freq": _EVAL_FREQ.value,
+            "enable_logging": _ENABLE_LOGGING.value,
             "checkpoint_evals": checkpoint_eval_steps,
             "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
@@ -2363,21 +3230,16 @@ def main(argv):
             eval_env.close()
 
         if is_barrel_roll and _ENABLE_LOGGING.value:
-            selected_report = evaluate_selected_barrel_roll_checkpoint(
-                logdir=logdir,
-                algorithm=_ALGORITHM.value,
-                domain=domain,
-                task=task,
-                robot=_ROBOT.value,
-                use_go2_sysid=_USE_GO2_SYSID.value,
-            )
+            completion = write_barrel_roll_training_completion(logdir, model)
             print(
-                "Selected checkpoint success rate: "
-                f"{selected_report['evaluation']['success_rate']:.1%}"
+                "Barrel-roll production run complete: "
+                f"seed={completion['training_seed']} "
+                f"selected_step={completion['selected_timesteps']} "
+                f"success={completion['selected_success_rate']:.1%}"
             )
     
     # Evaluation phase (only if logging enabled)
-    if _ENABLE_LOGGING.value:
+    if _ENABLE_LOGGING.value and not is_barrel_roll:
         if checkpoint_eval_steps:
             evaluate_checkpoint_videos(
                 logdir=logdir,
