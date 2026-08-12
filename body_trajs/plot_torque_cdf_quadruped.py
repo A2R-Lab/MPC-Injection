@@ -183,7 +183,17 @@ def compute_empirical_cdf(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return sorted_values, cdf
 
 
-def make_trajectory_label(trajectory_path: Path) -> str:
+def make_trajectory_label(
+    trajectory_path: Path, data: np.lib.npyio.NpzFile | None = None
+) -> str:
+    if (
+        data is not None
+        and
+        "is_hardware_tau_est" in data.files
+        and np.any(np.asarray(data["is_hardware_tau_est"], dtype=np.uint8) == 1)
+    ):
+        return "Hardware estimated output torque (tau_est)"
+
     if "amp_mpc" in str(trajectory_path).lower():
         return "AMP-MPC"
 
@@ -238,7 +248,7 @@ def main() -> None:
         ensure_keys(data, ["tau_applied"])
         avg_torque_magnitude = compute_average_torque_magnitude(data)
         x_axis, cdf = compute_empirical_cdf(avg_torque_magnitude)
-        label = make_trajectory_label(trajectory_path)
+        label = make_trajectory_label(trajectory_path, data)
         ax.plot(
             x_axis,
             cdf,

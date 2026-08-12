@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <eigen3/Eigen/Dense>
 #include <yaml-cpp/yaml.h>
 #include "isaaclab/manager/observation_manager.h"
@@ -75,6 +76,7 @@ public:
     std::unique_ptr<Algorithms> alg;
     long episode_length = 0;
     float global_phase = 0.0f;
+    std::array<float, 3> velocity_command = {0.0f, 0.0f, 0.0f};
 };
 
 };

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <string>
 #include <thread>
@@ -21,6 +22,13 @@ std::shared_ptr<Keyboard> FSMState::keyboard = nullptr;
 
 namespace
 {
+
+volatile std::sig_atomic_t shutdown_requested = 0;
+
+void request_shutdown(int)
+{
+    shutdown_requested = 1;
+}
 
 std::string service_name_from_motion_mode(const std::string& form, const std::string& name)
 {
@@ -222,6 +230,15 @@ int main(int argc, char** argv)
 {
     // Load parameters
     auto vm = param::helper(argc, argv);
+    std::signal(SIGINT, request_shutdown);
+    if (param::torque_output_enabled)
+    {
+        spdlog::info("Hardware tau_est recording enabled: {}", param::torque_output.string());
+    }
+    else
+    {
+        spdlog::info("Hardware torque recording disabled.");
+    }
     const auto input_mode = select_input_mode();
 
     std::cout << " --- Unitree Robotics --- \n";
@@ -257,9 +274,16 @@ int main(int argc, char** argv)
         std::cout << "Press [L2 + B] to enter passive mode.\n";
     }
 
-    while (true)
+    while (!shutdown_requested)
     {
-        sleep(1);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    std::cout << "\nCtrl+C received; stopping controller.\n";
+    fsm->stop();
+    if (param::torque_output_enabled && !State_RLBase::torque_recording_started.load())
+    {
+        spdlog::info("No Policy/Velocity torque samples were collected; not writing {}.", param::torque_output.string());
     }
     
     return 0;
