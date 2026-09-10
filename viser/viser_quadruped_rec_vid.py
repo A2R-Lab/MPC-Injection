@@ -173,7 +173,9 @@ class QuadrupedTrajectoryVideoRecorder:
         assert self.trajectory_data is not None
         if "qpos_ctrl" in self.trajectory_data.files:
             return int(self.trajectory_data["qpos_ctrl"].shape[0])
-        return int(self.trajectory_data["timesteps"])
+        if "timesteps" in self.trajectory_data.files:
+            return int(self.trajectory_data["timesteps"])
+        return int(self._qpos_ctrl().shape[0])
 
     def _qpos_ctrl(self) -> np.ndarray:
         assert self.trajectory_data is not None
@@ -502,7 +504,7 @@ def encode_video(
     ffmpeg: str,
     frames_dir: Path,
     output_path: Path,
-    fps: int,
+    fps: float,
     crf: int,
     preset: str,
     num_frames: int,
@@ -560,6 +562,17 @@ def record_frames(
     if not args.manual_camera:
         client.camera.up_direction = (0.0, 0.0, 1.0)
 
+    static_camera_pose: tuple[np.ndarray, np.ndarray] | None = None
+    if args.static_camera and not args.manual_camera:
+        static_camera_pose = recorder.camera_pose(
+            indices[0],
+            args.camera_distance,
+            args.camera_side_offset,
+            args.camera_height,
+            args.look_at_forward,
+            args.look_at_height,
+        )
+
     progress_every = max(1, len(indices) // 20)
     for output_idx, traj_frame_idx in enumerate(indices):
         recorder.update_visualization(traj_frame_idx)
@@ -571,17 +584,20 @@ def record_frames(
             rendered = client.get_render(
                 height=args.render_height,
                 width=args.render_width,
-                transport_format="png",
+                transport_format=args.transport_format,
             )
         else:
-            camera_position, look_at_position = recorder.camera_pose(
-                traj_frame_idx,
-                args.camera_distance,
-                args.camera_side_offset,
-                args.camera_height,
-                args.look_at_forward,
-                args.look_at_height,
-            )
+            if static_camera_pose is None:
+                camera_position, look_at_position = recorder.camera_pose(
+                    traj_frame_idx,
+                    args.camera_distance,
+                    args.camera_side_offset,
+                    args.camera_height,
+                    args.look_at_forward,
+                    args.look_at_height,
+                )
+            else:
+                camera_position, look_at_position = static_camera_pose
             with client.atomic():
                 client.camera.position = camera_position
                 client.camera.look_at = look_at_position
@@ -595,7 +611,7 @@ def record_frames(
                 position=camera_position,
                 wxyz=np.asarray(client.camera.wxyz, dtype=float),
                 fov=fov_rad,
-                transport_format="png",
+                transport_format=args.transport_format,
             )
 
         rgb = rgba_to_rgb(rendered, background)
@@ -629,10 +645,16 @@ def main() -> None:
     parser.add_argument("--start-frame", type=int, default=0, help="First trajectory frame to render (default: 0)")
     parser.add_argument("--end-frame", type=int, help="Exclusive end frame; defaults to trajectory length")
     parser.add_argument("--stride", type=int, default=1, help="Render every Nth trajectory frame (default: 1)")
-    parser.add_argument("--fps", type=int, default=30, help="Output video frame rate (default: 30)")
+    parser.add_argument("--fps", type=float, default=30.0, help="Output video frame rate (default: 30)")
     parser.add_argument("--render-width", type=int, default=1920, help="Render width in pixels (default: 1920)")
     parser.add_argument("--render-height", type=int, default=1080, help="Render height in pixels (default: 1080)")
     parser.add_argument("--render-pause", type=float, default=0.02, help="Seconds to wait after scene updates before capture (default: 0.02)")
+    parser.add_argument(
+        "--transport-format",
+        choices=["png", "jpeg"],
+        default="png",
+        help="Browser-to-recorder image format; JPEG is faster but lossy (default: png)",
+    )
 
     parser.add_argument("--no-contacts", action="store_true", help="Hide foot contact indicators")
     parser.add_argument("--no-trails", action="store_true", help="Hide trajectory trails")
@@ -656,6 +678,11 @@ def main() -> None:
         help="Scripted camera preset (default: side_right)",
     )
     parser.add_argument("--manual-camera", action="store_true", help="Use the browser camera as-is instead of scripted follow camera")
+    parser.add_argument(
+        "--static-camera",
+        action="store_true",
+        help="Lock the scripted camera at the first frame instead of following the robot",
+    )
     parser.add_argument("--camera-distance", type=float, default=0.0, help="Camera X offset from robot root for custom camera")
     parser.add_argument("--camera-side-offset", type=float, default=2.1, help="Camera Y offset from robot root for custom camera")
     parser.add_argument("--camera-height", type=float, default=0.85, help="Camera Z offset from robot root for custom camera")

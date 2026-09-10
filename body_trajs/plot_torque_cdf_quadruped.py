@@ -192,10 +192,22 @@ def make_trajectory_label(
         "is_hardware_tau_est" in data.files
         and np.any(np.asarray(data["is_hardware_tau_est"], dtype=np.uint8) == 1)
     ):
+        hardware_label_by_name = {
+            "amp_mpc": "AMP-MPC",
+            "mpc_injection": "25% MPC-Injection",
+            "reward_shaping": "Reward-Shaping",
+        }
+        trajectory_name = trajectory_path.stem.lower()
+        for name, label in hardware_label_by_name.items():
+            if name in trajectory_name:
+                return label
         return "Hardware estimated output torque (tau_est)"
 
     if "amp_mpc" in str(trajectory_path).lower():
         return "AMP-MPC"
+
+    if "quadruped-velocity_tracking-td3-" in str(trajectory_path).lower():
+        return "Reward-Shaping"
 
     match = re.search(r"percentage-(\d+)pct", trajectory_path.parent.name)
     if match:
@@ -209,6 +221,9 @@ def make_trajectory_label(
 def make_trajectory_color(trajectory_path: Path) -> str | None:
     if "amp_mpc" in str(trajectory_path).lower():
         return AMP_MPC_COLOR
+
+    if "quadruped-velocity_tracking-td3-" in str(trajectory_path).lower():
+        return PURE_RL_COLOR
 
     match = re.search(r"percentage-(\d+)pct", trajectory_path.parent.name)
     if not match:
