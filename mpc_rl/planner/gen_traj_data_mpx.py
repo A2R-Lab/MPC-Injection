@@ -423,7 +423,7 @@ def gen_traj_quadruped(
         episode_length: Control steps per trajectory (50 Hz). Sim steps = episode_length * 4.
         start_seed: First seed value.  Seeds increment by 1 for every attempt
             (both successful and failed).
-        output_dir: Output directory. Defaults to MPC-RL/data/quadruped/.
+        output_dir: Output directory. Defaults to MPC-Injection/data/quadruped/.
         max_attempts: Maximum total attempts (successful + failed) before stopping.
             If None, retries indefinitely until num_trajectories are saved.
         verbose: Verbosity level.

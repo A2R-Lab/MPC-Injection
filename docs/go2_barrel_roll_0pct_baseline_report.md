@@ -104,7 +104,7 @@ ssh -L 8081:localhost:8081 roy@10.10.20.3
 In that remote shell, run:
 
 ```bash
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 TRAJ_DIR=logs/go2_barrel_roll_0pct_baseline/trajectories/quadruped-barrel_roll-SAC-MPC-20260808-103700-percentage-0pct-go2-barrel-roll-v3-baseline
 conda run --no-capture-output -n mpc-rl python \
   viser/viser_quadruped_viz_trajs.py \

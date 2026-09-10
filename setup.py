@@ -14,5 +14,5 @@ setup(
         "shimmy",
     ],
     python_requires=">=3.8",
-    description="MPC-RL: Model Predictive Control with Reinforcement Learning",
+    description="MPC-Injection: Model Predictive Control with Reinforcement Learning",
 )

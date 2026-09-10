@@ -1,4 +1,4 @@
-# Reward Surfaces for MPC-RL
+# Reward Surfaces for MPC-Injection
 
 Visualize reward surfaces for trained SBX (Stable Baselines Jax) agents and SBX-based MPC variants.
 
@@ -15,7 +15,7 @@ pip install pandas matplotlib seaborn tqdm
 **Usage**:
 ```bash
 source ~/.bash_conda && conda activate mpc-rl
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 ```
 
 **Note**: No package installation required - scripts work directly via `sys.path` manipulation.
@@ -109,9 +109,9 @@ Options for `--key`:
 ## Complete Example
 
 ```bash
-# Activate environment and navigate to MPC-RL directory
+# Activate environment and navigate to MPC-Injection directory
 source ~/.bash_conda && conda activate mpc-rl
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 
 # Generate surface
 python reward_surfaces/scripts/generate_plane_jobs.py \
@@ -151,7 +151,7 @@ python reward_surfaces/scripts/plot_plane.py \
 
 **Missing VecNormalize**: The script looks for `vec_normalize.pkl` in the checkpoint's parent directory. Specify manually with `--vecnormalize` if needed.
 
-**Import Errors**: Make sure you're in the MPC-RL directory and the mpc-rl conda environment is activated.
+**Import Errors**: Make sure you're in the MPC-Injection directory and the mpc-rl conda environment is activated.
 
 # Reward Surfaces Code Explained
 
@@ -177,7 +177,7 @@ This ensures each output neuron's weights are perturbed proportionally to their 
 ## Architecture
 
 ```bash
-MPC-RL/reward_surfaces/
+MPC-Injection/reward_surfaces/
 ├── README.md                         # Usage guide  
 ├── PORT_GUIDE.md                     # Technical details
 ├── reward_surfaces/                  # Core package

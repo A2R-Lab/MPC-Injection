@@ -4,7 +4,7 @@
 
 ### Core Files (610 lines total)
 
-**From reward-surfaces → To MPC-RL/reward_surfaces**
+**From reward-surfaces → To MPC-Injection/reward_surfaces**
 
 1. **Core Logic** (`reward_surfaces/core/`)
    - `evaluator.py` - Abstract interface (45 lines)
@@ -42,7 +42,7 @@
 ## Directory Structure
 
 ```
-MPC-RL/
+MPC-Injection/
 ├── mpc_rl/
 │   └── train.py              # Your training script (unchanged)
 ├── logs/                          # Your training outputs (unchanged)
@@ -132,9 +132,9 @@ gym_env = FlattenObservation(gym_env)
 ### Quick Start (11x11 grid, ~2 minutes)
 
 ```bash
-# 1. Activate your environment and navigate to MPC-RL
+# 1. Activate your environment and navigate to MPC-Injection
 source ~/.bash_conda && conda activate mpc-rl
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 
 # 2. Pick a trained model
 MODEL_DIR="logs/SAC-MPC-walker-runs/1st_run/walker-walk-SAC-MPC-20251105-100225-percentage-0pct"
@@ -247,7 +247,7 @@ export JAX_PLATFORMS="cpu"
 ```
 
 ### "No module named 'mpc_rl'"
-**Fix**: Run scripts from `/home/roy/MPC-RL/` directory
+**Fix**: Run scripts from `/home/roy/MPC-Injection/` directory
 
 ### "VecNormalize not found"
 **Fix**: Specify manually:

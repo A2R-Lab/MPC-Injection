@@ -1,4 +1,4 @@
-"""Export a trained MPC-RL SAC or TD3 policy (Go2) to ONNX for real-robot deployment.
+"""Export a trained MPC-Injection SAC or TD3 policy (Go2) to ONNX for real-robot deployment.
 
 This script converts a Stable-Baselines3 checkpoint into a self-contained
 ONNX file that the C++ deployment binary can load via ONNXRuntime.
@@ -76,7 +76,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# Make the project importable when running from the MPC-RL root
+# Make the project importable when running from the MPC-Injection root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
@@ -432,7 +432,7 @@ def export(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export MPC-RL SAC or TD3 Go2 policy to ONNX for real-robot deployment",
+        description="Export MPC-Injection SAC or TD3 Go2 policy to ONNX for real-robot deployment",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

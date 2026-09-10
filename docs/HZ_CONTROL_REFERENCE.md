@@ -1,6 +1,6 @@
 # Policy Hz, PD Hz, and Unitree Low-Level Control
 
-This note summarizes the Hz-related discussion for the MPC-RL Go2 training and deployment stack.
+This note summarizes the Hz-related discussion for the MPC-Injection Go2 training and deployment stack.
 
 ## Current Timing Model
 

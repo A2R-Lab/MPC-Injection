@@ -3,7 +3,7 @@
 Run all remote commands from the repository root:
 
 ```bash
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 ```
 
 The completed result is the 25%-MPC-injection G9 campaign. A separate 0%-injection baseline is currently running under `logs/go2_barrel_roll_0pct_baseline`; do not launch another compute-heavy job until it finishes.
@@ -106,7 +106,7 @@ It validates both selected checkpoints, locks their hashes, scores each once on 
 On the remote workstation, start TensorBoard over loopback:
 
 ```bash
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 conda run --no-capture-output -n mpc-rl tensorboard \
   --logdir=logs/go2_barrel_roll_g9_production/runs \
   --host=127.0.0.1 \
@@ -160,7 +160,7 @@ The recorder refuses to overwrite an existing trajectory. Use a different output
 On the remote workstation, start the server:
 
 ```bash
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 conda run --no-capture-output -n mpc-rl python \
   viser/viser_quadruped_viz_trajs.py \
   --trajectory=logs/go2_barrel_roll_g9_production/viser_trajectories/quadruped-barrel_roll-SAC-MPC-20260807-224837-percentage-25pct-go2-barrel-roll-v3/training_seed1_best_model_step220000_rollout_seed3000000.npz \

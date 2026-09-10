@@ -136,7 +136,7 @@ algorithm: one input named `"obs"`, one output named `"actions"`.  The
 
 ### Joint Ordering
 
-The exported MPC-RL policy uses the same joint order as the MuJoCo training
+The exported MPC-Injection policy uses the same joint order as the MuJoCo training
 environment: **FL -> FR -> RL -> RR** (front-left, front-right, rear-left,
 rear-right), each with hip -> thigh -> calf.
 
@@ -165,7 +165,7 @@ conda activate mpc-rl
 
 ### Step A -- Export the policy to ONNX
 
-Run from the **MPC-RL root directory**.
+Run from the **MPC-Injection root directory**.
 The algorithm (SAC or TD3) is **auto-detected** from the directory name.
 Use `--algo SAC` or `--algo TD3` to override.
 
@@ -205,7 +205,7 @@ For real-robot sweeps, export each candidate into its own deploy directory
 instead of repeatedly overwriting `v0/exported/policy.onnx`. Do this with the
 batch exporter; do not manually set `RUN` for every training directory.
 
-Run from the **MPC-RL root directory**:
+Run from the **MPC-Injection root directory**:
 
 ```bash
 python deploy/batch_export_onnx_go2.py --dry_run

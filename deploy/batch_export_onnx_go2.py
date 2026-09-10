@@ -1,4 +1,4 @@
-"""Batch-export Go2 MPC-RL policies from training logs to deploy directories.
+"""Batch-export Go2 MPC-Injection policies from training logs to deploy directories.
 
 The script scans a log root containing many training run directories and exports
 every available final model and requested checkpoint into the directory layout

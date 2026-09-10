@@ -1,4 +1,4 @@
-# MPC-RL Experimental Workspace
+# MPC-Injection Experimental Workspace
 This repo is a test space for research ideas in combining MPC and RL methods to leverage both their strengths for robot control.
 
 The main training script (`mpc_rl/train.py`) provides a flexible command-line interface for training, evaluation, checkpointing, MPC trajectory injection, and video recording. It supports dm_control tasks through SBX (Stable Baselines Jax), SB3-based quadruped policies, SAC-MPC / TD3-MPC variants, cheetah3 experiments, shadow hand experiments, and Go2 export/deployment workflows.
@@ -452,7 +452,7 @@ This will load the existing model and normalization statistics, then continue tr
 ## Directory Structure
 This is the current high-level repo layout for training, MPC data generation, rollout recording, and plotting.
 ```
-MPC-RL/
+MPC-Injection/
 ├── body_trajs/                      # Rollout recording + trajectory plotting utilities
 │   ├── model_traj_data_quadruped/   # Saved quadruped rollouts from record_body_trajs_by_policy_quadruped.py
 │   ├── model_traj_data_walker/      # Saved walker rollouts from record_body_trajs_by_policy_walker.py

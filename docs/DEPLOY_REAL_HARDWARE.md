@@ -6,14 +6,14 @@ For Go2 controller setup and operating instructions, see
 
 ## MPC-Injection
 
-From `~/MPC-RL`, activate the export environment and export the policy:
+From `~/MPC-Injection`, activate the export environment and export the policy:
 
 ```bash
 conda activate mpc-rl
 python deploy/export_onnx_go2.py --model_zip logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/percentage_ablations/quadruped-velocity_tracking-SAC-MPC-20260520-180440-percentage-30pct-seed400-env256-drsysid_dyn20_mjlab/checkpoints/model_900000_steps.zip --vecnorm_pkl logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/percentage_ablations/quadruped-velocity_tracking-SAC-MPC-20260520-180440-percentage-30pct-seed400-env256-drsysid_dyn20_mjlab/checkpoints/model_vecnormalize_900000_steps.pkl --output_dir deploy/robots/go2/config/policy/velocity/v0/exported/
 ```
 
-Launch from `~/MPC-RL/deploy/robots/go2/build`:
+Launch from `~/MPC-Injection/deploy/robots/go2/build`:
 
 ```bash
 ./go2_ctrl --network=enp5s0 --torque_output ~/go2_traces/mpc_injection_tau_est.npz
@@ -21,7 +21,7 @@ Launch from `~/MPC-RL/deploy/robots/go2/build`:
 
 ## Reward-Shaping
 
-From `~/MPC-RL`, activate the export environment and export the policy:
+From `~/MPC-Injection`, activate the export environment and export the policy:
 
 ```bash
 conda activate mpc-rl
@@ -32,7 +32,7 @@ Run it with the same `go2_ctrl` command and default deployment setup as
 MPC-Injection:
 
 ```bash
-cd ~/MPC-RL/deploy/robots/go2/build
+cd ~/MPC-Injection/deploy/robots/go2/build
 ./go2_ctrl --network=enp5s0 --torque_output ~/go2_traces/reward_shaping_tau_est.npz
 ```
 
@@ -90,9 +90,9 @@ over CycloneDDS.
 ### Operation
 
 The SDK2 script releases Unitree's active high-level motion mode itself. It
-starts in `FixStand` and follows the working MPC-RL stand trajectory: one
+starts in `FixStand` and follows the working MPC-Injection stand trajectory: one
 second to `[0, 1.36, -2.65]` per leg, then one second to
-`[0, 0.9, -1.8]`. It holds the final pose with the MPC-RL stand gains. Set the
+`[0, 0.9, -1.8]`. It holds the final pose with the MPC-Injection stand gains. Set the
 desired velocity command while the robot remains in `FixStand`, then press
 `P` to initialize AMP policy control. The policy does not start automatically.
 
@@ -121,7 +121,7 @@ hardware estimated output torque (`tau_est`) in `FL, FR, RL, RR` training
 order. To compare a recorded hardware run with a simulated trajectory:
 
 ```bash
-cd ~/MPC-RL
+cd ~/MPC-Injection
 python body_trajs/plot_torque_cdf_quadruped.py \
   --trajectory /path/to/simulated_trajectory.npz \
   --trajectory ~/go2_traces/mpc_injection_tau_est.npz \

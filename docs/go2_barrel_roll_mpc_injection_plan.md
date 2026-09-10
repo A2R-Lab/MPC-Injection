@@ -3,7 +3,7 @@
 ## Status and purpose
 
 This document is the implementation and experiment plan for a simulation-first
-Go2 barrel-roll task in MPC-RL. It is intended to be the durable handoff for
+Go2 barrel-roll task in MPC-Injection. It is intended to be the durable handoff for
 future coding agents and human contributors. It records the decisions made
 during the design interview, the repository evidence behind the design, the
 required file changes, validation gates, runnable workflows to add, and the
