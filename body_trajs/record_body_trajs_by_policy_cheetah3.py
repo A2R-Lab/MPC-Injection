@@ -28,7 +28,7 @@ from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 
 
 DEFAULT_RUN_DIR = Path(
-    "/home/roy/MPC-RL/logs/SAC-MPC-cheetah3-runs/1st_run/"
+    "/home/roy/MPC-Injection/logs/SAC-MPC-cheetah3-runs/1st_run/"
     "cheetah3-run-SAC-MPC-20260505-202313-percentage-0pct-seed1"
 )
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "mode_traj_data_cheetah3"

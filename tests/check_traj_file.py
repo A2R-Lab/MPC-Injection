@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 
 # Load a trajectory file that should have perturbation
-traj_file = Path("/home/roy/MPC-RL/body_trajs/model_traj_data/walker-walk-SAC-MPC-20260107-112659-percentage-25pct/trajectories_step_500000.npz")
+traj_file = Path("/home/roy/MPC-Injection/body_trajs/model_traj_data/walker-walk-SAC-MPC-20260107-112659-percentage-25pct/trajectories_step_500000.npz")
 
 if traj_file.exists():
     data = np.load(traj_file, allow_pickle=True)

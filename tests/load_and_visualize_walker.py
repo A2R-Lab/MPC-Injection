@@ -180,8 +180,8 @@ def create_animated_plot(frames, total_reward, episode_length, save_path: Path =
 def main():
     """Main function to load model and create visualization."""
     # Paths
-    #run_dir = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
-    run_dir = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    #run_dir = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
+    run_dir = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
     
     # Load configuration
     print("Loading configuration...")

@@ -326,14 +326,14 @@ def main():
     
     # Path to the run directory containing checkpoints
     # SAC-MPC
-    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-174609-percentage-0pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-175353-percentage-25pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-180255-percentage-50pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-181210-percentage-75pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-182406-percentage-100pct")
+    RUN_DIR = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-174609-percentage-0pct")
+    #RUN_DIR = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-175353-percentage-25pct")
+    #RUN_DIR = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-180255-percentage-50pct")
+    #RUN_DIR = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-181210-percentage-75pct")
+    #RUN_DIR = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-182406-percentage-100pct")
 
     # TD3-MPC
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/TD3-MPC-walker-velocity_only_reward/3rd_run/walker-walk-TD3-MPC-20260203-160914-percentage-25pct/")
+    #RUN_DIR = Path("/home/roy/MPC-Injection/logs/TD3-MPC-walker-velocity_only_reward/3rd_run/walker-walk-TD3-MPC-20260203-160914-percentage-25pct/")
     
     # Range of checkpoints to process (inclusive, step by 25000)
     START_CHECKPOINT = 25_000
