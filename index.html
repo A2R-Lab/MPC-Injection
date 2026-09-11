@@ -1,340 +1,625 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="description" content="MPC-Injection steers off-policy locomotion RL toward controller-induced behavior basins by inserting MPC transitions into the replay buffer.">
-  <meta name="keywords" content="reinforcement learning, model predictive control, legged locomotion">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MPC-Injection</title>
 
-  <!-- The Nerfies template ships Google Analytics here. Removed intentionally. -->
+  <meta name="description" content="MPC-Injection steers off-policy locomotion RL toward controller-induced behavior basins by inserting MPC transitions into the replay buffer.">
+  <meta name="keywords" content="reinforcement learning, model predictive control, legged locomotion">
 
-  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro" rel="stylesheet">
+  <link rel="canonical" href="https://a2r-lab.org/MPC-Injection/">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://a2r-lab.org/MPC-Injection/">
+  <meta property="og:title" content="MPC-Injection: Biasing Off-Policy Locomotion RL Toward Controller-Induced Behavior Basins">
+  <meta property="og:description" content="MPC-Injection steers off-policy locomotion RL toward controller-induced behavior basins by inserting MPC transitions into the replay buffer.">
+  <meta property="og:image" content="https://a2r-lab.org/MPC-Injection/static/images/pipeline.png">
+  <meta name="twitter:card" content="summary_large_image">
 
-  <link rel="stylesheet" href="./static/css/bulma.min.css">
-  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
-  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
-  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
-  <link rel="stylesheet" href="./static/css/index.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230f9b6e'/><text x='50' y='70' font-size='52' font-family='monospace' font-weight='bold' text-anchor='middle' fill='white'>MI</text></svg>">
 
-  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
-  <script defer src="./static/js/fontawesome.all.min.js"></script>
-  <script src="./static/js/bulma-carousel.min.js"></script>
-  <script src="./static/js/bulma-slider.min.js"></script>
-  <script src="./static/js/index.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
   <style>
-    /* Nerfies sets .publication-venue to width:fit-content, which left-aligns the
-       box inside a centered column. Center the box itself. */
-    .publication-venue { margin: 0 auto; }
+  :root {
+    --bg: #f6f7f9;
+    --bg-card: #ffffff;
+    --surface: #eef0f4;
+    --border: #dde0e6;
+    --border-light: #e8eaef;
+    --text: #1a1d25;
+    --text-dim: #4b5060;
+    --text-muted: #8990a2;
+    --accent: #0f9b6e;
+    --accent-light: #e8f7f1;
+    --accent-border: rgba(15, 155, 110, 0.25);
+    --amber: #c8850a;
+    --heading: #0d0f14;
+    --serif: 'Source Serif 4', Georgia, serif;
+    --sans: 'DM Sans', system-ui, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+    --max-w: 900px;
+    --section-gap: 4.5rem;
+    --radius: 8px;
+    --radius-lg: 12px;
+  }
 
-    /* Alternating section bands. Toggle .band to flip a section's background. */
-    .band { background: #f5f5f5; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
 
-    .grid-video { width: 100%; display: block; border-radius: 4px; background: #000; }
-    .grid-label { font-weight: 600; margin-bottom: 0.5rem; text-align: center; }
-    .grid-label.ours { color: #b8860b; }
-    .section-note { color: #666; font-size: 0.95rem; }
-    .fig img { border-radius: 6px; border: 1px solid #ededed; }
-    .fig-small { max-width: 290px; margin: 0 auto; }
-    /* Plot figures carry paper-scale fonts; keep them from being blown up. */
-    .plot { max-width: 560px; margin: 0 auto; }
-    .plot img { width: 100%; display: block; }
-    .subhead { font-weight: 600; text-align: center; margin: 2.5rem 0 0.25rem; font-size: 1.05rem; }
-    .video-placeholder {
-      width: 100%; aspect-ratio: 16 / 9; border: 2px dashed #c9c9c9; border-radius: 4px;
-      display: flex; align-items: center; justify-content: center;
-      color: #999; font-size: 0.95rem; background: #fafafa;
-    }
-    .wide { max-width: 1100px; margin: 0 auto; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .container { max-width: var(--max-w); margin: 0 auto; padding: 0 1.5rem; }
+  section { margin-bottom: var(--section-gap); }
+
+  /* ══════════════ TOP BAR ══════════════ */
+  .topbar {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(246, 247, 249, 0.88);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border-light);
+    padding: 0 1.5rem;
+  }
+  .topbar-inner {
+    max-width: var(--max-w); margin: 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    height: 48px;
+  }
+  .lab-link {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-family: var(--mono); font-size: 0.75rem; font-weight: 500;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    border-radius: 999px;
+    padding: 0.35rem 0.9rem;
+    transition: border-color 0.2s ease, color 0.2s ease;
+  }
+  .lab-link:hover { color: var(--accent); border-color: var(--accent-border); text-decoration: none; }
+
+  /* ══════════════ HERO ══════════════ */
+  .hero { padding: 4rem 0 1rem; text-align: center; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    background: var(--accent-light);
+    border: 1px solid var(--accent-border);
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+    margin-bottom: 1.75rem;
+  }
+  .badge::before {
+    content: ''; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent);
+  }
+
+  h1.paper-title {
+    font-family: var(--serif);
+    font-weight: 700;
+    font-size: clamp(2rem, 4.6vw, 3.15rem);
+    line-height: 1.14;
+    letter-spacing: -0.015em;
+    color: var(--heading);
+    margin: 0 auto;
+  }
+  h1.paper-title .acronym { color: var(--accent); }
+
+  .tagline {
+    font-size: 1.02rem;
+    color: var(--text-dim);
+    max-width: 46ch;
+    margin: 1.4rem auto 0;
+  }
+
+  .authors {
+    margin-top: 2rem;
+    display: flex; flex-wrap: wrap; justify-content: center;
+    gap: 0.35rem 1.5rem;
+  }
+  .authors a {
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1px;
+  }
+  .authors a:hover { color: var(--accent); border-color: var(--accent-border); text-decoration: none; }
+  .authors sup { font-size: 0.7em; color: var(--text-muted); }
+
+  .affiliations {
+    margin-top: 0.75rem;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+  }
+  .affiliations sup { font-size: 0.75em; }
+  .affiliations .sep { padding: 0 0.4rem; }
+
+  .buttons {
+    margin-top: 2.25rem;
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 0.7rem;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    font-family: var(--mono); font-size: 0.82rem; font-weight: 500;
+    color: var(--text);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.6rem 1.1rem;
+    transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .btn:hover {
+    color: var(--accent); border-color: var(--accent-border);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    text-decoration: none;
+  }
+  .btn svg { width: 15px; height: 15px; fill: currentColor; flex: none; }
+
+  /* ══════════════ SECTION HEADINGS ══════════════ */
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.6rem;
+  }
+  h2.section-title {
+    font-family: var(--serif); font-weight: 700;
+    font-size: clamp(1.5rem, 2.6vw, 2rem);
+    letter-spacing: -0.01em;
+    color: var(--heading);
+    line-height: 1.2;
+    margin-bottom: 1.5rem;
+  }
+  h3.subhead {
+    font-family: var(--mono); font-size: 0.75rem; font-weight: 600;
+    letter-spacing: 0.11em; text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 2.75rem 0 0.9rem;
+  }
+
+  p { color: var(--text-dim); }
+  p + p { margin-top: 1rem; }
+  .prose p { text-align: justify; }
+  .prose strong, .prose b { color: var(--text); font-weight: 600; }
+  .note { font-size: 0.9rem; color: var(--text-muted); }
+  .note.center { text-align: center; }
+
+  code {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--surface);
+    border-radius: 4px;
+    padding: 0.12em 0.38em;
+    color: var(--text);
+  }
+
+  /* ══════════════ CARDS / MEDIA ══════════════ */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem;
+  }
+  .card img { width: 100%; display: block; border-radius: var(--radius); }
+
+  .grid { display: grid; gap: 1.1rem; }
+  .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  @media (max-width: 780px) {
+    .grid.two, .grid.three { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .media-label {
+    font-family: var(--mono); font-size: 0.73rem; font-weight: 500;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+    text-align: center;
+    margin-bottom: 0.5rem;
+  }
+  .media-label.ours { color: var(--accent); font-weight: 600; }
+
+  video.clip {
+    width: 100%; display: block;
+    border-radius: var(--radius);
+    background: #000;
+    border: 1px solid var(--border);
+  }
+
+  .caption {
+    margin-top: 0.9rem;
+    font-size: 0.88rem;
+    color: var(--text-muted);
+    text-align: center;
+  }
+  .caption strong { color: var(--text-dim); font-weight: 600; }
+
+  .fig-narrow { max-width: 340px; margin: 0 auto; }
+
+  /* Approach card — figure and prose in one panel, as on the GATO page */
+  .approach-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 2rem;
+    transition: border-color 0.3s;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  }
+  .approach-card:hover { border-color: var(--accent-border); }
+  .approach-card .card-header { padding: 1.2rem 1.5rem 0.6rem; }
+  .approach-card .card-header h3 {
+    font-family: var(--serif); font-size: 1.1rem; font-weight: 600;
+    color: var(--heading); margin-bottom: 0.4rem;
+  }
+  .approach-card .card-header p {
+    font-size: 0.88rem; color: var(--text-dim); line-height: 1.6;
+    margin-bottom: 0.6rem;
+  }
+  .approach-card .card-header ol {
+    font-size: 0.88rem; color: var(--text-dim); line-height: 1.65;
+    padding-left: 1.2rem; margin-bottom: 0.4rem;
+  }
+  .approach-card .card-header ol li { margin-bottom: 0.5rem; }
+  .approach-card .card-header strong { color: var(--heading); font-weight: 600; }
+  .approach-card img { width: 100%; display: block; padding: 1rem 1.5rem 1.5rem; }
+  .pipeline-img { max-width: 92%; margin: 0 auto; }
+  @media (max-width: 640px) { .pipeline-img { max-width: 100%; } }
+
+  /* ══════════════ BIBTEX ══════════════ */
+  pre.bibtex {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.35rem 1.5rem;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    line-height: 1.65;
+    color: var(--text-dim);
+  }
+  pre.bibtex code { background: none; padding: 0; font-size: inherit; }
+
+  /* ══════════════ FOOTER ══════════════ */
+  footer {
+    border-top: 1px solid var(--border-light);
+    padding: 2.5rem 0 3rem;
+    text-align: center;
+  }
+  footer .icon-link {
+    display: inline-flex; color: var(--text-muted);
+    transition: color 0.2s ease;
+  }
+  footer .icon-link:hover { color: var(--accent); }
+  footer .icon-link svg { width: 20px; height: 20px; fill: currentColor; }
+  footer p {
+    font-size: 0.82rem; color: var(--text-muted);
+    max-width: 60ch; margin: 1.1rem auto 0;
+  }
+  footer p.ack {
+    max-width: 68ch;
+    padding-bottom: 1.1rem;
+    border-bottom: 1px solid var(--border-light);
+  }
   </style>
 </head>
 <body>
 
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="lab-link" href="https://a2r-lab.org/" target="_blank" rel="noopener noreferrer">
+      Explore more A2R Lab work &rsaquo;
+    </a>
+  </div>
+</div>
+
 <!-- ==================== HERO ==================== -->
 <section class="hero">
-  <div class="hero-body">
-    <div class="container is-max-desktop">
-      <div class="columns is-centered">
-        <div class="column has-text-centered">
+  <div class="container">
+    <span class="badge">CoRL 2026</span>
 
-          <h1 class="title is-1 publication-title">
-            MPC-Injection: Biasing Off-Policy Locomotion RL Toward Controller-Induced Behavior Basins
-          </h1>
+    <h1 class="paper-title">
+      <span class="acronym">MPC-Injection:</span> Biasing Off-Policy Locomotion RL Toward Controller-Induced Behavior Basins
+    </h1>
 
-          <div class="is-size-5 publication-authors">
-            <span class="author-block"><a href="https://rx-00.github.io/" target="_blank" rel="noopener noreferrer">Roy Xing</a><sup>1</sup>,</span>
-            <span class="author-block"><a href="https://www.linkedin.com/in/se-young/" target="_blank" rel="noopener noreferrer">Seyoung Ree</a><sup>2</sup>,</span>
-            <span class="author-block"><a href="https://brianplancher.com/" target="_blank" rel="noopener noreferrer">Brian Plancher</a><sup>1</sup></span>
-          </div>
+    <p class="tagline">
+      Steering off-policy locomotion RL toward controller-induced behavior basins by inserting MPC
+      transitions into the replay buffer.
+    </p>
 
-          <div class="is-size-5 publication-venue" style="margin-top:0.4rem;">
-            CoRL 2026
-          </div>
+    <div class="authors">
+      <span><a href="https://rx-00.github.io/" target="_blank" rel="noopener noreferrer">Roy Xing</a><sup>1</sup></span>
+      <span><a href="https://www.linkedin.com/in/se-young/" target="_blank" rel="noopener noreferrer">Seyoung Ree</a><sup>2</sup></span>
+      <span><a href="https://brianplancher.com/" target="_blank" rel="noopener noreferrer">Brian Plancher</a><sup>1</sup></span>
+    </div>
 
-          <div class="is-size-6 publication-authors" style="margin-top:0.2rem;">
-            <span class="author-block"><sup>1</sup>Dartmouth College</span>&nbsp;&nbsp;&nbsp;
-            <span class="author-block"><sup>2</sup>Harvard University</span>
-          </div>
+    <!-- NOTE: main.tex declares "* Equal contribution" and "† Corresponding author"
+         but assigns neither marker to an author. Add them here once decided. -->
 
-          <!-- NOTE: main.tex declares "* Equal contribution" and "† Corresponding author"
-               but assigns neither marker to an author. Add them here once decided. -->
+    <div class="affiliations">
+      <sup>1</sup>Dartmouth College<span class="sep">·</span><sup>2</sup>Harvard University
+    </div>
 
-          <div class="column has-text-centered">
-            <div class="publication-links">
-              <span class="link-block">
-                <a href="https://arxiv.org/abs/2606.26392" target="_blank" rel="noopener noreferrer" class="external-link button is-normal is-rounded is-dark">
-                  <span class="icon"><i class="ai ai-arxiv"></i></span>
-                  <span>arXiv</span>
-                </a>
-              </span>
-              <span class="link-block">
-                <a href="https://github.com/A2R-Lab/MPC-RL" target="_blank" rel="noopener noreferrer" class="external-link button is-normal is-rounded is-dark">
-                  <span class="icon"><i class="fab fa-github"></i></span>
-                  <span>Code</span>
-                </a>
-              </span>
-            </div>
-          </div>
-
-        </div>
-      </div>
+    <div class="buttons">
+      <a class="btn" href="https://arxiv.org/abs/2606.26392" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm0 2.5L17.5 8H14V4.5zM8 13h8v1.5H8V13zm0 3.5h8V18H8v-1.5zm0-7h4V11H8V9.5z"/></svg>
+        arXiv
+      </a>
+      <a class="btn" href="https://github.com/A2R-Lab/MPC-Injection" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-2.91-.88-2.91-2.84 0-.56.2-1.02.53-1.38-.05-.13-.23-.66.05-1.37 0 0 .55-.17 1.8.66a6.1 6.1 0 0 1 1.64-.22c.56 0 1.12.07 1.64.22 1.25-.84 1.8-.66 1.8-.66.28.71.1 1.24.05 1.37.33.36.53.82.53 1.38 0 1.97-1.14 2.64-2.92 2.84.29.25.55.74.55 1.5 0 1.08-.01 1.96-.01 2.23 0 .21.15.46.55.38A7.99 7.99 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        Code
+      </a>
     </div>
   </div>
 </section>
 
-<!-- ==================== ABSTRACT (band) ==================== -->
-<section class="section band">
-  <div class="container is-max-desktop">
-    <div class="columns is-centered has-text-centered">
-      <div class="column is-four-fifths">
-        <h2 class="title is-3">Abstract</h2>
-        <div class="content has-text-justified">
-          <p>
-            Reinforcement learning (RL) for locomotion frequently converges to locally optimal but undeployable
-            behaviors, such as vibrating limbs or scooting on the torso, that maximize return without producing a
-            usable gait. We present <b>MPC-Injection</b>, a low-overhead method that steers RL toward a
-            designer-preferred gait by inserting transitions into the replay buffer from a model predictive
-            controller solving the same Markov decision process. Unlike reward shaping, MPC-Injection does not
-            require redesigning the task reward, and unlike adversarial imitation learning, it adds no
-            discriminator, no kinematic retargeting, and no auxiliary objective. Instead, the controller's
-            preferred behavior is transferred to the policy purely through the replay state distribution. On a 2D
-            walker in simulation and with sim-to-real evaluation on a Go2 quadruped, we show that MPC-Injection
-            drives the policy into the controller's behavior basin using a one to two-term task reward, producing
-            gaits qualitatively comparable to those of reward shaping with twenty-one tuned terms and of
-            adversarial motion priors without their discriminator and retargeting overhead. We further analyze how
-            the injected transitions bias actor-critic updates toward controller-visited states, allowing the
-            policy to learn behaviors that pure RL may fail to reach under simple reward functions.
-          </p>
-        </div>
-      </div>
+<!-- ==================== PROJECT VIDEO ==================== -->
+<section>
+  <div class="container">
+    <p class="eyebrow">Video Overview</p>
+    <video class="clip" controls preload="metadata" playsinline
+           poster="./static/images/video_poster.jpg">
+      <source src="./static/videos/project_video.mp4" type="video/mp4">
+    </video>
+  </div>
+</section>
+
+<!-- ==================== ABSTRACT ==================== -->
+<section>
+  <div class="container">
+    <p class="eyebrow">Abstract</p>
+    <h2 class="section-title">Steering RL Towards Behavior Basins</h2>
+    <div class="prose">
+      <p>
+        Reinforcement learning (RL) for locomotion frequently converges to locally optimal but undeployable
+        behaviors, such as vibrating limbs or scooting on the torso, that maximize return without producing a
+        usable gait. We present <b>MPC-Injection</b>, a low-overhead method that steers RL toward a
+        designer-preferred gait by inserting transitions into the replay buffer from a model predictive
+        controller solving the same Markov decision process. Unlike reward shaping, MPC-Injection does not
+        require redesigning the task reward, and unlike adversarial imitation learning, it adds no
+        discriminator, no kinematic retargeting, and no auxiliary objective. Instead, the controller's
+        preferred behavior is transferred to the policy purely through the replay state distribution. On a 2D
+        walker in simulation and with sim-to-real evaluation on a Go2 quadruped, we show that MPC-Injection
+        drives the policy into the controller's behavior basin using a one to two-term task reward, producing
+        gaits qualitatively comparable to those of reward shaping with twenty-one tuned terms and of
+        adversarial motion priors without their discriminator and retargeting overhead. We further analyze how
+        the injected transitions bias actor-critic updates toward controller-visited states, allowing the
+        policy to learn behaviors that pure RL may fail to reach under simple reward functions.
+      </p>
     </div>
   </div>
 </section>
 
 <!-- ==================== METHOD ==================== -->
-<section class="section">
-  <div class="container wide">
-    <h2 class="title is-3 has-text-centered">Method</h2>
-    <div class="fig" style="margin-top:1.5rem;">
-      <img src="./static/images/pipeline.png" alt="MPC-Injection pipeline.">
-    </div>
-    <div class="columns is-centered">
-      <div class="column is-four-fifths">
-        <div class="content has-text-justified" style="margin-top:1rem;">
-          <p>
-            An MPC solving the same MDP as the learner contributes a fraction of the transitions written to the
-            replay buffer. Those transitions bias actor–critic updates toward controller-visited states, pulling
-            the policy into the controller's behavior basin without touching the reward.
-          </p>
-        </div>
+<section>
+  <div class="container">
+    <p class="eyebrow">Approach</p>
+    <h2 class="section-title">Offline MPC Data, Injected During Training</h2>
+
+    <div class="approach-card">
+      <div class="card-header">
+        <p>
+          MPC-Injection steers the learner through its replay buffer rather than its reward. It runs in three
+          stages:
+        </p>
+        <ol>
+          <li><strong>MPC data generation:</strong> Before any RL run, an MPC is rolled out in an
+            environment matched to the learner's — same Go2 model, 50&nbsp;Hz control, command ranges,
+            observation noise, and termination thresholds — and its trajectories are saved to disk.</li>
+          <li><strong>Compute RL rewards for MPC transitions:</strong> Rewards for MPC transitions are
+            computed under the RL task reward function rather than the MPC cost, so injected and on-policy
+            transitions share a single reward definition.</li>
+          <li><strong>Inject during RL:</strong> After on-policy transitions are inserted into the
+            replay buffer, MPC transitions are added until the fraction of MPC transitions reaches the
+            injection ratio <em>p</em> (typically <em>p</em>&nbsp;=&nbsp;0.25).</li>
+        </ol>
+        <p>
+          MPC transitions enter learning only through the replay distribution: there is no separate imitation
+          loss, sample weighting, or auxiliary objective. The training process of the off-policy agent is
+          otherwise unchanged from standard SAC or TD3.
+        </p>
       </div>
+      <img src="./static/images/pipeline.png" alt="MPC-Injection pipeline: saved MPC trajectories are replayed into the replay buffer alongside the agent's own rollouts, biasing actor-critic updates." loading="lazy" class="pipeline-img">
     </div>
   </div>
 </section>
 
-<!-- ==================== BEHAVIOR BIASING (band) ==================== -->
-<section class="section band">
-  <div class="container wide">
-    <h2 class="title is-3 has-text-centered">Behavior Biasing</h2>
-    <div class="columns is-centered">
-      <div class="column is-four-fifths">
-        <p class="has-text-centered section-note" style="margin-bottom:2rem;">
-          MPC-Injection selects qualitatively different locomotion basins from vanilla RL under identical task
-          rewards, with 25% the injection ratio that most reliably induces the controller's basin.
-        </p>
-      </div>
+<!-- ==================== BEHAVIOR BIASING ==================== -->
+<section>
+  <div class="container">
+    <p class="eyebrow">Simulation</p>
+    <h2 class="section-title">Behavior Biasing</h2>
+    <div class="prose">
+      <p>
+        MPC-Injection selects qualitatively different locomotion basins from vanilla RL under identical task
+        rewards, with 25% the injection ratio that most reliably induces the controller's basin.
+      </p>
     </div>
 
     <!-- ---------- WALKER ---------- -->
-    <p class="subhead">Walker</p>
-    <div class="columns is-centered">
-      <div class="column is-four-fifths">
-        <div class="content has-text-justified">
-          <p>
-            Under the same velocity-tracking reward, pure RL converges to a grounded scooting strategy that drags
-            the top of the torso along the ground, while 25% MPC-Injection learns an upright, periodic gait
-            matching the MPC behavior.
-          </p>
-        </div>
-      </div>
+    <h3 class="subhead">Walker</h3>
+    <div class="prose">
+      <p>
+        Under the same velocity-tracking reward, pure RL converges to a grounded scooting strategy that drags
+        the top of the torso along the ground, while 25% MPC-Injection learns an upright, periodic gait
+        matching the MPC behavior.
+      </p>
     </div>
 
-    <div class="columns is-centered">
-      <div class="column">
-        <p class="grid-label">0% MPC-Injection (pure RL)</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+    <div class="grid two" style="margin-top:1.5rem;">
+      <div>
+        <p class="media-label">0% MPC-Injection (pure RL)</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/walker_0pct.mp4" type="video/mp4">
         </video>
       </div>
-      <div class="column">
-        <p class="grid-label ours">25% MPC-Injection</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+      <div>
+        <p class="media-label ours">25% MPC-Injection</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/walker_25pct.mp4" type="video/mp4">
         </video>
       </div>
     </div>
 
     <!-- ---------- QUADRUPED ---------- -->
-    <p class="subhead">Quadruped</p>
-    <div class="columns is-centered">
-      <div class="column is-four-fifths">
-        <div class="content has-text-justified">
-          <p>
-            Pure off-policy RL learns to vibrate the joints, while 25% MPC-Injection learns a structured trot
-            with periodic footstep patterns.
-          </p>
-        </div>
-      </div>
+    <h3 class="subhead">Quadruped</h3>
+    <div class="prose">
+      <p>
+        Pure off-policy RL learns to vibrate the joints, while 25% MPC-Injection learns a structured trot
+        with periodic footstep patterns.
+      </p>
     </div>
 
-    <div class="columns is-centered">
-      <div class="column">
-        <p class="grid-label">0% MPC-Injection (pure RL)</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+    <div class="grid two" style="margin-top:1.5rem;">
+      <div>
+        <p class="media-label">0% MPC-Injection (pure RL)</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/quad_0pct.mp4" type="video/mp4">
         </video>
       </div>
-      <div class="column">
-        <p class="grid-label ours">25% MPC-Injection</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+      <div>
+        <p class="media-label ours">25% MPC-Injection</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/quad_25pct.mp4" type="video/mp4">
         </video>
       </div>
     </div>
 
-    <div class="columns is-centered is-vcentered" style="margin-top:2rem;">
-      <div class="column">
-        <div class="fig fig-small"><img src="./static/images/quad_footsteps_0pct.png" alt="Foot trajectories under pure RL."></div>
-        <p class="has-text-centered section-note" style="margin-top:0.4rem;">(a) Pure RL</p>
+    <div class="grid two" style="margin-top:2.5rem;">
+      <div>
+        <div class="card fig-narrow"><img src="./static/images/quad_footsteps_0pct.png" alt="Foot trajectories under pure RL."></div>
+        <p class="caption">(a) Pure RL</p>
       </div>
-      <div class="column">
-        <div class="fig fig-small"><img src="./static/images/quad_footsteps_25pct.png" alt="Foot trajectories under 25% MPC-Injection."></div>
-        <p class="has-text-centered section-note" style="margin-top:0.4rem;">(b) 25% MPC-Injection</p>
+      <div>
+        <div class="card fig-narrow"><img src="./static/images/quad_footsteps_25pct.png" alt="Foot trajectories under 25% MPC-Injection."></div>
+        <p class="caption">(b) 25% MPC-Injection</p>
       </div>
     </div>
-    <div class="columns is-centered">
-      <div class="column is-four-fifths">
-        <p class="has-text-centered section-note">
-          (a) Footstep trajectories under pure RL show chaotic, irregular patterns. (b) Footstep trajectories
-          under 25% MPC-Injection show structured, periodic patterns matching a trotting gait.
-        </p>
+    <p class="caption">
+      <strong>(a)</strong> Footstep trajectories under pure RL show chaotic, irregular patterns.
+      <strong>(b)</strong> Footstep trajectories under 25% MPC-Injection show structured, periodic patterns
+      matching a trotting gait.
+    </p>
+
+    <!-- ---------- BARREL ROLL ---------- -->
+    <h3 class="subhead">Barrel Roll</h3>
+    <div class="prose">
+      <p>
+        Under the same simple reward function, pure RL never discovers the maneuver, while 25%
+        MPC-Injection completes the roll &mdash; a behavior that normally requires reward shaping or
+        assistive forces during curriculum learning.
+      </p>
+    </div>
+
+    <div class="grid two" style="margin-top:1.5rem;">
+      <div>
+        <p class="media-label">0% MPC-Injection (pure RL)</p>
+        <video class="clip" autoplay muted loop playsinline controls>
+          <source src="./static/videos/quad_barrelroll_0pct.mp4" type="video/mp4">
+        </video>
+      </div>
+      <div>
+        <p class="media-label ours">25% MPC-Injection</p>
+        <video class="clip" autoplay muted loop playsinline controls>
+          <source src="./static/videos/quad_barrelroll_25pct.mp4" type="video/mp4">
+        </video>
       </div>
     </div>
   </div>
 </section>
 
 <!-- ==================== REAL-WORLD EXPERIMENTS ==================== -->
-<section class="section">
-  <div class="container wide">
-    <h2 class="title is-3 has-text-centered">Real-World Experiments</h2>
+<section>
+  <div class="container">
+    <p class="eyebrow">Hardware</p>
+    <h2 class="section-title">Real-World Experiments</h2>
 
-    <p class="subhead">Quadruped</p>
-    <p class="has-text-centered section-note" style="margin-bottom:1.5rem;">
+    <h3 class="subhead">Velocity Tracking</h3>
+    <p class="note" style="margin-bottom:1.5rem;">
       All policies tracking a 0.5&nbsp;m/s velocity command on a Go2.
     </p>
-    <div class="columns is-centered">
-      <div class="column">
-        <p class="grid-label">Reward Shaping</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+    <div class="grid three">
+      <div>
+        <p class="media-label">Reward Shaping</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/hw_track_rewardshaping.mp4" type="video/mp4">
         </video>
       </div>
-      <div class="column">
-        <p class="grid-label">AMP</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+      <div>
+        <p class="media-label">AMP</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/hw_track_amp.mp4" type="video/mp4">
         </video>
       </div>
-      <div class="column">
-        <p class="grid-label ours">MPC-Injection (ours)</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
-          <source src="./static/videos/hw_track_ours.mp4" type="video/mp4">
+      <div>
+        <p class="media-label ours">MPC-Injection (ours)</p>
+        <video class="clip" autoplay muted loop playsinline controls>
+          <source src="./static/videos/hw_track_mpcinjection.mp4" type="video/mp4">
         </video>
       </div>
     </div>
-    <p class="has-text-centered section-note" style="margin-top:0.5rem;">
+    <p class="caption">
       It took several trials to get AMP to work without falling over immediately, while reward shaping and
       MPC-Injection consistently trotted.
     </p>
 
-    <p class="subhead">Perturbation Test</p>
-    <p class="has-text-centered section-note" style="margin-bottom:1.5rem;">
+    <h3 class="subhead">Perturbation Test</h3>
+    <p class="note" style="margin-bottom:1.5rem;">
       External disturbances applied to each policy under the same command.
     </p>
-    <div class="columns is-centered">
-      <div class="column">
-        <p class="grid-label">Reward Shaping</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+    <div class="grid three">
+      <div>
+        <p class="media-label">Reward Shaping</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/hw_perturb_rewardshaping.mp4" type="video/mp4">
         </video>
       </div>
-      <div class="column">
-        <p class="grid-label">AMP</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
+      <div>
+        <p class="media-label">AMP</p>
+        <video class="clip" autoplay muted loop playsinline controls>
           <source src="./static/videos/hw_perturb_amp.mp4" type="video/mp4">
         </video>
       </div>
-      <div class="column">
-        <p class="grid-label ours">MPC-Injection (ours)</p>
-        <video class="grid-video" autoplay muted loop playsinline controls>
-          <source src="./static/videos/hw_perturb_ours.mp4" type="video/mp4">
+      <div>
+        <p class="media-label ours">MPC-Injection (ours)</p>
+        <video class="clip" autoplay muted loop playsinline controls>
+          <source src="./static/videos/hw_perturb_mpcinjection.mp4" type="video/mp4">
         </video>
       </div>
     </div>
-    <p class="has-text-centered section-note" style="margin-top:0.5rem;">
+    <p class="caption">
       It took multiple trials to get AMP to work without falling over, while reward shaping and MPC-Injection
       consistently worked.
     </p>
-  </div>
-</section>
 
-<!-- ==================== CODE (band) ==================== -->
-<section class="section band">
-  <div class="container is-max-desktop">
-    <div class="columns is-centered">
-      <div class="column is-four-fifths">
-        <h2 class="title is-3 has-text-centered">Code</h2>
-        <div class="content has-text-justified">
-          <p>
-            The release implements <code>SAC-MPC</code> and <code>TD3-MPC</code>, with planning backed by
-            <a href="https://github.com/A2R-Lab/mujoco_mpc" target="_blank" rel="noopener noreferrer">MuJoCo MPC</a>,
-            and ships MuJoCo task definitions spanning classic control, locomotion, and dexterous manipulation.
-            Setup and training instructions are in the
-            <a href="https://github.com/A2R-Lab/MPC-RL#readme" target="_blank" rel="noopener noreferrer">repository README</a>.
-          </p>
-        </div>
-      </div>
+    <h3 class="subhead">Bounding</h3>
+    <p class="note" style="margin-bottom:1.5rem;">
+      Changing only the injected MPC data, under the same simple reward function, biases the policy to a
+      bounding gait.
+    </p>
+    <div style="max-width:600px;margin:0 auto;">
+      <video class="clip" autoplay muted loop playsinline controls>
+        <source src="./static/videos/hw_bounding.mp4" type="video/mp4">
+      </video>
     </div>
   </div>
 </section>
 
 <!-- ==================== BIBTEX ==================== -->
-<section class="section" id="BibTeX">
-  <div class="container is-max-desktop content">
-    <h2 class="title">BibTeX</h2>
-<pre><code>@inproceedings{xing2026mpcinjection,
+<section id="BibTeX">
+  <div class="container">
+    <p class="eyebrow">Citation</p>
+    <h2 class="section-title">BibTeX</h2>
+<pre class="bibtex"><code>@inproceedings{xing2026mpcinjection,
   title         = {MPC-Injection: Biasing Off-Policy Locomotion RL Toward
                    Controller-Induced Behavior Basins},
   author        = {Xing, Roy and Ree, Seyoung and Plancher, Brian},
@@ -348,28 +633,22 @@
 </section>
 
 <!-- ==================== FOOTER ==================== -->
-<footer class="footer">
+<footer>
   <div class="container">
-    <div class="content has-text-centered">
-      <a class="icon-link" href="https://github.com/A2R-Lab/MPC-RL" target="_blank" rel="noopener noreferrer">
-        <i class="fab fa-github"></i>
-      </a>
-    </div>
-    <div class="columns is-centered">
-      <div class="column is-8">
-        <div class="content">
-          <p>
-            This website is licensed under a
-            <a rel="license noopener noreferrer" href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank">Creative Commons
-            Attribution-ShareAlike 4.0 International License</a>.
-          </p>
-          <p>
-            The source code of this website is borrowed from
-            <a href="https://nerfies.github.io" target="_blank" rel="noopener noreferrer">Nerfies</a>.
-          </p>
-        </div>
-      </div>
-    </div>
+    <a class="icon-link" href="https://github.com/A2R-Lab/MPC-Injection" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-2.91-.88-2.91-2.84 0-.56.2-1.02.53-1.38-.05-.13-.23-.66.05-1.37 0 0 .55-.17 1.8.66a6.1 6.1 0 0 1 1.64-.22c.56 0 1.12.07 1.64.22 1.25-.84 1.8-.66 1.8-.66.28.71.1 1.24.05 1.37.33.36.53.82.53 1.38 0 1.97-1.14 2.64-2.92 2.84.29.25.55.74.55 1.5 0 1.08-.01 1.96-.01 2.23 0 .21.15.46.55.38A7.99 7.99 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+    </a>
+    <p class="ack">
+      This material is based upon work supported by the National Science Foundation (under Awards 2246022,
+      2411369). Any opinions, findings, conclusions, or recommendations expressed in this material are those
+      of the authors and do not necessarily reflect those of the funding organizations.
+    </p>
+    <p>
+      This website is licensed under a
+      <a rel="license noopener noreferrer" href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank">CC BY-SA 4.0 license</a>.
+      Template adapted from
+      <a href="https://nerfies.github.io" target="_blank" rel="noopener noreferrer">Nerfies</a>.
+    </p>
   </div>
 </footer>
 
