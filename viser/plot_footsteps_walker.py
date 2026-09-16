@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import argparse
 import re
 
-FONT_SIZE = 18
+AXIS_FONT_SIZE = 24
 
 class FootStepPlotter:
     """
@@ -96,7 +96,7 @@ class FootStepPlotter:
         for t in time_steps:
             if self.left_footsteps[t]:
                 ax_lf.axvline(x=t, color='black', linewidth=0.8)
-        ax_lf.set_ylabel('LF', fontsize=FONT_SIZE, rotation=0, labelpad=20)
+        ax_lf.set_ylabel('LF', fontsize=AXIS_FONT_SIZE, rotation=0, labelpad=20)
         ax_lf.set_ylim(0, 1)
         ax_lf.set_yticks([])
         ax_lf.spines['left'].set_visible(False)
@@ -108,16 +108,18 @@ class FootStepPlotter:
         for t in time_steps:
             if self.right_footsteps[t]:
                 ax_rf.axvline(x=t, color='black', linewidth=0.8)
-        ax_rf.set_ylabel('RF', fontsize=FONT_SIZE, rotation=0, labelpad=20)
+        ax_rf.set_ylabel('RF', fontsize=AXIS_FONT_SIZE, rotation=0, labelpad=20)
         ax_rf.set_ylim(0, 1)
         ax_rf.set_yticks([])
         ax_rf.spines['left'].set_visible(False)
         ax_rf.spines['right'].set_visible(False)
         ax_rf.spines['top'].set_visible(False)
-        ax_rf.set_xlabel('Timestep', fontsize=FONT_SIZE)
+        ax_rf.set_xlabel('Timestep', fontsize=AXIS_FONT_SIZE)
+        for ax in axes:
+            ax.tick_params(axis='both', labelsize=AXIS_FONT_SIZE)
         ax_rf.set_xlim(time_steps[0], time_steps[-1])
 
-        plt.show()
+        # plt.show()
         
         self.last_fig = fig
         return fig

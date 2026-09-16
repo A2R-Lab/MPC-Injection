@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "declaration_id": "mpx-transition-parity-v1",
+  "declared_at": "2026-08-05T14:16:06-04:00",
+  "declared_before_measurement": true,
+  "conversion_mode_under_test": "inferred_action_direct_torque_v1",
+  "one_step_control_steps": 1,
+  "short_rollout_control_steps": 160,
+  "simulation_substeps_per_control_step": 4,
+  "rollout_seed": 17,
+  "dr_seed_offset": 1000000,
+  "scenarios": [
+    {
+      "name": "nominal",
+      "domain_rand_config_type": "disabled",
+      "require_push_event": false
+    },
+    {
+      "name": "deterministic_nontrivial_dr",
+      "domain_rand_config_type": "sysid_dyn20_mjlab",
+      "require_push_event": true,
+      "determinism": "The saved DR patch, reset seed, push interval draws, and push velocity draws are replayed from the same seeded environment RNG stream."
+    }
+  ],
+  "numeric_fields": {
+    "qpos": {"max_abs": 1e-6, "rms": 1e-7},
+    "qvel": {"max_abs": 1e-5, "rms": 1e-6},
+    "policy_observation": {"max_abs": 1e-5, "rms": 1e-6},
+    "privileged_observation": {"max_abs": 1e-5, "rms": 1e-6},
+    "reward": {"max_abs": 2e-6, "rms": 5e-7},
+    "applied_torque": {"max_abs": 1e-5, "rms": 1e-6},
+    "push_delta_qvel": {"max_abs": 1e-12, "rms": 1e-13}
+  },
+  "exact_fields": {
+    "termination_mismatch_count": 0,
+    "truncation_mismatch_count": 0,
+    "action_out_of_range_count": 0,
+    "push_event_mismatch_count": 0
+  },
+  "mask_tolerances": {
+    "torque_saturation_mismatch_fraction": 0.001,
+    "replay_action_clipping_fraction": 0.0
+  },
+  "generation_action_conversion_limits": {
+    "clipped_element_fraction": 0.01,
+    "max_clip_magnitude": 0.05
+  },
+  "acceptance_rule": "Every numeric field must satisfy both max_abs and RMS limits over one step and the entire short rollout in both scenarios; every exact/mask/action-conversion limit must also pass. Tolerances must not be changed after measurement under this declaration ID."
+}

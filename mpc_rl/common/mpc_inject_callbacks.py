@@ -1,7 +1,7 @@
 import numpy as np
 import zipfile
 from stable_baselines3.common.callbacks import BaseCallback
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
@@ -10,6 +10,12 @@ import mujoco
 from mpc_rl.envs.cheetah3_env import (
     Cheetah3Env,
     DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL,
+)
+from mpc_rl.envs.action_interfaces import (
+    DEFAULT_ACTION_INTERFACE_ID,
+    MPX_BOUND_ACTION_INTERFACE_ID,
+    resolve_action_interface,
+    validate_action_interface_metadata,
 )
 from mpc_rl.envs.domain_randomization import (
     extract_startup_domain_rand_patch,
@@ -25,6 +31,21 @@ _QUADRUPED_DIRECT_TRANSITION_KEYS = (
     "actions",
     "rewards",
     "terminated_ctrl",
+)
+
+_QUADRUPED_TORQUE_REPLAY_KEYS = (
+    "tau_applied",
+    "commands",
+    "episode_length",
+    "sim_dt",
+    "control_dt",
+    "default_joint_pos",
+)
+
+_QUADRUPED_MPC_REPLAY_MODES = (
+    "direct",
+    "torque_saved_pd",
+    "torque_current_pd",
 )
 
 
@@ -73,6 +94,30 @@ def _apply_quadruped_trajectory_dr_patch(env, dr_patch):
 def _quadruped_traj_has_direct_transitions(traj_data) -> bool:
     """Return True when a quadruped trajectory file stores direct RL transitions."""
     return all(key in traj_data for key in _QUADRUPED_DIRECT_TRANSITION_KEYS)
+
+
+def _validate_quadruped_direct_action_interface(
+    traj_data,
+    *,
+    expected_action_interface_id: str | None,
+):
+    """Validate schema-v2 action metadata while retaining legacy compatibility."""
+    if "schema_version" not in traj_data:
+        if expected_action_interface_id == MPX_BOUND_ACTION_INTERFACE_ID:
+            raise ValueError(
+                "the opt-in MPX bound action interface requires schema-v2 "
+                "direct-transition metadata; this file is legacy/unversioned"
+            )
+        return None
+    return validate_action_interface_metadata(
+        traj_data,
+        expected_interface_id=expected_action_interface_id,
+    )
+
+
+def _quadruped_traj_has_torque_replay_data(traj_data) -> bool:
+    """Return True when a quadruped trajectory can be replayed from torques."""
+    return all(key in traj_data for key in _QUADRUPED_TORQUE_REPLAY_KEYS)
 
 
 def _make_cheetah3_temp_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
@@ -303,7 +348,7 @@ class FixedMPCInjectCallback(BaseCallback):
             )
         else:
             # For dm_control environments
-            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            dm_env = load_dm_control_env(domain_name=self.domain, task_name=self.task)
             temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
             temp_env = FlattenObservation(temp_env)
         
@@ -499,8 +544,10 @@ class PercentMPCInjectCallback(BaseCallback):
     This callback is designed to work with SAC_MPC's train() method, which checks the
     MPC percentage before sampling and calls _inject_mpc_trajectories() if needed.
     
-    The callback itself doesn't trigger on timesteps - instead, SAC_MPC calls it
-    directly when the MPC percentage falls below the target.
+    SAC_MPC calls the callback directly when the MPC percentage falls below the
+    target. Barrel-roll additionally performs one bootstrap injection when the
+    rollout reaches ``learning_starts`` so exact-threshold smoke runs exercise
+    the same direct replay path.
     
     The MPC planner generates optimal trajectories which are added to the replay buffer
     to provide high-quality demonstration data that can accelerate learning.
@@ -517,20 +564,51 @@ class PercentMPCInjectCallback(BaseCallback):
         robot: str="go2",                     # Quadruped robot model (only used when domain='quadruped')
         use_go2_sysid: bool=True,             # Whether quadruped temp envs should apply the Go2 sysID patch
         expected_dr_config_type: str | None = None,  # Expected DR preset for loaded quadruped demos
+        expected_quadruped_task: str | None = None,  # Optional strict task ID for quadruped files
+        expected_quadruped_schema_version: int | None = None,  # Optional strict schema version
+        expected_action_interface_id: str | None = None,
+        quadruped_mpc_replay_mode: str="direct",  # direct, torque_saved_pd, or torque_current_pd
         cheetah3_speed_goal: float=CHEETAH3_DEFAULT_SPEED_GOAL,
         verbose: int=1                        # 0: no output, 1: info msgs, 2: debug msgs
         ):
         super().__init__(verbose)
+        if quadruped_mpc_replay_mode not in _QUADRUPED_MPC_REPLAY_MODES:
+            valid = ", ".join(_QUADRUPED_MPC_REPLAY_MODES)
+            raise ValueError(
+                f"Invalid quadruped_mpc_replay_mode={quadruped_mpc_replay_mode!r}; "
+                f"expected one of: {valid}"
+            )
+        if task in {"barrel_roll", "go2_barrel_roll"}:
+            from mpc_rl.envs.barrel_roll_common import SCHEMA_VERSION, TASK_ID
+
+            expected_quadruped_task = TASK_ID if expected_quadruped_task is None else expected_quadruped_task
+            expected_quadruped_schema_version = (
+                SCHEMA_VERSION
+                if expected_quadruped_schema_version is None
+                else expected_quadruped_schema_version
+            )
+            if domain != "quadruped":
+                raise ValueError("barrel-roll MPC data requires domain='quadruped'")
+            if quadruped_mpc_replay_mode != "direct":
+                raise ValueError("barrel-roll MPC data requires direct replay")
+
         self.domain = domain
         self.task = task
         self.target_percentage = target_percentage
         self.robot = robot
         self.use_go2_sysid = use_go2_sysid
         self.expected_dr_config_type = expected_dr_config_type
+        self.expected_quadruped_task = expected_quadruped_task
+        self.expected_quadruped_schema_version = expected_quadruped_schema_version
+        self.expected_action_interface_id = expected_action_interface_id
+        if expected_action_interface_id is not None:
+            resolve_action_interface(expected_action_interface_id)
+        self.quadruped_mpc_replay_mode = quadruped_mpc_replay_mode
         self.cheetah3_speed_goal = float(cheetah3_speed_goal)
         self._warned_dr_mismatch = False
         self._warned_sysid_mismatch = False
         self.total_mpc_trajectories_injected = 0  # Track total MPC trajectories
+        self._learning_start_bootstrap_done = False
         # ReplayBuffer.add() always writes a full row of n_envs transitions.
         # For quadruped percentage injection, accumulate unique MPC transitions
         # here and flush them in n_env-sized batches instead of tiling one demo
@@ -558,9 +636,18 @@ class PercentMPCInjectCallback(BaseCallback):
                 raise FileNotFoundError(f"Data directory not found: {data_dir}")
             
             # Get all available trajectory files
-            self.available_files = list(self.data_dir.glob("*.npz"))
+            self.available_files = sorted(self.data_dir.glob("*.npz"))
             if len(self.available_files) == 0:
                 raise FileNotFoundError(f"No trajectory files found in {data_dir}")
+
+            # A strict task contract applies to the entire directory, not just
+            # whichever file seeded selection happens to pick first.  This is
+            # especially important for barrel roll: a malformed versioned file
+            # must fail before any transition is queued and must never be
+            # interpreted as a legacy velocity torque trajectory.
+            if self.expected_quadruped_task is not None or self.expected_quadruped_schema_version is not None:
+                for trajectory_path in self.available_files:
+                    self._validate_expected_quadruped_file(trajectory_path)
             
             if verbose > 0:
                 print(f"  Found {len(self.available_files)} trajectory files in {data_dir}")
@@ -572,10 +659,53 @@ class PercentMPCInjectCallback(BaseCallback):
         if data_dir:
             print(f"  Loading from: {data_dir}")
             print(f"  Random selection: {random_select}")
+        if domain == "quadruped":
+            print(f"  Quadruped MPC replay mode: {quadruped_mpc_replay_mode}")
+            print(
+                "  Expected action interface: "
+                f"{expected_action_interface_id or 'legacy-compatible'}"
+            )
         if seed is not None:
             print(f"  Seed: {seed}")
         print(f"  Verbose level: {verbose}")
         print(f"  Note: Injection triggered by SAC_MPC when MPC% falls below target\n")
+
+    def _validate_expected_quadruped_file(self, trajectory_path):
+        """Validate a file against the optional strict quadruped task contract."""
+        if self.domain != "quadruped":
+            raise ValueError("expected quadruped task/schema requires domain='quadruped'")
+
+        from mpc_rl.envs.barrel_roll_common import TASK_ID as BARREL_ROLL_TASK_ID
+
+        if self.expected_quadruped_task == BARREL_ROLL_TASK_ID:
+            from mpc_rl.planner.barrel_roll_dataset import validate_barrel_roll_file
+
+            report = validate_barrel_roll_file(trajectory_path)
+            if not report.valid:
+                raise ValueError(
+                    f"invalid barrel-roll trajectory {trajectory_path}: "
+                    + "; ".join(report.errors)
+                )
+
+        with np.load(trajectory_path, allow_pickle=False) as loaded:
+            if self.expected_quadruped_task is not None:
+                if "task_id" not in loaded:
+                    raise ValueError(f"{trajectory_path} is missing task_id")
+                actual_task = str(np.asarray(loaded["task_id"]).item())
+                if actual_task != self.expected_quadruped_task:
+                    raise ValueError(
+                        f"{trajectory_path} task_id mismatch: expected "
+                        f"{self.expected_quadruped_task!r}, got {actual_task!r}"
+                    )
+            if self.expected_quadruped_schema_version is not None:
+                if "schema_version" not in loaded:
+                    raise ValueError(f"{trajectory_path} is missing schema_version")
+                actual_schema = int(np.asarray(loaded["schema_version"]).item())
+                if actual_schema != self.expected_quadruped_schema_version:
+                    raise ValueError(
+                        f"{trajectory_path} schema_version mismatch: expected "
+                        f"{self.expected_quadruped_schema_version}, got {actual_schema}"
+                    )
 
     def _maybe_warn_dr_mismatch(self, traj_domain_rand_patch: dict | None):
         """Print a one-time warning when loaded DR demos mismatch run DR preset."""
@@ -664,13 +794,39 @@ class PercentMPCInjectCallback(BaseCallback):
     def _on_step(self) -> bool:
         """
         Called after each environment step.
-        
-        This callback doesn't inject on a schedule - instead, it's called directly
-        by SAC_MPC.train() when the MPC percentage falls below target.
-        
-        We keep this method to satisfy the BaseCallback interface, but it just
-        passes through.
+
+        SAC_MPC.train() maintains the requested percentage after learning starts.
+        Barrel-roll also bootstraps once when the rollout reaches that threshold:
+        a run ending exactly at ``learning_starts`` otherwise exits before the
+        first train call and never exercises direct injection.
         """
+        if self._learning_start_bootstrap_done:
+            return True
+        if not (
+            self.domain == "quadruped"
+            and self.expected_quadruped_task == "go2_barrel_roll"
+            and self.quadruped_mpc_replay_mode == "direct"
+        ):
+            return True
+
+        learning_starts = getattr(self.model, "learning_starts", None)
+        if learning_starts is None or self.num_timesteps < int(learning_starts):
+            return True
+
+        self._learning_start_bootstrap_done = True
+        replay_buffer = getattr(self.model, "replay_buffer", None)
+        if replay_buffer is None or not hasattr(replay_buffer, "get_mpc_percentage"):
+            raise RuntimeError(
+                "barrel-roll percentage injection requires a tagged replay buffer"
+            )
+        if replay_buffer.get_mpc_percentage() < self.target_percentage:
+            if self.verbose > 0:
+                print(
+                    "Bootstrapping barrel-roll MPC replay at learning_starts "
+                    f"({self.num_timesteps} steps)"
+                )
+            self._inject_mpc_trajectories()
+
         return True  # Continue training
 
     def _flush_quadruped_pending_transitions(self) -> int:
@@ -708,16 +864,21 @@ class PercentMPCInjectCallback(BaseCallback):
 
         return transitions_added
 
-    def _queue_quadruped_transition(self, obs, next_obs, action, reward, terminated, info) -> int:
+    def _queue_quadruped_transition(
+        self, obs, next_obs, action, reward, terminated, info, *, truncated=False
+    ) -> int:
         """Queue one unique quadruped MPC transition and flush any full batch."""
+        info = info.copy() if isinstance(info, dict) else info
+        if isinstance(info, dict):
+            info.setdefault("TimeLimit.truncated", bool(truncated and not terminated))
         self._quadruped_pending_transitions.append(
             {
                 "obs": {key: np.array(value, copy=True) for key, value in obs.items()},
                 "next_obs": {key: np.array(value, copy=True) for key, value in next_obs.items()},
                 "action": np.array(action, copy=True),
                 "reward": float(reward),
-                "done": float(terminated),
-                "info": info.copy() if isinstance(info, dict) else info,
+                "done": float(bool(terminated) or bool(truncated)),
+                "info": info,
             }
         )
         return self._flush_quadruped_pending_transitions()
@@ -731,17 +892,146 @@ class PercentMPCInjectCallback(BaseCallback):
         actions = np.asarray(traj_data["actions"], dtype=np.float64)
         rewards = np.asarray(traj_data["rewards"], dtype=np.float32)
         terminated_ctrl = np.asarray(traj_data["terminated_ctrl"], dtype=bool)
+        truncated_ctrl = (
+            np.asarray(traj_data["truncated_ctrl"], dtype=bool)
+            if "truncated_ctrl" in traj_data
+            else np.zeros_like(terminated_ctrl)
+        )
         commands_ctrl = (
             np.asarray(traj_data["commands_ctrl"], dtype=np.float64)
             if "commands_ctrl" in traj_data
             else None
         )
 
+        trajectory_task = (
+            str(np.asarray(traj_data["task_id"]).item())
+            if "task_id" in traj_data
+            else None
+        )
+        is_barrel_roll = (
+            self.expected_quadruped_task == "go2_barrel_roll"
+            or trajectory_task == "go2_barrel_roll"
+        )
+        if is_barrel_roll:
+            trajectory_schema = (
+                int(np.asarray(traj_data["schema_version"]).item())
+                if "schema_version" in traj_data
+                else None
+            )
+            measured_roll_ctrl = np.asarray(traj_data["measured_roll_physics"], dtype=np.float64)[4::4]
+            contacts_ctrl = (
+                np.asarray(traj_data["filtered_foot_contacts_ctrl"], dtype=bool)
+                if "filtered_foot_contacts_ctrl" in traj_data
+                else np.asarray(traj_data["foot_contacts"], dtype=bool)[3::4]
+            )
+            raw_contacts_ctrl = (
+                np.asarray(traj_data["raw_foot_contacts_ctrl"], dtype=bool)[1:]
+                if "raw_foot_contacts_ctrl" in traj_data
+                else np.asarray(traj_data["foot_contacts"], dtype=bool)[3::4]
+            )
+            stable_ctrl = np.asarray(traj_data["stable_contact_streak"], dtype=np.int64)
+            final_hold_streak_ctrl = (
+                np.asarray(traj_data["final_hold_streak"], dtype=np.int64)
+                if "final_hold_streak" in traj_data
+                else stable_ctrl
+            )
+            phase_ctrl = np.asarray(traj_data["phase_ctrl"], dtype=np.float64)
+            desired_roll_ctrl = np.asarray(traj_data["desired_roll_ctrl"], dtype=np.float64)
+            classifier_ctrl = np.asarray(traj_data["classifier_result"], dtype=bool)
+            action_clip_ctrl = np.mean(
+                np.asarray(traj_data["action_clipped"], dtype=bool), axis=1
+            )
+            torque_sat_ctrl = np.mean(
+                np.asarray(traj_data["applied_saturation_by_actuator"], dtype=bool)
+                .reshape(12, policy_obs.shape[0], -1),
+                axis=(0, 2),
+            )
+            success = bool(np.asarray(traj_data["success"]).item())
+            failure_reason = str(np.asarray(traj_data["failure_reason"]).item()) or None
+            reward_components_ctrl = {
+                name: np.asarray(traj_data[key], dtype=np.float64)
+                for name, key in (
+                    ("roll_tracking", "reward_roll_tracking"),
+                    ("rate_tracking", "reward_rate_tracking"),
+                    ("action_change", "reward_action_change"),
+                    ("signed_progress", "reward_signed_progress"),
+                    ("standing_score", "reward_standing_score"),
+                    ("foot_score", "reward_foot_score"),
+                    ("height_score", "reward_height_score"),
+                    ("tilt_score", "reward_tilt_score"),
+                    ("linear_speed_score", "reward_linear_speed_score"),
+                    ("angular_speed_score", "reward_angular_speed_score"),
+                    ("joint_speed_score", "reward_joint_speed_score"),
+                    ("terminal_outcome", "reward_terminal_outcome"),
+                )
+                if key in traj_data
+            }
+            hold_conditions_ctrl = {
+                name: np.asarray(traj_data[f"hold_{name}_valid"], dtype=bool)
+                for name in (
+                    "rotation",
+                    "foot_support",
+                    "height",
+                    "tilt",
+                    "base_linear_speed",
+                    "base_angular_speed",
+                    "joint_speed",
+                )
+                if f"hold_{name}_valid" in traj_data
+            }
+            hold_metrics_ctrl = {
+                name: np.asarray(traj_data[f"{name}_ctrl"], dtype=np.float64)
+                for name in (
+                    "base_height",
+                    "body_up_tilt",
+                    "base_linear_speed",
+                    "base_angular_speed",
+                    "joint_velocity_norm",
+                )
+                if f"{name}_ctrl" in traj_data
+            }
+
         transitions_added = 0
         for step in range(policy_obs.shape[0]):
             info = {}
             if commands_ctrl is not None:
                 info["commands"] = commands_ctrl[step].copy()
+            if is_barrel_roll:
+                done = bool(terminated_ctrl[step] or truncated_ctrl[step])
+                info.update(
+                    {
+                        "task_id": "go2_barrel_roll",
+                        "schema_version": trajectory_schema,
+                        "phase": float(phase_ctrl[step]),
+                        "desired_roll": float(desired_roll_ctrl[step]),
+                        "roll_progress": float(measured_roll_ctrl[step]),
+                        "roll_error": float(desired_roll_ctrl[step] - measured_roll_ctrl[step]),
+                        "contact_state": contacts_ctrl[step].copy(),
+                        "raw_contact_state": raw_contacts_ctrl[step].copy(),
+                        "stability_count": int(stable_ctrl[step]),
+                        "final_hold_streak": int(final_hold_streak_ctrl[step]),
+                        "hold_conditions": {
+                            name: bool(values[step])
+                            for name, values in hold_conditions_ctrl.items()
+                        },
+                        "hold_valid": bool(
+                            hold_conditions_ctrl
+                            and all(values[step] for values in hold_conditions_ctrl.values())
+                        ),
+                        "is_success": bool(success and classifier_ctrl[step] and done),
+                        "failure_reason": failure_reason if done else None,
+                        "action_clip_fraction": float(action_clip_ctrl[step]),
+                        "torque_saturation_fraction": float(torque_sat_ctrl[step]),
+                        "reward_components": {
+                            name: float(values[step])
+                            for name, values in reward_components_ctrl.items()
+                        },
+                        **{
+                            name: float(values[step])
+                            for name, values in hold_metrics_ctrl.items()
+                        },
+                    }
+                )
 
             transitions_committed = self._queue_quadruped_transition(
                 obs={
@@ -756,6 +1046,7 @@ class PercentMPCInjectCallback(BaseCallback):
                 reward=float(rewards[step]),
                 terminated=bool(terminated_ctrl[step]),
                 info=info,
+                truncated=bool(truncated_ctrl[step]),
             )
             transitions_added += transitions_committed
 
@@ -769,7 +1060,7 @@ class PercentMPCInjectCallback(BaseCallback):
                         )
                     break
 
-            if terminated_ctrl[step]:
+            if terminated_ctrl[step] or truncated_ctrl[step]:
                 break
 
         return transitions_added
@@ -778,6 +1069,7 @@ class PercentMPCInjectCallback(BaseCallback):
         self, temp_env, qpos, qvel, tau_applied, commands,
         episode_length, decimation, default_joint_pos, traj_domain_rand_patch=None,
         traj_seed: int | None = None,
+        use_current_pd_gains: bool = False,
     ):
         """Replay one quadruped MPC trajectory and inject transitions into the replay buffer.
 
@@ -802,6 +1094,9 @@ class PercentMPCInjectCallback(BaseCallback):
             decimation: Sim steps per control step (typically 4).
             default_joint_pos: Default standing joint positions, shape (12,).
             traj_domain_rand_patch: Optional saved startup-DR model patch.
+            use_current_pd_gains: When True, keep the saved trajectory plant
+                patch except for saved PD gains, so inverse-PD action conversion
+                uses the current QuadrupedVelocityTrackingEnv gains.
 
         Returns:
             Number of transitions committed to the replay buffer.
@@ -826,12 +1121,18 @@ class PercentMPCInjectCallback(BaseCallback):
                 wz=float(initial_cmd[2]),
             )
 
+        replay_dr_patch = traj_domain_rand_patch
+        if use_current_pd_gains and replay_dr_patch is not None:
+            replay_dr_patch = dict(replay_dr_patch)
+            replay_dr_patch.pop("dr_realized_kp", None)
+            replay_dr_patch.pop("dr_realized_kd", None)
+
         # Reset temp env then override with trajectory initial state.
         if traj_seed is None:
             temp_env.reset()
         else:
             temp_env.reset(seed=traj_seed)
-        _apply_quadruped_trajectory_dr_patch(temp_env, traj_domain_rand_patch)
+        _apply_quadruped_trajectory_dr_patch(temp_env, replay_dr_patch)
         temp_env.mjData.qpos[:] = qpos[:, 0]
         temp_env.mjData.qvel[:] = qvel[:, 0]
         temp_env.mjData.ctrl[:] = 0.0
@@ -1002,7 +1303,7 @@ class PercentMPCInjectCallback(BaseCallback):
             )
         else:
             # For dm_control environments
-            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            dm_env = load_dm_control_env(domain_name=self.domain, task_name=self.task)
             temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
             temp_env = FlattenObservation(temp_env)
         
@@ -1078,13 +1379,19 @@ class PercentMPCInjectCallback(BaseCallback):
                     current_mpc_count = stats["mpc_transitions"]
                     current_total = stats["total_transitions"]
                     
-                    # Estimate after adding 1 more trajectory (~1000 transitions).
+                    # Estimate after adding one more trajectory.
                     # Quadruped injection packs unique MPC transitions into the
                     # n_envs slots of each replay row, so one trajectory remains
-                    # ~1000 counted transitions instead of 1000 * n_envs tiled
-                    # copies. Other domains still tile each step across all slots.
+                    # one counted transition per saved control step instead of
+                    # n_envs tiled copies. Other domains still use the historical
+                    # ~1000-step estimate and tile each step across all slots.
                     n_envs = self.model.replay_buffer.n_envs
-                    traj_transitions = 1000 if is_quadruped else 1000 * n_envs
+                    if is_quadruped and self.expected_quadruped_task == "go2_barrel_roll":
+                        from mpc_rl.envs.barrel_roll_common import CONTROL_STEPS
+
+                        traj_transitions = CONTROL_STEPS
+                    else:
+                        traj_transitions = 1000 if is_quadruped else 1000 * n_envs
                     estimated_new_mpc = current_mpc_count + traj_transitions
                     # When the buffer is full, adding rows overwrites old ones;
                     # total stays at buffer_capacity * n_envs.
@@ -1148,18 +1455,71 @@ class PercentMPCInjectCallback(BaseCallback):
                 for retry in range(max_retries):
                     try:
                         selected_file = self._select_trajectory_file()
+
+                        if (
+                            self.expected_quadruped_task is not None
+                            or self.expected_quadruped_schema_version is not None
+                        ):
+                            self._validate_expected_quadruped_file(selected_file)
+
                         
-                        # Load the MPC trajectory data
-                        traj_data = np.load(selected_file, allow_pickle=True)
+                        # New quadruped direct-transition files are loaded
+                        # pickle-free. Legacy torque replay keeps its isolated
+                        # compatibility path.
+                        traj_data = np.load(
+                            selected_file,
+                            allow_pickle=not is_quadruped,
+                        )
+                        quadruped_has_direct_transitions = (
+                            is_quadruped
+                            and _quadruped_traj_has_direct_transitions(traj_data)
+                        )
+                        quadruped_force_torque_replay = (
+                            is_quadruped
+                            and self.quadruped_mpc_replay_mode
+                            in {"torque_saved_pd", "torque_current_pd"}
+                        )
+                        if is_quadruped and self.expected_quadruped_task is None and (
+                            quadruped_force_torque_replay
+                            or not quadruped_has_direct_transitions
+                        ):
+                            traj_data.close()
+                            traj_data = np.load(selected_file, allow_pickle=True)
                         if is_quadruped:
                             self._maybe_warn_sysid_mismatch(traj_data)
                         qpos = traj_data['qpos']  # Shape: (state_dim, num_steps)
                         qvel = traj_data['qvel']
-                        quadruped_has_direct_transitions = (
-                            is_quadruped and _quadruped_traj_has_direct_transitions(traj_data)
-                        )
+                        if quadruped_force_torque_replay:
+                            if not _quadruped_traj_has_torque_replay_data(traj_data):
+                                missing = [
+                                    key for key in _QUADRUPED_TORQUE_REPLAY_KEYS
+                                    if key not in traj_data
+                                ]
+                                raise KeyError(
+                                    "Quadruped MPC replay mode "
+                                    f"{self.quadruped_mpc_replay_mode!r} requires "
+                                    f"torque replay keys missing from {selected_file.name}: "
+                                    f"{missing}"
+                                )
+                            quadruped_has_direct_transitions = False
+
+                        if (
+                            self.expected_quadruped_task == "go2_barrel_roll"
+                            and not quadruped_has_direct_transitions
+                        ):
+                            raise ValueError(
+                                f"barrel-roll trajectory {selected_file} does not contain "
+                                "the required direct-transition schema"
+                            )
 
                         if is_quadruped:
+                            if quadruped_has_direct_transitions and self.expected_quadruped_task != "go2_barrel_roll":
+                                _validate_quadruped_direct_action_interface(
+                                    traj_data,
+                                    expected_action_interface_id=(
+                                        self.expected_action_interface_id
+                                    ),
+                                )
                             traj_domain_rand_patch = extract_startup_domain_rand_patch(traj_data)
                             self._maybe_warn_dr_mismatch(traj_domain_rand_patch)
                             if not quadruped_has_direct_transitions:
@@ -1249,6 +1609,9 @@ class PercentMPCInjectCallback(BaseCallback):
                         traj_episode_length, traj_decimation, traj_default_joint_pos,
                         traj_domain_rand_patch=traj_domain_rand_patch,
                         traj_seed=traj_seed,
+                        use_current_pd_gains=(
+                            self.quadruped_mpc_replay_mode == "torque_current_pd"
+                        ),
                     )
             else:
                 # ----------------------------------------------------------------

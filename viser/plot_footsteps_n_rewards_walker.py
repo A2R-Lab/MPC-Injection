@@ -8,7 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import argparse
 
-FONT_SIZE = 18
+AXIS_FONT_SIZE = 35
+FIG_HEIGHT = 3.0
 
 class FootStepAndRewardPlotter:
     """
@@ -85,7 +86,7 @@ class FootStepAndRewardPlotter:
         # Create figure with 3 subplots stacked vertically and compressed
         fig, axes = plt.subplots(
             3, 1,
-            figsize=(12, 2.5),
+            figsize=(12, FIG_HEIGHT),
             sharex=True,
             gridspec_kw={'height_ratios': [0.4, 0.4, 1.2]},
             layout="constrained",   # <- modern replacement for constrained_layout=True
@@ -96,7 +97,7 @@ class FootStepAndRewardPlotter:
         for t in time_steps:
             if self.left_footsteps[t]:
                 ax_lf.axvline(x=t, color='black', linewidth=0.8)
-        ax_lf.set_ylabel('LF', fontsize=FONT_SIZE, rotation=0, labelpad=20)
+        ax_lf.set_ylabel('LF', fontsize=AXIS_FONT_SIZE, rotation=0, labelpad=20, va='center')
         ax_lf.set_ylim(0, 1)
         ax_lf.set_yticks([])
         ax_lf.spines['left'].set_visible(False)
@@ -108,7 +109,7 @@ class FootStepAndRewardPlotter:
         for t in time_steps:
             if self.right_footsteps[t]:
                 ax_rf.axvline(x=t, color='black', linewidth=0.8)
-        ax_rf.set_ylabel('RF', fontsize=FONT_SIZE, rotation=0, labelpad=20)
+        ax_rf.set_ylabel('RF', fontsize=AXIS_FONT_SIZE, rotation=0, labelpad=20, va='center')
         ax_rf.set_ylim(0, 1)
         ax_rf.set_yticks([])
         ax_rf.spines['left'].set_visible(False)
@@ -123,15 +124,14 @@ class FootStepAndRewardPlotter:
         # Remove default x-axis padding so the plot runs exactly from the first to last timestep specified
         ax_r.set_xlim(time_steps[0], time_steps[-1])
 
-        ax_r.set_ylabel('Reward', fontsize=FONT_SIZE)
-        ax_r.set_xlabel('Timestep', fontsize=FONT_SIZE)
+        ax_r.set_ylabel('Reward', fontsize=AXIS_FONT_SIZE)
+        ax_r.set_xlabel('Timestep', fontsize=AXIS_FONT_SIZE)
+        for ax in axes:
+            ax.tick_params(axis='both', labelsize=AXIS_FONT_SIZE)
         ax_r.grid(True, alpha=0.3, linestyle='--')
         print(f"Reward range: [{reward_min:.4f}, {reward_max:.4f}]")
         
-        # Adjust layout with explicit bottom margin to prevent xlabel cutoff
-        plt.tight_layout()
-        plt.subplots_adjust(bottom=0.12)  # Add bottom margin to ensure xlabel is visible
-        plt.show()
+        # plt.show()
         
         self.last_fig = fig
         return fig

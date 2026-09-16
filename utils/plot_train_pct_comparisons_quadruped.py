@@ -430,14 +430,14 @@ def plot_multiple_experiments(
 
 def main():
     """Main function to run the plotting script."""
-    base_dir = "../logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd"
+    base_dir = "../logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_ablations"
 
     env_pattern = "quadruped-velocity_tracking"
     title_suffix = "Quadruped Velocity Tracking - Velocity Only Reward"
     reward_output_file = "quadruped_experiment_comparison_ribbon.png"
     time_output_file = "quadruped_training_time_comparison_ribbon.png"
 
-    percentages_to_plot = [0, 25, 50]
+    percentages_to_plot = [0, 25, 50, 75, 100]
 
     plot_rewards = True
     plot_time = False

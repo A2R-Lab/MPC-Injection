@@ -13,7 +13,10 @@ import matplotlib.pyplot as plt
 from umap import UMAP
 import re
 
-FONT_SIZE = 18
+TITLE_FONT_SIZE = 24
+AXIS_LABEL_FONT_SIZE = 26
+TICK_LABEL_FONT_SIZE = 26
+LEGEND_FONT_SIZE = 24
 
 def load_trajectory_data(npz_file: Path, data_type: str = 'observations'):
     """
@@ -154,9 +157,7 @@ def create_umap_comparison_plot(obs1, obs2, label1, label2, checkpoint_num, outp
     embedding1 = embedding[:n1]
     embedding2 = embedding[n1:]
     
-    # Create plot
-    fig, ax = plt.subplots(figsize=(10, 8))
-    # commented out 3D plot
+    # Create 3D plot.
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     
@@ -166,20 +167,38 @@ def create_umap_comparison_plot(obs1, obs2, label1, label2, checkpoint_num, outp
     ax.scatter(embedding2[:, 0], embedding2[:, 1], embedding2[:, 2], # embedding1[:, 2] for 3D
               c='#ff7f0e', alpha=0.6, s=10, label=label2, rasterized=True)
     
-    ax.set_xlabel('UMAP Dimension 1', fontsize=FONT_SIZE)
-    ax.set_ylabel('UMAP Dimension 2', fontsize=FONT_SIZE)
-    ax.set_zlabel('UMAP Dimension 3', fontsize=FONT_SIZE)  # For 3D plot
+    ax.set_xlabel('UMAP Dim 1', fontsize=AXIS_LABEL_FONT_SIZE, labelpad=12)
+    ax.set_ylabel('UMAP Dim 2', fontsize=AXIS_LABEL_FONT_SIZE, labelpad=12)
+    ax.set_zlabel('UMAP Dim 3', fontsize=AXIS_LABEL_FONT_SIZE, labelpad=12)  # For 3D plot
+    ax.tick_params(axis='x', labelsize=TICK_LABEL_FONT_SIZE)
+    ax.tick_params(axis='y', labelsize=TICK_LABEL_FONT_SIZE)
+    ax.tick_params(axis='z', labelsize=TICK_LABEL_FONT_SIZE)
     
     # Create title based on data type
     data_type_label = 'Observations' if data_type == 'observations' else 'State'
-    ax.set_title(f'{data_type_label} Distribution Comparison at Checkpoint {checkpoint_num:,}', 
-                fontsize=FONT_SIZE+2, fontweight='bold')
-    ax.legend(fontsize=FONT_SIZE, loc='best')
+    ax.set_title(f'{data_type_label} Distributions at Checkpoint {checkpoint_num:,}', 
+                fontsize=TITLE_FONT_SIZE, fontweight='bold')
+    ax.legend(fontsize=LEGEND_FONT_SIZE, loc='best')
     ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close()
+
+    fig.subplots_adjust(left=0.04, right=0.82, bottom=0.08, top=0.90)
+    bbox_extra_artists = [
+        ax.xaxis.label,
+        ax.yaxis.label,
+        ax.zaxis.label,
+        ax.title,
+    ]
+    if ax.legend_ is not None:
+        bbox_extra_artists.append(ax.legend_)
+
+    fig.savefig(
+        output_path,
+        dpi=150,
+        bbox_inches='tight',
+        bbox_extra_artists=bbox_extra_artists,
+        pad_inches=0.3,
+    )
+    plt.close(fig)
     
     print(f"  Saved plot to: {output_path}")
 
@@ -195,8 +214,8 @@ def main():
     # ============================================================================
     
     # Directories containing trajectory data
-    DIR1 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
-    DIR2 = Path(__file__).parent / "model_traj_data/walker-walk-SAC-MPC-20260107-112659-percentage-25pct"
+    DIR1 = Path(__file__).parent / "model_traj_data_walker/walker-walk-SAC-MPC-20260107-112012-percentage-0pct"
+    DIR2 = Path(__file__).parent / "model_traj_data_walker/walker-walk-SAC-MPC-20260107-112659-percentage-25pct"
     
     # Labels for the two datasets (used in plot legend)
     LABEL1 = "0% MPC-Injection"

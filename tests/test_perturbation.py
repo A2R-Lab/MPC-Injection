@@ -4,12 +4,12 @@ Test script to verify MuJoCo xfrc_applied behavior
 """
 
 import numpy as np
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 
 # Create environment
-dm_env = suite.load(domain_name='walker', task_name='walk')
+dm_env = load_dm_control_env(domain_name='walker', task_name='walk')
 gym_env = DmControlCompatibilityV0(dm_env, render_mode=None)
 gym_env = FlattenObservation(gym_env)
 

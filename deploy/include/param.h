@@ -43,6 +43,10 @@ inline std::filesystem::path bin_path;
 inline std::filesystem::path proj_dir;
 inline std::filesystem::path config_dir;
 inline YAML::Node config;
+inline bool policy_dir_override_enabled = false;
+inline std::filesystem::path policy_dir_override;
+inline bool torque_output_enabled = false;
+inline std::filesystem::path torque_output;
 
 inline std::filesystem::path get_bin_path() {
     std::vector<char> path(1024);
@@ -85,6 +89,10 @@ inline void load_config_file()
 
 inline std::filesystem::path parser_policy_dir(std::filesystem::path policy_dir)
 {
+    if (policy_dir_override_enabled) {
+        policy_dir = policy_dir_override;
+    }
+
     // Load Policy
     if (policy_dir.is_relative()) {
         policy_dir = param::proj_dir / policy_dir;
@@ -130,6 +138,8 @@ inline po::variables_map helper(int argc, char** argv)
         ("version,v", "show version")
         ("log", "record log file")
         ("network,n", po::value<std::string>()->default_value(""), "dds network interface")
+        ("policy_dir", po::value<std::string>(), "override policy directory")
+        ("torque_output", po::value<std::string>(), "write hardware tau_est trace to .npz file")
         ;
 
     po::variables_map vm;
@@ -156,6 +166,17 @@ inline po::variables_map helper(int argc, char** argv)
     {
         std::filesystem::create_directories(proj_dir / "log");
         spdlog::create_logger(proj_dir.string() + "/log/log.txt");
+    }
+    if (vm.count("policy_dir") && !vm["policy_dir"].as<std::string>().empty())
+    {
+        policy_dir_override_enabled = true;
+        policy_dir_override = vm["policy_dir"].as<std::string>();
+        spdlog::info("Policy directory override: {}", policy_dir_override.string());
+    }
+    if (vm.count("torque_output") && !vm["torque_output"].as<std::string>().empty())
+    {
+        torque_output_enabled = true;
+        torque_output = vm["torque_output"].as<std::string>();
     }
 
     return vm;

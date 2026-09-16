@@ -115,12 +115,18 @@ def resolve_use_go2_sysid(config: dict, cli_override: bool | None) -> bool:
     return bool(config.get("use_go2_sysid", True))
 
 
-def build_quadruped_env(*, robot: str, simple_reward: bool, use_go2_sysid: bool):
+def build_quadruped_env(
+    *,
+    robot: str,
+    simple_reward: bool,
+    use_go2_sysid: bool,
+    render_mode: str | None = None,
+):
     """Create the nominal non-domain-randomized quadruped env."""
     return gym.make(
         "QuadrupedVelocityTracking-v0",
         robot=robot,
-        render_mode=None,
+        render_mode=render_mode,
         domain_rand_cfg=DomainRandomizationConfig(enable=False, push_robots=False),
         simple_reward=simple_reward,
         use_go2_sysid=use_go2_sysid,
@@ -142,7 +148,7 @@ def make_model_env(*, robot: str, simple_reward: bool, use_go2_sysid: bool):
 
 def load_model_and_vecnormalize(
     run_dir: Path,
-    checkpoint_step: int,
+    checkpoint_step: int | None,
     *,
     algorithm: str,
     robot: str,
@@ -156,8 +162,14 @@ def load_model_and_vecnormalize(
         use_go2_sysid=use_go2_sysid,
     )
 
-    vecnormalize_path = run_dir / "checkpoints" / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
-    model_path = run_dir / "checkpoints" / f"model_{checkpoint_step}_steps.zip"
+    if checkpoint_step is None:
+        vecnormalize_path = run_dir / "vec_normalize.pkl"
+        model_path = run_dir / "final_model.zip"
+    else:
+        vecnormalize_path = (
+            run_dir / "checkpoints" / f"model_vecnormalize_{checkpoint_step}_steps.pkl"
+        )
+        model_path = run_dir / "checkpoints" / f"model_{checkpoint_step}_steps.zip"
 
     if not vecnormalize_path.exists():
         raise FileNotFoundError(f"VecNormalize file not found: {vecnormalize_path}")
@@ -463,15 +475,20 @@ def save_trajectory_data(
     trajectory_data: dict,
     *,
     output_dir: Path,
-    checkpoint_step: int,
+    checkpoint_step: int | None,
     run_dir: Path,
 ) -> Path:
     """Save one trajectory bundle to disk."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"trajectories_step_{checkpoint_step}.npz"
+    output_file = (
+        output_dir / "trajectories_final_model.npz"
+        if checkpoint_step is None
+        else output_dir / f"trajectories_step_{checkpoint_step}.npz"
+    )
     np.savez_compressed(
         output_file,
-        checkpoint_step=checkpoint_step,
+        checkpoint_step=-1 if checkpoint_step is None else checkpoint_step,
+        model_source="final_model" if checkpoint_step is None else "checkpoint",
         run_name=run_dir.name,
         run_dir=str(run_dir),
         **trajectory_data,
@@ -515,6 +532,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_CHECKPOINT_STEP,
         help=f"Checkpoint interval. Default: {DEFAULT_CHECKPOINT_STEP}",
+    )
+    parser.add_argument(
+        "--final-model",
+        action="store_true",
+        help=(
+            "Record run_dir/final_model.zip with run_dir/vec_normalize.pkl instead "
+            "of numbered checkpoint artifacts."
+        ),
     )
     parser.add_argument(
         "--max-control-steps",
@@ -574,9 +599,13 @@ def main():
     config = load_config(run_dir)
     algorithm = detect_algorithm(run_dir, config)
     use_go2_sysid = resolve_use_go2_sysid(config, args.use_go2_sysid)
-    checkpoints = list(
-        range(args.start_checkpoint, args.end_checkpoint + 1, args.checkpoint_step)
-    )
+    checkpoints: list[int | None]
+    if args.final_model:
+        checkpoints = [None]
+    else:
+        checkpoints = list(
+            range(args.start_checkpoint, args.end_checkpoint + 1, args.checkpoint_step)
+        )
 
     print("=" * 80)
     print("Recording Quadruped Policy Trajectories")
@@ -590,7 +619,13 @@ def main():
     print(f"Robot: {args.robot}")
     print(f"Go2 sysID joint dynamics: {'ENABLED' if use_go2_sysid else 'DISABLED'}")
     print(f"Nominal domain randomization: disabled")
-    print(f"Checkpoints: {checkpoints[0]} -> {checkpoints[-1]} (step {args.checkpoint_step})")
+    if args.final_model:
+        print("Model source: final_model.zip with vec_normalize.pkl")
+    else:
+        print(
+            f"Checkpoints: {checkpoints[0]} -> {checkpoints[-1]} "
+            f"(step {args.checkpoint_step})"
+        )
     print(f"Max control steps: {args.max_control_steps}")
     print(f"Seed: {args.seed}")
 
@@ -599,7 +634,8 @@ def main():
 
     for idx, checkpoint_step in enumerate(checkpoints, start=1):
         print("\n" + "-" * 80)
-        print(f"[{idx}/{len(checkpoints)}] Checkpoint {checkpoint_step}")
+        model_label = "final_model" if checkpoint_step is None else f"checkpoint {checkpoint_step}"
+        print(f"[{idx}/{len(checkpoints)}] {model_label}")
         print("-" * 80)
         try:
             model, vec_env = load_model_and_vecnormalize(

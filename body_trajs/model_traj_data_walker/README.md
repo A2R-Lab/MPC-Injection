@@ -1,1 +1,0 @@
-This is where the body trajectory data for each model's checkpoints are stored.

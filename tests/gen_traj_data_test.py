@@ -25,7 +25,7 @@ Usage Examples:
 """
 
 import numpy as np
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 import matplotlib.pyplot as plt
@@ -257,7 +257,7 @@ def test_trajectory_in_environment(data_dir, domain_name='cartpole', task_name='
     
     if env_config['env_type'] == 'dm_control':
         # DM Control environment
-        dm_env = suite.load(domain_name=domain_name, task_name=task_name)
+        dm_env = load_dm_control_env(domain_name=domain_name, task_name=task_name)
         env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
         env = FlattenObservation(env)
     else:

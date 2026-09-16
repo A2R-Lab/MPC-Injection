@@ -20,9 +20,13 @@ except ModuleNotFoundError as exc:
 
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "plots" / "body_trajectory_plots"
-FONT_SIZE = 18
+TITLE_FONT_SIZE = 20
+AXIS_LABEL_FONT_SIZE = 23
+TICK_LABEL_FONT_SIZE = 22
+LEGEND_FONT_SIZE = 17
 PURE_RL_COLOR = "#1f77b4"
 MPC_INJECTION_COLOR = "#ff7f0e"
+AMP_MPC_COLOR = "#2ca02c"
 
 # Edit these to choose which rollout timesteps to include in the CDF.
 PLOT_TIMESTEP_START = 0
@@ -30,13 +34,12 @@ PLOT_TIMESTEP_END = None
 
 plt.rcParams.update(
     {
-        "font.size": FONT_SIZE,
-        "axes.labelsize": FONT_SIZE,
-        "axes.titlesize": FONT_SIZE + 2,
-        "figure.titlesize": FONT_SIZE + 2,
-        "xtick.labelsize": FONT_SIZE - 2,
-        "ytick.labelsize": FONT_SIZE - 2,
-        "legend.fontsize": FONT_SIZE - 1,
+        "axes.labelsize": AXIS_LABEL_FONT_SIZE,
+        "axes.titlesize": TITLE_FONT_SIZE,
+        "figure.titlesize": TITLE_FONT_SIZE,
+        "xtick.labelsize": TICK_LABEL_FONT_SIZE,
+        "ytick.labelsize": TICK_LABEL_FONT_SIZE,
+        "legend.fontsize": LEGEND_FONT_SIZE,
     }
 )
 
@@ -180,7 +183,32 @@ def compute_empirical_cdf(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return sorted_values, cdf
 
 
-def make_trajectory_label(trajectory_path: Path) -> str:
+def make_trajectory_label(
+    trajectory_path: Path, data: np.lib.npyio.NpzFile | None = None
+) -> str:
+    if (
+        data is not None
+        and
+        "is_hardware_tau_est" in data.files
+        and np.any(np.asarray(data["is_hardware_tau_est"], dtype=np.uint8) == 1)
+    ):
+        hardware_label_by_name = {
+            "amp_mpc": "AMP-MPC",
+            "mpc_injection": "25% MPC-Injection",
+            "reward_shaping": "Reward-Shaping",
+        }
+        trajectory_name = trajectory_path.stem.lower()
+        for name, label in hardware_label_by_name.items():
+            if name in trajectory_name:
+                return label
+        return "Hardware estimated output torque (tau_est)"
+
+    if "amp_mpc" in str(trajectory_path).lower():
+        return "AMP-MPC"
+
+    if "quadruped-velocity_tracking-td3-" in str(trajectory_path).lower():
+        return "Reward-Shaping"
+
     match = re.search(r"percentage-(\d+)pct", trajectory_path.parent.name)
     if match:
         pct = int(match.group(1))
@@ -191,6 +219,12 @@ def make_trajectory_label(trajectory_path: Path) -> str:
 
 
 def make_trajectory_color(trajectory_path: Path) -> str | None:
+    if "amp_mpc" in str(trajectory_path).lower():
+        return AMP_MPC_COLOR
+
+    if "quadruped-velocity_tracking-td3-" in str(trajectory_path).lower():
+        return PURE_RL_COLOR
+
     match = re.search(r"percentage-(\d+)pct", trajectory_path.parent.name)
     if not match:
         return None
@@ -218,7 +252,7 @@ def main() -> None:
         if not trajectory_path.exists():
             raise FileNotFoundError(f"Trajectory file not found: {trajectory_path}")
 
-    fig, ax = plt.subplots(figsize=(6.6, 4.6), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(6.6, 6.5), constrained_layout=True)
     fig.suptitle(
         "Quadruped Average Motor Torque\nMagnitude CDF",
         fontweight="bold",
@@ -229,7 +263,7 @@ def main() -> None:
         ensure_keys(data, ["tau_applied"])
         avg_torque_magnitude = compute_average_torque_magnitude(data)
         x_axis, cdf = compute_empirical_cdf(avg_torque_magnitude)
-        label = make_trajectory_label(trajectory_path)
+        label = make_trajectory_label(trajectory_path, data)
         ax.plot(
             x_axis,
             cdf,
@@ -240,11 +274,11 @@ def main() -> None:
         )
         print(f"{label}: {summarize_torque_distribution(avg_torque_magnitude)}")
 
-    ax.set_xlabel("Average Motor Torque Magnitude (Nm)")
+    ax.set_xlabel("Avg. Motor Torque Magnitude (Nm)")
     ax.set_ylabel("Empirical CDF")
     ax.set_ylim(0.0, 1.01)
     ax.margins(x=0.01, y=0.02)
-    ax.tick_params(axis="both")
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
     ax.grid(True, alpha=0.25)
     ax.legend(loc="lower right")
 

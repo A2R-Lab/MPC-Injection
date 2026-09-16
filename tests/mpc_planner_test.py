@@ -7,7 +7,7 @@ The main purpose is to ensure the functions are working as expected before integ
 """
 
 import numpy as np
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 import matplotlib.pyplot as plt
@@ -500,7 +500,7 @@ def planner_test_walker_walk():
     
     # Create walker environment from dm_control with fixed random seed for consistency
     # Use tracking camera that follows the walker
-    dm_env = suite.load(domain_name="walker", task_name="walk", 
+    dm_env = load_dm_control_env(domain_name="walker", task_name="walk", 
                         task_kwargs={'random': np.random.RandomState(42)})
     
     # Wrap with gymnasium compatibility and set render parameters
@@ -714,7 +714,7 @@ def planner_test_cartpole_swingup():
     print(f"Downsample factor: {planner.steps_per_agent_update}")
     
     # Create cartpole environment from dm_control with fixed random seed for consistency
-    dm_env = suite.load(domain_name="cartpole", task_name="swingup", 
+    dm_env = load_dm_control_env(domain_name="cartpole", task_name="swingup", 
                         task_kwargs={'random': np.random.RandomState(42)})
     env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
     env = FlattenObservation(env)
@@ -953,7 +953,7 @@ def downsample_test():
     
     # Create cartpole environment from dm_control
     print("\nCreating cartpole environment...")
-    dm_env = suite.load(domain_name="cartpole", task_name="swingup")
+    dm_env = load_dm_control_env(domain_name="cartpole", task_name="swingup")
     env = DmControlCompatibilityV0(dm_env, render_mode="rgb_array")
     env = FlattenObservation(env)
     

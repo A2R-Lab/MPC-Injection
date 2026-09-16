@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 import json
 import numpy as np
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -32,7 +32,7 @@ def load_config(run_dir: Path):
 
 def make_dm_env(domain: str, task: str, render_mode='rgb_array', seed=None):
     """Create a dm_control environment wrapped for gymnasium."""
-    dm_env = suite.load(domain_name=domain, task_name=task)
+    dm_env = load_dm_control_env(domain_name=domain, task_name=task)
     gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
     gym_env = FlattenObservation(gym_env)
     if seed is not None:
@@ -326,14 +326,13 @@ def main():
     
     # Path to the run directory containing checkpoints
     # SAC-MPC
-    RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-174609-percentage-0pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-175353-percentage-25pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-180255-percentage-50pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-181210-percentage-75pct")
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260202-182406-percentage-100pct")
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    RUN_DIR = parser.parse_args().run_dir
 
     # TD3-MPC
-    #RUN_DIR = Path("/home/roy/MPC-RL/logs/TD3-MPC-walker-velocity_only_reward/3rd_run/walker-walk-TD3-MPC-20260203-160914-percentage-25pct/")
     
     # Range of checkpoints to process (inclusive, step by 25000)
     START_CHECKPOINT = 25_000

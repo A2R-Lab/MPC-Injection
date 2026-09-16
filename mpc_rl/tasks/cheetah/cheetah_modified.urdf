@@ -1,0 +1,295 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="converted_robot">
+   
+   <link name="world">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.0" />
+         <inertia ixx="0.0" iyy="0.0" izz="0.0" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <link name="torso">
+      <inertial>
+         <origin xyz="0.16077785102175343 0.0 0.017864205669083713" rpy="1.5248001360530306 0.0 1.5707963267948966" />
+         <mass value="5.963217745332024" />
+         <inertia ixx="1.859423300146082" iyy="1.849936245078124" izz="0.01571961528135071" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.0 0.0 0.0" rpy="0.0 1.5707963267948966 0.0" /><geometry><cylinder radius="0.046" length="1.6" /></geometry><material name="torso_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.8 0.0 4.898587196589413e-17" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="torso_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.8 0.0 -4.898587196589413e-17" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="torso_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.9 0.0 0.1" rpy="0.0 0.8726646259971648 0.0" /><geometry><cylinder radius="0.046" length="0.3" /></geometry><material name="head_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="1.0149066664678468 0.0 0.19641814145298092" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="head_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.7850933335321533 0.0 0.003581858547019104" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="head_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="rootx_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="fixed" name="rootx">
+      <parent link="world" />
+      <child link="rootx_jointbody" />
+      <origin xyz="0.0 0.0 0.7" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="rootz_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="fixed" name="rootz">
+      <parent link="rootx_jointbody" />
+      <child link="rootz_jointbody" />
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="rooty_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="rooty">
+      <parent link="rootz_jointbody" />
+      <child link="rooty_jointbody" />
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="0.0" upper="0.0" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="rooty_offset">
+      <parent link="rooty_jointbody" />
+      <child link="torso" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="bthigh">
+      <inertial>
+         <origin xyz="0.1 0.0 -0.13" rpy="3.141592653589793 0.6632251157578448 3.141592653589793" />
+         <mass value="1.035799522673031" />
+         <inertia ixx="0.011303656212270112" iyy="0.011303656212270112" izz="0.0010576138144040431" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.1 0.0 -0.13" rpy="0.0 -3.8048177693476384 0.0" /><geometry><cylinder radius="0.046" length="0.29" /></geometry><material name="bthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.18927091392222045 0.0 -0.2442615592729747" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="bthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.010729086077779573 0.0 -0.01573844072702532" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="bthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="bthigh_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="bthigh">
+      <parent link="torso" />
+      <child link="bthigh_jointbody" />
+      <origin xyz="-0.8 0.0 0.0" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-0.5235987755982988" upper="1.0471975511965976" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="bthigh_offset">
+      <parent link="bthigh_jointbody" />
+      <child link="bthigh" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="bshin">
+      <inertial>
+         <origin xyz="-0.14 0.0 -0.07" rpy="3.141592653589793 -1.117010721276371 3.141592653589793" />
+         <mass value="1.0652814825214094" />
+         <inertia ixx="0.012258635855678785" iyy="0.012258635855678785" izz="0.0010888057279236274" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="-0.14 0.0 -0.07" rpy="0.0 -2.0245819323134224 0.0" /><geometry><cylinder radius="0.046" length="0.3" /></geometry><material name="bshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.27481910694487505 0.0 -0.13575567201836164" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="bshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.00518089305512498 0.0 -0.004244327981638388" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="bshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="bshin_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="bshin">
+      <parent link="bthigh" />
+      <child link="bshin_jointbody" />
+      <origin xyz="0.16 0.0 -0.25" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-0.8726646259971648" upper="0.8726646259971648" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="bshin_offset">
+      <parent link="bshin_jointbody" />
+      <child link="bshin" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="bfoot">
+      <inertial>
+         <origin xyz="0.03 0.0 -0.097" rpy="0.0 -0.26179938779914935 0.0" />
+         <mass value="0.7350835322195705" />
+         <inertia ixx="0.004262892489119753" iyy="0.004262892489119753" izz="0.000739456296504282" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.03 0.0 -0.097" rpy="0.0 -0.2617993877991494 0.0" /><geometry><cylinder radius="0.046" length="0.188" /></geometry><material name="bfoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.005671009760363048 0.0 -0.006202972328827577" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="bfoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.05432899023963695 0.0 -0.18779702767117243" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="bfoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="bfoot_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="bfoot">
+      <parent link="bshin" />
+      <child link="bfoot_jointbody" />
+      <origin xyz="-0.28 0.0 -0.14" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-4.014257279586958" upper="0.8726646259971648" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="bfoot_offset">
+      <parent link="bfoot_jointbody" />
+      <child link="bfoot" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="mthigh">
+      <inertial>
+         <origin xyz="0.1 0.0 -0.13" rpy="3.141592653589793 0.6632251157578448 3.141592653589793" />
+         <mass value="1.035799522673031" />
+         <inertia ixx="0.011303656212270112" iyy="0.011303656212270112" izz="0.0010576138144040431" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.1 0.0 -0.13" rpy="0.0 -3.8048177693476384 0.0" /><geometry><cylinder radius="0.046" length="0.29" /></geometry><material name="mthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.18927091392222045 0.0 -0.2442615592729747" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="mthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.010729086077779573 0.0 -0.01573844072702532" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="mthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="mthigh_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="mthigh">
+      <parent link="torso" />
+      <child link="mthigh_jointbody" />
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-0.5235987755982988" upper="1.0471975511965976" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="mthigh_offset">
+      <parent link="mthigh_jointbody" />
+      <child link="mthigh" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="mshin">
+      <inertial>
+         <origin xyz="-0.14 0.0 -0.07" rpy="3.141592653589793 -1.117010721276371 3.141592653589793" />
+         <mass value="1.0652814825214094" />
+         <inertia ixx="0.012258635855678785" iyy="0.012258635855678785" izz="0.0010888057279236274" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="-0.14 0.0 -0.07" rpy="0.0 -2.0245819323134224 0.0" /><geometry><cylinder radius="0.046" length="0.3" /></geometry><material name="mshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.27481910694487505 0.0 -0.13575567201836164" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="mshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.00518089305512498 0.0 -0.004244327981638388" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="mshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="mshin_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="mshin">
+      <parent link="mthigh" />
+      <child link="mshin_jointbody" />
+      <origin xyz="0.16 0.0 -0.25" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-0.8726646259971648" upper="0.8726646259971648" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="mshin_offset">
+      <parent link="mshin_jointbody" />
+      <child link="mshin" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="mfoot">
+      <inertial>
+         <origin xyz="0.03 0.0 -0.097" rpy="0.0 -0.26179938779914935 0.0" />
+         <mass value="0.7350835322195705" />
+         <inertia ixx="0.004262892489119753" iyy="0.004262892489119753" izz="0.000739456296504282" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.03 0.0 -0.097" rpy="0.0 -0.2617993877991494 0.0" /><geometry><cylinder radius="0.046" length="0.188" /></geometry><material name="mfoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.005671009760363048 0.0 -0.006202972328827577" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="mfoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.05432899023963695 0.0 -0.18779702767117243" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="mfoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="mfoot_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="mfoot">
+      <parent link="mshin" />
+      <child link="mfoot_jointbody" />
+      <origin xyz="-0.28 0.0 -0.14" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-4.014257279586958" upper="0.8726646259971648" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="mfoot_offset">
+      <parent link="mfoot_jointbody" />
+      <child link="mfoot" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="fthigh">
+      <inertial>
+         <origin xyz="-0.07 0.0 -0.12" rpy="0.0 0.5235987755982991 0.0" />
+         <mass value="0.9650428190369228" />
+         <inertia ixx="0.009220201488137025" iyy="0.009220201488137025" izz="0.0009827532219570407" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="-0.07 0.0 -0.12" rpy="0.0 0.5235987755982988 0.0" /><geometry><cylinder radius="0.046" length="0.266" /></geometry><material name="fthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.003500000000000017 0.0 -0.004818621296669642" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="fthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="-0.1365 0.0 -0.23518137870333033" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="fthigh_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="fthigh_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="fthigh">
+      <parent link="torso" />
+      <child link="fthigh_jointbody" />
+      <origin xyz="0.8 0.0 0.0" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-0.9948376736367679" upper="0.006981317007977318" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="fthigh_offset">
+      <parent link="fthigh_jointbody" />
+      <child link="fthigh" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="fshin">
+      <inertial>
+         <origin xyz="0.065 0.0 -0.09" rpy="0.0 -0.593411945678072 0.0" />
+         <mass value="0.8058402358556788" />
+         <inertia ixx="0.005517573943563105" iyy="0.005517573943563105" izz="0.0008143168889512844" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.065 0.0 -0.09" rpy="0.0 -0.5934119456780721 0.0" /><geometry><cylinder radius="0.046" length="0.212" /></geometry><material name="fshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.005725552232100833 0.0 -0.002122017309165586" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="fshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.12427444776789917 0.0 -0.1778779826908344" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="fshin_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="fshin_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="fshin">
+      <parent link="fthigh" />
+      <child link="fshin_jointbody" />
+      <origin xyz="-0.14 0.0 -0.24" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-1.2217304763960306" upper="0.8726646259971648" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="fshin_offset">
+      <parent link="fshin_jointbody" />
+      <child link="fshin" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+   <link name="ffoot">
+      <inertial>
+         <origin xyz="0.045 0.0 -0.07" rpy="0.0 -0.593411945678072 0.0" />
+         <mass value="0.5935701249473536" />
+         <inertia ixx="0.0023682638214235574" iyy="0.0023682638214235574" izz="0.0005897351116102766" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   <visual><origin xyz="0.045 0.0 -0.07" rpy="0.0 -0.5934119456780721 0.0" /><geometry><cylinder radius="0.046" length="0.14" /></geometry><material name="ffoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.005856496757047712 0.0 -0.011967369921147088" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="ffoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual><visual><origin xyz="0.08414350324295228 0.0 -0.12803263007885293" rpy="0 0 0" /><geometry><sphere radius="0.046" /></geometry><material name="ffoot_material"><color rgba="1.0 0.5 0.0 1.0" /></material></visual></link>
+   <link name="ffoot_jointbody">
+      <inertial>
+         <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+         <mass value="0.001" />
+         <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0" ixz="0" iyz="0" />
+      </inertial>
+   </link>
+   <joint type="revolute" name="ffoot">
+      <parent link="fshin" />
+      <child link="ffoot_jointbody" />
+      <origin xyz="0.13 0.0 -0.18" rpy="0.0 0.0 0.0" />
+      <axis xyz="0.0 1.0 0.0" />
+      <limit lower="-0.4886921905584123" upper="0.4886921905584123" effort="100" velocity="100" />
+   </joint>
+   <joint type="fixed" name="ffoot_offset">
+      <parent link="ffoot_jointbody" />
+      <child link="ffoot" />
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+   </joint>
+</robot>

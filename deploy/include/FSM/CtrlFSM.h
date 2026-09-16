@@ -72,7 +72,22 @@ public:
     
     ~CtrlFSM()
     {
+        stop();
         states.clear();
+    }
+
+    void stop()
+    {
+        if (stopped_)
+        {
+            return;
+        }
+        stopped_ = true;
+        fsm_thread_.reset();
+        if (currentState)
+        {
+            currentState->exit();
+        }
     }
 
     std::vector<std::shared_ptr<BaseState>> states;
@@ -114,4 +129,5 @@ private:
 
     std::shared_ptr<BaseState> currentState;
     unitree::common::RecurrentThreadPtr fsm_thread_;
+    bool stopped_ = false;
 };

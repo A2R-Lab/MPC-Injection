@@ -4,26 +4,228 @@ Quick script to convert a MuJoCo MJCF model to a proper URDF file.
 Uses mjcf-urdf-simple-converter for proper MJCF to URDF conversion.
 https://github.com/Yasu31/mjcf_urdf_simple_converter
 
-NOTE: The xmls come from ~/MPC-RL/mpc_rl/tasks/walker/walker_modified.xml
+By default this converts the walker model. Use `--robot cheetah3` to generate
+the local three-legged cheetah URDF used by viser_cheetah3_viz_trajs.py.
 
 This script first cleans the MJCF (removes floor, cameras, lights, material refs)
 then converts to URDF format, and finally adds visual geometry since the converter
 doesn't include visual elements.
 """
 
+import argparse
+import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from mjcf_urdf_simple_converter import convert
 
-# Get paths relative to this script's location
+
+def deg(value: float) -> float:
+    """Convert degrees to radians for URDF rpy values."""
+    return math.radians(value)
+
+
+def get_paths(workspace_root: Path, robot: str):
+    """Return model directory and MJCF/URDF paths for a supported robot."""
+    if robot == "walker":
+        model_dir = workspace_root / "mpc_rl" / "tasks" / "walker"
+        return (
+            model_dir,
+            model_dir / "walker_modified.xml",
+            model_dir / "walker_modified.urdf",
+            model_dir / "walker_temp_for_urdf.xml",
+        )
+    if robot == "cheetah3":
+        model_dir = workspace_root / "mpc_rl" / "tasks" / "cheetah"
+        return (
+            model_dir,
+            model_dir / "cheetah_modified.xml",
+            model_dir / "cheetah_modified.urdf",
+            model_dir / "cheetah_temp_for_urdf.xml",
+        )
+    raise ValueError(f"Unsupported robot: {robot}")
+
+
+def get_visual_specs(robot: str):
+    """Return visual geometry specifications from the original MJCF."""
+    robot_color = (1.0, 0.5, 0.0, 1.0)
+
+    if robot == "walker":
+        return {
+            "torso": {
+                "type": "capsule",
+                "radius": 0.07,
+                "half_length": 0.3,
+                "origin": (0.0, 0.0, 0.0),
+                "rpy": (0.0, 0.0, 0.0),
+                "color": robot_color,
+            },
+            "right_thigh": {
+                "type": "capsule",
+                "radius": 0.05,
+                "half_length": 0.225,
+                "origin": (0.0, 0.0, -0.225),
+                "rpy": (0.0, 0.0, 0.0),
+                "color": robot_color,
+            },
+            "right_leg": {
+                "type": "capsule",
+                "radius": 0.04,
+                "half_length": 0.25,
+                "origin": (0.0, 0.0, 0.0),
+                "rpy": (0.0, 0.0, 0.0),
+                "color": robot_color,
+            },
+            "right_foot": {
+                "type": "capsule",
+                "radius": 0.05,
+                "half_length": 0.1,
+                "origin": (0.0, 0.0, 0.0),
+                "rpy": (0.0, 1.5708, 0.0),
+                "color": robot_color,
+            },
+            "left_thigh": {
+                "type": "capsule",
+                "radius": 0.05,
+                "half_length": 0.225,
+                "origin": (0.0, 0.0, -0.225),
+                "rpy": (0.0, 0.0, 0.0),
+                "color": robot_color,
+            },
+            "left_leg": {
+                "type": "capsule",
+                "radius": 0.04,
+                "half_length": 0.25,
+                "origin": (0.0, 0.0, 0.0),
+                "rpy": (0.0, 0.0, 0.0),
+                "color": robot_color,
+            },
+            "left_foot": {
+                "type": "capsule",
+                "radius": 0.05,
+                "half_length": 0.1,
+                "origin": (0.0, 0.0, 0.0),
+                "rpy": (0.0, 1.5708, 0.0),
+                "color": robot_color,
+            },
+        }
+
+    if robot == "cheetah3":
+        return {
+            "torso": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.8,
+                "origin": (0.0, 0.0, 0.0),
+                "rpy": (0.0, deg(90), 0.0),
+                "color": robot_color,
+            },
+            "bthigh": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.145,
+                "origin": (0.1, 0.0, -0.13),
+                "rpy": (0.0, deg(-218), 0.0),
+                "color": robot_color,
+            },
+            "bshin": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.15,
+                "origin": (-0.14, 0.0, -0.07),
+                "rpy": (0.0, deg(-116), 0.0),
+                "color": robot_color,
+            },
+            "bfoot": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.094,
+                "origin": (0.03, 0.0, -0.097),
+                "rpy": (0.0, deg(-15), 0.0),
+                "color": robot_color,
+            },
+            "mthigh": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.145,
+                "origin": (0.1, 0.0, -0.13),
+                "rpy": (0.0, deg(-218), 0.0),
+                "color": robot_color,
+            },
+            "mshin": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.15,
+                "origin": (-0.14, 0.0, -0.07),
+                "rpy": (0.0, deg(-116), 0.0),
+                "color": robot_color,
+            },
+            "mfoot": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.094,
+                "origin": (0.03, 0.0, -0.097),
+                "rpy": (0.0, deg(-15), 0.0),
+                "color": robot_color,
+            },
+            "fthigh": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.133,
+                "origin": (-0.07, 0.0, -0.12),
+                "rpy": (0.0, deg(30), 0.0),
+                "color": robot_color,
+            },
+            "fshin": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.106,
+                "origin": (0.065, 0.0, -0.09),
+                "rpy": (0.0, deg(-34), 0.0),
+                "color": robot_color,
+            },
+            "ffoot": {
+                "type": "capsule",
+                "radius": 0.046,
+                "half_length": 0.07,
+                "origin": (0.045, 0.0, -0.07),
+                "rpy": (0.0, deg(-34), 0.0),
+                "color": robot_color,
+            },
+        }
+
+    raise ValueError(f"Unsupported robot: {robot}")
+
+
+def get_extra_visual_specs_by_link(robot: str):
+    """Return additional geoms that live on an existing link."""
+    robot_color = (1.0, 0.5, 0.0, 1.0)
+    if robot == "cheetah3":
+        return {
+            "torso": [
+                (
+                    "head",
+                    {
+                        "type": "capsule",
+                        "radius": 0.046,
+                        "half_length": 0.15,
+                        "origin": (0.9, 0.0, 0.1),
+                        "rpy": (0.0, deg(50), 0.0),
+                        "color": robot_color,
+                    },
+                ),
+            ],
+        }
+    return {}
+
+
+parser = argparse.ArgumentParser(description="Convert walker or cheetah3 MJCF to URDF.")
+parser.add_argument("--robot", choices=["walker", "cheetah3"], default="walker")
+args = parser.parse_args()
+
+# Get paths relative to this script's location.
 script_dir = Path(__file__).parent
 workspace_root = script_dir.parent
-walker_dir = workspace_root / "mpc_rl" / "tasks" / "walker"
-
-# Define input and output paths
-mjcf_path = walker_dir / "walker_modified.xml"
-urdf_path = walker_dir / "walker_modified.urdf"
-temp_mjcf_path = walker_dir / "walker_temp_for_urdf.xml"
+model_dir, mjcf_path, urdf_path, temp_mjcf_path = get_paths(workspace_root, args.robot)
 
 print(f"Loading and cleaning MJCF from: {mjcf_path}")
 
@@ -40,8 +242,8 @@ for default in root.findall('.//default'):
 # Find worldbody and remove floor, cameras, and lights that are direct children
 worldbody = root.find('.//worldbody')
 if worldbody is not None:
-    # Remove floor geom
-    for geom in worldbody.findall('./geom[@name="floor"]'):
+    # Remove floor/ground geoms.
+    for geom in worldbody.findall('./geom[@name="floor"]') + worldbody.findall('./geom[@name="ground"]'):
         worldbody.remove(geom)
     
     # Remove cameras that are direct children of worldbody
@@ -101,97 +303,8 @@ print(f"Removed temporary file: {temp_mjcf_path}")
 # ============================================================================
 print("Adding visual geometry to URDF...")
 
-# ============================================================================
-# COLOR CONFIGURATION
-# ============================================================================
-# Colors are specified as RGBA tuples: (Red, Green, Blue, Alpha)
-# Each value ranges from 0.0 to 1.0
-#
-# Example colors:
-#   - Orange:     (1.0, 0.5, 0.0, 1.0)
-#   - Blue:       (0.4, 0.6, 0.8, 1.0)
-#   - Red:        (0.8, 0.4, 0.4, 1.0)
-#   - Green:      (0.4, 0.8, 0.4, 1.0)
-#   - Yellow:     (1.0, 0.9, 0.0, 1.0)
-#   - Purple:     (0.6, 0.3, 0.8, 1.0)
-#   - Cyan:       (0.0, 0.8, 0.8, 1.0)
-#   - White:      (1.0, 1.0, 1.0, 1.0)
-#   - Gray:       (0.5, 0.5, 0.5, 1.0)
-#
-# To customize per-body-part colors, modify the 'color' field in each spec below.
-# Current setup: All body parts are orange to match MuJoCo's default appearance.
-# ============================================================================
-
-# Shared color for all body parts (modify this to change all at once)
-WALKER_COLOR = (1.0, 0.5, 0.0, 1.0)  # Orange - matches MuJoCo default
-
-# Visual geometry specifications from the original MJCF
-# Format: link_name -> specs dict with geometry and color info
-#
-# For capsules (MuJoCo's default): We create a cylinder + 2 sphere end caps
-# MuJoCo capsule: size="radius half_length", so full cylinder length = 2 * half_length
-# The spheres are placed at +/- half_length along the capsule axis
-#
-# To use different colors per body part, replace WALKER_COLOR with a custom tuple:
-#   'color': (0.8, 0.4, 0.4, 1.0),  # Custom red for this part
-visual_specs = {
-    'torso': {
-        'type': 'capsule',
-        'radius': 0.07,
-        'half_length': 0.3,  # Full length = 0.6
-        'origin': (0.0, 0.0, 0.0),
-        'rpy': (0.0, 0.0, 0.0),
-        'color': WALKER_COLOR,
-    },
-    'right_thigh': {
-        'type': 'capsule',
-        'radius': 0.05,
-        'half_length': 0.225,  # Full length = 0.45
-        'origin': (0.0, 0.0, -0.225),
-        'rpy': (0.0, 0.0, 0.0),
-        'color': WALKER_COLOR,
-    },
-    'right_leg': {
-        'type': 'capsule',
-        'radius': 0.04,
-        'half_length': 0.25,  # Full length = 0.5
-        'origin': (0.0, 0.0, 0.0),
-        'rpy': (0.0, 0.0, 0.0),
-        'color': WALKER_COLOR,
-    },
-    'right_foot': {
-        'type': 'capsule',
-        'radius': 0.05,
-        'half_length': 0.1,  # Full length = 0.2
-        'origin': (0.0, 0.0, 0.0),
-        'rpy': (0.0, 1.5708, 0.0),  # Rotated 90 deg around Y (zaxis="1 0 0")
-        'color': WALKER_COLOR,
-    },
-    'left_thigh': {
-        'type': 'capsule',
-        'radius': 0.05,
-        'half_length': 0.225,
-        'origin': (0.0, 0.0, -0.225),
-        'rpy': (0.0, 0.0, 0.0),
-        'color': WALKER_COLOR,
-    },
-    'left_leg': {
-        'type': 'capsule',
-        'radius': 0.04,
-        'half_length': 0.25,
-        'origin': (0.0, 0.0, 0.0),
-        'rpy': (0.0, 0.0, 0.0),
-        'color': WALKER_COLOR,
-    },
-    'left_foot': {
-        'type': 'capsule',
-        'radius': 0.05,
-        'half_length': 0.1,
-        'origin': (0.0, 0.0, 0.0),
-        'rpy': (0.0, 1.5708, 0.0),
-        'color': WALKER_COLOR,
-    },
-}
+visual_specs = get_visual_specs(args.robot)
+extra_visual_specs_by_link = get_extra_visual_specs_by_link(args.robot)
 
 
 def add_capsule_visual(link_element, spec, link_name):
@@ -324,6 +437,11 @@ for link in urdf_root.findall('.//link'):
             color.set('rgba', f"{spec['color'][0]} {spec['color'][1]} {spec['color'][2]} {spec['color'][3]}")
         
         print(f"  Added capsule visual to: {link_name}")
+
+    for extra_name, extra_spec in extra_visual_specs_by_link.get(link_name, []):
+        if extra_spec["type"] == "capsule":
+            add_capsule_visual(link, extra_spec, extra_name)
+            print(f"  Added capsule visual to: {link_name}/{extra_name}")
 
 # Write the updated URDF
 urdf_tree.write(str(urdf_path), encoding='utf-8', xml_declaration=True)

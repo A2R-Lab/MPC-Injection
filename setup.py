@@ -13,6 +13,6 @@ setup(
         "dm-control",
         "shimmy",
     ],
-    python_requires=">=3.8",
-    description="MPC-RL: Model Predictive Control with Reinforcement Learning",
+    python_requires=">=3.11",
+    description="MPC-Injection: Model Predictive Control with Reinforcement Learning",
 )

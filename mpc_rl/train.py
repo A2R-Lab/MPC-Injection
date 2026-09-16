@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 import warnings
 import subprocess
+from collections import Counter
 
 # Configure JAX for GPU with compatible architecture settings
 # Try to detect GPU first
@@ -21,14 +22,13 @@ try:
     # Configuration flags for GPU
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-    os.environ["JAX_PLATFORMS"] = "cuda"
-    os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+    os.environ.setdefault("JAX_PLATFORMS", "cuda")
     gpu_available = True
 except Exception as e:
     print(f"Could not detect GPU compute capability: {e}")
     print("Falling back to CPU")
     # Configure for CPU
-    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 # Suppress JAX warnings and info logs
 warnings.filterwarnings("ignore", category=UserWarning, module="jax")
@@ -41,7 +41,7 @@ from absl import logging
 import gymnasium as gym
 from dataclasses import dataclass
 from typing import Optional
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from sbx import SAC, PPO, TD3
@@ -49,12 +49,13 @@ from sbx import SAC, PPO, TD3
 # SBX (JAX) is used for other environments for speed; SB3 is used for quadruped because
 # asymmetric actor-critic requires custom PyTorch feature extractors.
 from stable_baselines3 import SAC as SB3_SAC, TD3 as SB3_TD3
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, sync_envs_normalization
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 import numpy as np
 import mediapy as media
 import jax
+import torch as th
 
 # Import JAX and verify backend
 import jax
@@ -78,6 +79,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 #from mpc_rl.planner.mpc_planner import MPCPlanner
 from mpc_rl.common import TaggedReplayBuffer, TaggedDictReplayBuffer
 from mpc_rl.common import FixedMPCInjectCallback, PercentMPCInjectCallback, QuadrupedTensorboardCallback
+from mpc_rl.common.quadruped_tensorboard_callback import failure_reason_metric_name
 from mpc_rl.sac_mpc.sac_mpc import SAC_MPC
 from mpc_rl.td3_mpc.td3_mpc import TD3_MPC
 # SB3 (PyTorch) MPC-augmented algorithms for quadruped (supports asymmetric policies + Dict obs)
@@ -86,9 +88,32 @@ from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 
 # Register custom quadruped velocity tracking environment
 import mpc_rl.envs
+from mpc_rl.envs.action_interfaces import (
+    ACTION_INTERFACES,
+    DEFAULT_ACTION_INTERFACE_ID,
+    resolve_action_interface,
+)
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.envs.cheetah3_env import DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL
+from mpc_rl.envs.barrel_roll_common import (
+    ACTION_SCALE as BARREL_ROLL_ACTION_SCALE,
+    CONTROL_DT as BARREL_ROLL_CONTROL_DT,
+    CONTROL_STEPS as BARREL_ROLL_CONTROL_STEPS,
+    FINAL_HOLD_START_TIME as BARREL_ROLL_FINAL_HOLD_START_TIME,
+    HOLD_CONDITION_PRECEDENCE as BARREL_ROLL_HOLD_CONDITIONS,
+    HOLD_FAILURE_REASONS as BARREL_ROLL_HOLD_FAILURE_REASONS,
+    ROLL_START_TIME as BARREL_ROLL_START_TIME,
+    SCHEMA_VERSION as BARREL_ROLL_SCHEMA_VERSION,
+    SPREAD_RANGE as BARREL_ROLL_SPREAD_RANGE,
+    TASK_ID as BARREL_ROLL_TASK_ID,
+)
+from mpc_rl.planner.barrel_roll_dataset import (
+    canonical_json,
+    expected_effective_config,
+    sha256_bytes,
+    sha256_file,
+)
 
 # Asymmetric actor-critic policies for quadruped sim2real training
 from mpc_rl.asym_policies import AsymmetricSACPolicy, AsymmetricTD3Policy
@@ -119,6 +144,13 @@ _USE_GO2_SYSID = flags.DEFINE_boolean(
     "use_go2_sysid", True,
     "Apply the identified Go2 joint-dynamics patch to quadruped envs and MPX "
     "controllers. Disable this to match pre-sysID data and training runs."
+)
+_QUADRUPED_ACTION_INTERFACE = flags.DEFINE_enum(
+    "quadruped_action_interface",
+    DEFAULT_ACTION_INTERFACE_ID,
+    list(ACTION_INTERFACES),
+    "Versioned quadruped residual-position action interface. The default "
+    "preserves action_scale=0.5 and the 5-Hz target filter.",
 )
 _MAX_EPISODE_STEPS = flags.DEFINE_integer(
     "max_episode_steps", 1000, "Maximum number of steps per episode"
@@ -205,6 +237,16 @@ _RANDOM_SELECT = flags.DEFINE_boolean(
 _DATA_DIR = flags.DEFINE_string(
     "data_dir", None, "Directory containing pre-generated MPC trajectories (e.g., 'data/cartpole_0_010dt/' or 'data/walker_0_0025dt/')"
 )
+_QUADRUPED_MPC_REPLAY_MODE = flags.DEFINE_enum(
+    "quadruped_mpc_replay_mode",
+    "direct",
+    ["direct", "torque_saved_pd", "torque_current_pd"],
+    "Quadruped MPC data replay mode. 'direct' injects saved RL transitions "
+    "when available. 'torque_saved_pd' forces torque replay and uses saved "
+    "trajectory PD gains. 'torque_current_pd' forces torque replay but uses "
+    "the current QuadrupedVelocityTrackingEnv PD gains for inverse-PD action "
+    "conversion.",
+)
 
 # Checkpoint flags
 _CHECKPOINT_FREQ = flags.DEFINE_integer(
@@ -256,6 +298,33 @@ _DOMAIN_RAND_OBS_NOISE = flags.DEFINE_float(
 )
 
 
+# G9 checkpoint validation and final-test ranges are disjoint and immutable.
+BARREL_ROLL_VALIDATION_SEEDS = tuple(range(2_000_000, 2_000_100))
+BARREL_ROLL_FINAL_TEST_SEEDS = tuple(range(8_000_000, 8_000_100))
+BARREL_ROLL_VALIDATION_STEPS = tuple(range(0, 500_001, 10_000))
+# Backward-compatible internal name used by the existing callback API.
+BARREL_ROLL_EVAL_SEEDS = BARREL_ROLL_VALIDATION_SEEDS
+BARREL_ROLL_RUNTIME_SOURCE_PATHS = (
+    "mpc_rl/train.py",
+    "mpc_rl/asym_policies/__init__.py",
+    "mpc_rl/asym_policies/asymmetric_policy.py",
+    "mpc_rl/common/__init__.py",
+    "mpc_rl/common/mpc_inject_callbacks.py",
+    "mpc_rl/common/quadruped_tensorboard_callback.py",
+    "mpc_rl/common/tagged_dict_replay_buffer.py",
+    "mpc_rl/common/tagged_replay_buffer.py",
+    "mpc_rl/envs/__init__.py",
+    "mpc_rl/envs/barrel_roll_common.py",
+    "mpc_rl/envs/barrel_roll_env.py",
+    "mpc_rl/envs/domain_randomization.py",
+    "mpc_rl/envs/go2_sysid.py",
+    "mpc_rl/envs/velocity_tracking_env.py",
+    "mpc_rl/planner/barrel_roll_dataset.py",
+    "mpc_rl/sac_mpc/sb3_sac_mpc.py",
+)
+_QUADRUPED_TASKS = ("velocity_tracking", "barrel_roll")
+
+
 @dataclass
 class AllConfig:
     algorithm: str
@@ -275,8 +344,303 @@ class AllConfig:
     num_traj: int
     random_select: bool
     data_dir: str
+    quadruped_mpc_replay_mode: str
+    quadruped_action_interface: str
     use_go2_sysid: bool
     cheetah3_speed_goal: float
+
+
+def validate_quadruped_task(task: str) -> str:
+    """Return a supported quadruped task or fail instead of misrouting it."""
+    if task not in _QUADRUPED_TASKS:
+        valid = ", ".join(_QUADRUPED_TASKS)
+        raise ValueError(f"Unknown quadruped task {task!r}; expected one of: {valid}")
+    return task
+
+
+def validate_barrel_roll_training_options(
+    *,
+    robot: str,
+    algorithm: str,
+    inject_type: str,
+    percentage: int,
+    replay_mode: str,
+    domain_rand_enabled: bool,
+    domain_rand_config_type: str,
+    use_go2_sysid: bool,
+    data_dir: str | None,
+    training_seed: int = 1,
+    total_timesteps: int = 500_000,
+    num_envs: int = 4,
+    max_episode_steps: int = BARREL_ROLL_CONTROL_STEPS,
+    eval_freq: int = 10_000,
+    checkpoint_freq: int = 25_000,
+    enable_logging: bool = True,
+    save_replay_buffer_checkpoints: bool = False,
+    save_replay_buffer_final: bool = False,
+    random_select: bool = True,
+    play_only: bool = False,
+    load_run_name: str | None = None,
+    checkpoint_evals: str | None = None,
+    learning_rate: float = 3.0e-4,
+    buffer_size: int = 1_000_000,
+    learning_starts: int = 10_000,
+    batch_size: int = 256,
+    tau: float = 0.005,
+    gamma: float = 0.99,
+    gradient_steps: int = -1,
+    policy_delay: int = 2,
+) -> None:
+    """Reject options outside the frozen schema-v4 25%-injection task."""
+    incompatible = []
+    if robot.lower() != "go2":
+        incompatible.append("robot must be 'go2'")
+    if algorithm != "SAC-MPC":
+        incompatible.append("algorithm must be 'SAC-MPC'")
+    if inject_type != "percentage":
+        incompatible.append("inject_type must be 'percentage'")
+    if percentage != 25:
+        incompatible.append("percentage must be 25")
+    if replay_mode != "direct":
+        incompatible.append("quadruped_mpc_replay_mode must be 'direct'")
+    if domain_rand_enabled or domain_rand_config_type != "disabled":
+        incompatible.append("domain randomization must be disabled")
+    if not use_go2_sysid:
+        incompatible.append("use_go2_sysid must be enabled")
+    if not data_dir:
+        incompatible.append(
+            f"data_dir must point to validated schema-v{BARREL_ROLL_SCHEMA_VERSION} "
+            "barrel data"
+        )
+    locked_values = {
+        "training seed": (training_seed, (1, 2)),
+        "total_timesteps": (total_timesteps, 500_000),
+        "num_envs": (num_envs, 4),
+        "max_episode_steps": (max_episode_steps, BARREL_ROLL_CONTROL_STEPS),
+        "eval_freq": (eval_freq, 10_000),
+        "checkpoint_freq": (checkpoint_freq, 25_000),
+        "enable_logging": (enable_logging, True),
+        "save_replay_buffer_checkpoints": (
+            save_replay_buffer_checkpoints,
+            False,
+        ),
+        "save_replay_buffer_final": (save_replay_buffer_final, False),
+        "random_select": (random_select, True),
+        "play_only": (play_only, False),
+        "load_run_name": (load_run_name, None),
+        "checkpoint_evals": (checkpoint_evals, None),
+        "learning_rate": (learning_rate, 3.0e-4),
+        "buffer_size": (buffer_size, 1_000_000),
+        "learning_starts": (learning_starts, 10_000),
+        "batch_size": (batch_size, 256),
+        "tau": (tau, 0.005),
+        "gamma": (gamma, 0.99),
+        "gradient_steps": (gradient_steps, -1),
+        "policy_delay": (policy_delay, 2),
+    }
+    for name, (actual, expected) in locked_values.items():
+        if name == "training seed":
+            if actual not in expected:
+                incompatible.append("training seed must be 1 or 2")
+        elif actual != expected:
+            incompatible.append(f"{name} must be {expected!r}")
+    if incompatible:
+        raise ValueError("Incompatible barrel-roll options: " + "; ".join(incompatible))
+
+
+def barrel_roll_config_snapshot(data_dir: str, target_percentage: int) -> dict:
+    """Return the complete frozen task/data/evaluation provenance for config.json."""
+    frozen = expected_effective_config()
+    return {
+        **frozen,
+        "reset": {
+            "sampler": "symmetric_hip_spread",
+            "spread_range_rad": list(BARREL_ROLL_SPREAD_RANGE),
+        },
+        "dataset": {
+            "path": str(Path(data_dir)),
+            "replay_mode": "direct",
+            "schema_version": BARREL_ROLL_SCHEMA_VERSION,
+            "target_mpc_percentage": target_percentage,
+        },
+        "evaluation": {
+            "checkpoint_selection_order": [
+                "strict_success_rate_desc",
+                "mean_final_hold_standing_score_desc",
+                "timesteps_asc",
+            ],
+            "steps": list(BARREL_ROLL_VALIDATION_STEPS),
+            "num_episodes": len(BARREL_ROLL_EVAL_SEEDS),
+            "seeds": list(BARREL_ROLL_EVAL_SEEDS),
+            "final_test_num_episodes": len(BARREL_ROLL_FINAL_TEST_SEEDS),
+            "final_test_seeds": list(BARREL_ROLL_FINAL_TEST_SEEDS),
+        },
+    }
+
+
+def _git_repository_snapshot(path: Path) -> dict:
+    """Return the exact Git revision and tracked-dirty state for one repository."""
+    commit = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise RuntimeError(f"invalid Git revision for {path}: {commit!r}")
+    status_command = [
+        "git",
+        "-C",
+        str(path),
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ]
+    if path.resolve() == Path(__file__).resolve().parents[1]:
+        status_command.extend([
+            "--",
+            ".",
+            ":(exclude)deploy/robots/go2/config/policy/velocity/policies/**",
+        ])
+    status = subprocess.run(
+        status_command,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return {
+        "commit": commit,
+        "tracked_worktree_dirty": bool(status.strip()),
+    }
+
+
+def _barrel_roll_runtime_source_hashes(repo_root: Path) -> dict[str, str]:
+    """Hash every repository source file used by schema-v4 training."""
+    runtime_source_hashes = {}
+    for relative_path in BARREL_ROLL_RUNTIME_SOURCE_PATHS:
+        source_path = repo_root / relative_path
+        if not source_path.is_file():
+            raise FileNotFoundError(
+                f"barrel-roll runtime source is missing: {source_path}"
+            )
+        runtime_source_hashes[relative_path] = sha256_file(source_path)
+    return runtime_source_hashes
+
+
+def barrel_roll_run_provenance(data_dir: str) -> dict:
+    """Validate and serialize v4 source and immutable-dataset provenance."""
+    repo_root = Path(__file__).resolve().parents[1]
+    dataset_dir = Path(data_dir)
+    summary_path = dataset_dir / "dataset_summary.json"
+    checksum_path = dataset_dir / "checksums.sha256"
+    complete_path = dataset_dir / "COMPLETE"
+    if (
+        not summary_path.is_file()
+        or not checksum_path.is_file()
+        or not complete_path.is_file()
+    ):
+        raise ValueError(
+            f"barrel-roll production data must contain dataset_summary.json and "
+            f"checksums.sha256 plus the atomic-promotion COMPLETE marker: "
+            f"{dataset_dir}"
+        )
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    expected_config_hash = sha256_bytes(
+        canonical_json(expected_effective_config()).encode("utf-8")
+    )
+    expected_summary_fields = {
+        "schema_version": BARREL_ROLL_SCHEMA_VERSION,
+        "file_count": 2_000,
+        "transition_count": 250_000,
+        "effective_config_sha256": expected_config_hash,
+    }
+    mismatches = {
+        key: {"expected": expected, "actual": summary.get(key)}
+        for key, expected in expected_summary_fields.items()
+        if summary.get(key) != expected
+    }
+    if mismatches:
+        raise ValueError(
+            "barrel-roll production dataset identity mismatch: "
+            + canonical_json(mismatches)
+        )
+    summary_hash = sha256_file(summary_path)
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    expected_complete_fields = {
+        "status": "complete",
+        "file_count": 2_000,
+        "transition_count": 250_000,
+        "dataset_summary_sha256": summary_hash,
+    }
+    complete_mismatches = {
+        key: {"expected": expected, "actual": complete.get(key)}
+        for key, expected in expected_complete_fields.items()
+        if complete.get(key) != expected
+    }
+    if complete_mismatches:
+        raise ValueError(
+            "barrel-roll production COMPLETE marker mismatch: "
+            + canonical_json(complete_mismatches)
+        )
+    actual_checksum_hash = sha256_file(checksum_path)
+    if summary.get("checksum_index_sha256") != actual_checksum_hash:
+        raise ValueError(
+            "barrel-roll checksum-index hash does not match dataset_summary.json"
+        )
+    aggregate_name = summary.get("aggregate_manifest")
+    if not isinstance(aggregate_name, str) or not aggregate_name:
+        raise ValueError("barrel-roll dataset summary is missing aggregate_manifest")
+    aggregate_path = dataset_dir / aggregate_name
+    if not aggregate_path.is_file():
+        raise ValueError(f"barrel-roll aggregate manifest is missing: {aggregate_path}")
+    actual_aggregate_hash = sha256_file(aggregate_path)
+    if summary.get("aggregate_manifest_sha256") != actual_aggregate_hash:
+        raise ValueError(
+            "barrel-roll aggregate-manifest hash does not match dataset_summary.json"
+        )
+    runtime_source_hashes = _barrel_roll_runtime_source_hashes(repo_root)
+
+    return {
+        "argv": list(sys.argv),
+        "runtime_source_sha256": runtime_source_hashes,
+        "source": {
+            "root": _git_repository_snapshot(repo_root),
+            "mpx": _git_repository_snapshot(repo_root / "deps" / "mpx"),
+            "primal_dual_ilqr": _git_repository_snapshot(
+                repo_root / "deps" / "mpx" / "mpx" / "primal_dual_ilqr"
+            ),
+            "gym_quadruped": _git_repository_snapshot(
+                repo_root / "deps" / "gym-quadruped"
+            ),
+            "mujoco_mpc": _git_repository_snapshot(repo_root / "deps" / "mujoco_mpc"),
+        },
+        "dataset": {
+            "path": str(dataset_dir),
+            "schema_version": summary.get("schema_version"),
+            "file_count": summary.get("file_count"),
+            "transition_count": summary.get("transition_count"),
+            "effective_config_sha256": summary.get("effective_config_sha256"),
+            "checksum_index": checksum_path.name,
+            "checksum_index_sha256": actual_checksum_hash,
+            "aggregate_manifest": aggregate_name,
+            "aggregate_manifest_sha256": actual_aggregate_hash,
+            "dataset_summary_sha256": summary_hash,
+            "complete_marker_sha256": sha256_file(complete_path),
+        },
+    }
+
+
+def quadruped_video_filename(
+    *, task: str, episode: int, episode_seed: int | None, velocity: float | None
+) -> str:
+    """Return a task-aware quadruped rollout filename."""
+    if task == "barrel_roll":
+        if episode_seed is None:
+            raise ValueError("barrel-roll videos require an evaluation seed")
+        return f"rollout{episode}_seed{episode_seed}.mp4"
+    if velocity is not None:
+        return f"rollout{episode}_vx{velocity:.1f}.mp4"
+    return f"rollout{episode}.mp4"
 
 
 def parse_env_name(env_name: str) -> tuple[str, str]:
@@ -418,6 +782,1065 @@ class ExactTimestepCheckpointCallback(BaseCallback):
         return True
 
 
+def evaluate_barrel_roll_policy(
+    model,
+    eval_env,
+    seeds=BARREL_ROLL_EVAL_SEEDS,
+    *,
+    include_critic: bool = False,
+) -> dict:
+    """Evaluate fixed seeds under the complete strict schema-v4 contract."""
+    reward_component_names = (
+        "roll_tracking",
+        "signed_progress",
+        "standing_score",
+        "terminal_outcome",
+        "foot_score",
+        "height_score",
+        "tilt_score",
+        "linear_speed_score",
+        "angular_speed_score",
+        "joint_speed_score",
+    )
+    standing_subscore_names = reward_component_names[4:]
+    motion_names = (
+        "base_height",
+        "body_up_tilt",
+        "base_linear_speed",
+        "base_angular_speed",
+        "joint_velocity_norm",
+        "action_change_norm",
+    )
+
+    def distribution(values) -> dict[str, float] | None:
+        array = np.asarray(values, dtype=np.float64)
+        if array.size == 0:
+            return None
+        if not np.isfinite(array).all():
+            raise RuntimeError("barrel-roll evaluation distribution is non-finite")
+        return {
+            "min": float(np.min(array)),
+            "p05": float(np.quantile(array, 0.05)),
+            "median": float(np.median(array)),
+            "p95": float(np.quantile(array, 0.95)),
+            "max": float(np.max(array)),
+            "mean": float(np.mean(array)),
+        }
+
+    episode_rewards = []
+    successes = []
+    failure_reasons = Counter()
+    episodes = []
+    all_endpoint_metrics = {
+        "roll_progress": [],
+        **{name: [] for name in motion_names},
+    }
+    all_final_hold_metrics = {
+        "roll_progress": [],
+        **{name: [] for name in motion_names},
+    }
+    all_filtered_contacts = []
+    all_raw_contacts = []
+    all_final_hold_filtered_contacts = []
+    all_final_hold_raw_contacts = []
+    final_hold_condition_failures = Counter()
+    terminal_window_condition_failures = Counter()
+    cumulative_condition_failures = Counter()
+    has_critic = all(
+        hasattr(model, attribute) for attribute in ("policy", "critic", "device")
+    )
+    if include_critic and not has_critic:
+        raise ValueError("critic diagnostics requested for a model without a critic")
+    critic_available = bool(include_critic)
+    all_critic_values: list[list[float]] = []
+
+    for seed in seeds:
+        eval_env.seed(int(seed))
+        obs = eval_env.reset()
+        done = np.array([False])
+        episode_reward = 0.0
+        terminal_info = None
+        control_step = 0
+        touchdown_step = None
+        stabilization_step = None
+        post_start_contact_break = False
+        cumulative_reward_components = {
+            name: 0.0 for name in reward_component_names
+        }
+        final_hold_standing_scores = []
+        final_hold_subscores = {name: [] for name in standing_subscore_names}
+        final_hold_condition_valid_counts = Counter()
+        final_hold_endpoint_count = 0
+        episode_critic_values: list[list[float]] = []
+        while not bool(done[0]):
+            action, _ = model.predict(obs, deterministic=True)
+            if critic_available:
+                with th.no_grad():
+                    obs_tensor, _ = model.policy.obs_to_tensor(obs)
+                    action_tensor = th.as_tensor(
+                        action, dtype=th.float32, device=model.device
+                    )
+                    q_tensors = model.critic(obs_tensor, action_tensor)
+                q_values = [
+                    float(np.asarray(value.detach().cpu()).reshape(-1)[0])
+                    for value in q_tensors
+                ]
+                if not q_values or not np.all(np.isfinite(q_values)):
+                    raise RuntimeError(
+                        f"barrel-roll evaluation seed {seed} returned non-finite "
+                        "critic values"
+                    )
+                episode_critic_values.append(q_values)
+            obs, reward, done, infos = eval_env.step(action)
+            episode_reward += float(reward[0])
+            control_step += 1
+            step_info = infos[0]
+            if not isinstance(step_info, dict):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned non-dict info"
+                )
+            contacts = np.asarray(step_info.get("contact_state", []), dtype=bool)
+            raw_contacts = np.asarray(
+                step_info.get("raw_contact_state", []), dtype=bool
+            )
+            if contacts.shape != (4,) or raw_contacts.shape != (4,):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned invalid contacts"
+                )
+            all_filtered_contacts.append(contacts.copy())
+            all_raw_contacts.append(raw_contacts.copy())
+            all_contacts = bool(np.all(contacts))
+            if (
+                control_step * BARREL_ROLL_CONTROL_DT >= BARREL_ROLL_START_TIME
+                and not all_contacts
+            ):
+                post_start_contact_break = True
+            if touchdown_step is None and post_start_contact_break and all_contacts:
+                touchdown_step = control_step
+            stability_count = int(step_info.get("stability_count", 0))
+            if (
+                stabilization_step is None
+                and touchdown_step is not None
+                and stability_count >= 5
+            ):
+                stabilization_step = control_step
+
+            step_components = step_info.get("reward_components")
+            if not isinstance(step_components, dict):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} omitted reward components"
+                )
+            for name in reward_component_names:
+                if step_components.get(name) is None:
+                    raise RuntimeError(
+                        f"barrel-roll evaluation seed {seed} omitted reward "
+                        f"component {name}"
+                    )
+                value = float(step_components[name])
+                if not np.isfinite(value):
+                    raise RuntimeError(
+                        f"barrel-roll evaluation seed {seed} returned non-finite "
+                        f"reward component {name}"
+                    )
+                cumulative_reward_components[name] += value
+            expected_reward = sum(
+                float(step_components[name])
+                for name in (
+                    "roll_tracking",
+                    "signed_progress",
+                    "standing_score",
+                    "terminal_outcome",
+                )
+            )
+            if not np.isclose(
+                float(reward[0]), expected_reward, atol=1.0e-5, rtol=0.0
+            ):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} reward/component mismatch"
+                )
+
+            endpoint_values = {"roll_progress": float(step_info["roll_progress"])}
+            endpoint_values.update({name: float(step_info[name]) for name in motion_names})
+            if not all(np.isfinite(value) for value in endpoint_values.values()):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned non-finite endpoint metrics"
+                )
+            for name, value in endpoint_values.items():
+                all_endpoint_metrics[name].append(value)
+
+            hold_conditions = step_info.get("hold_conditions")
+            if not isinstance(hold_conditions, dict) or any(
+                name not in hold_conditions for name in BARREL_ROLL_HOLD_CONDITIONS
+            ):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} omitted hold conditions"
+                )
+            final_hold_active = bool(step_info.get("final_hold_active", False))
+            expected_final_hold_active = (
+                control_step * BARREL_ROLL_CONTROL_DT
+                > BARREL_ROLL_FINAL_HOLD_START_TIME
+            )
+            if final_hold_active != expected_final_hold_active:
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned inconsistent "
+                    "final_hold_active"
+                )
+            if final_hold_active:
+                final_hold_endpoint_count += 1
+                all_final_hold_filtered_contacts.append(contacts.copy())
+                all_final_hold_raw_contacts.append(raw_contacts.copy())
+                for name, value in endpoint_values.items():
+                    all_final_hold_metrics[name].append(value)
+                final_hold_standing_scores.append(
+                    float(step_components["standing_score"])
+                )
+                for name in standing_subscore_names:
+                    final_hold_subscores[name].append(float(step_components[name]))
+                for name in BARREL_ROLL_HOLD_CONDITIONS:
+                    valid = bool(hold_conditions[name])
+                    final_hold_condition_valid_counts[name] += int(valid)
+                    if not valid:
+                        final_hold_condition_failures[name] += 1
+            if bool(done[0]):
+                terminal_info = step_info
+
+        if not isinstance(terminal_info, dict) or "is_success" not in terminal_info:
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} did not return terminal is_success"
+            )
+        terminal_values = {}
+        for key in (
+            "roll_progress",
+            "roll_error",
+            "base_height",
+            "body_up_tilt",
+            "base_linear_speed",
+            "base_angular_speed",
+            "joint_velocity_norm",
+            "action_change_norm",
+        ):
+            if terminal_info.get(key) is None:
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} did not return terminal {key}"
+                )
+            value = float(terminal_info[key])
+            if not np.isfinite(value):
+                raise RuntimeError(
+                    f"barrel-roll evaluation seed {seed} returned non-finite {key}"
+                )
+            terminal_values[key] = value
+        if not np.isfinite(episode_reward):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} returned a non-finite episode return"
+            )
+        success = bool(terminal_info["is_success"])
+        successes.append(success)
+        episode_rewards.append(episode_reward)
+        failure_reason = None
+        if not success:
+            failure_reason = str(terminal_info.get("failure_reason") or "unknown")
+            failure_reasons[failure_reason] += 1
+        if success and control_step != BARREL_ROLL_CONTROL_STEPS:
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} reported early success at "
+                f"step {control_step}"
+            )
+        if (
+            not success
+            and control_step != BARREL_ROLL_CONTROL_STEPS
+            and failure_reason not in {"non_finite_state", "non_foot_ground_contact"}
+        ):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} terminated early for "
+                f"non-immediate failure {failure_reason}"
+            )
+        terminal_hold_conditions = terminal_info.get("hold_conditions")
+        if not isinstance(terminal_hold_conditions, dict) or any(
+            name not in terminal_hold_conditions
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        ):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} omitted terminal hold conditions"
+            )
+        terminal_window_failures = terminal_info.get(
+            "final_hold_window_failure_counts"
+        )
+        if not isinstance(terminal_window_failures, dict):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} omitted final-window failures"
+            )
+        terminal_cumulative_failures = terminal_info.get(
+            "hold_condition_failure_counts"
+        )
+        if not isinstance(terminal_cumulative_failures, dict):
+            raise RuntimeError(
+                f"barrel-roll evaluation seed {seed} omitted cumulative hold failures"
+            )
+        terminal_window_condition_failures.update({
+            name: int(terminal_window_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        })
+        cumulative_condition_failures.update({
+            name: int(terminal_cumulative_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        })
+        critic_summary = None
+        if episode_critic_values:
+            critic_array = np.asarray(episode_critic_values, dtype=np.float64)
+            critic_summary = [
+                {
+                    "min": float(np.min(critic_array[:, index])),
+                    "max": float(np.max(critic_array[:, index])),
+                    "mean": float(np.mean(critic_array[:, index])),
+                }
+                for index in range(critic_array.shape[1])
+            ]
+            all_critic_values.extend(episode_critic_values)
+        episodes.append({
+            "seed": int(seed),
+            "success": success,
+            "failure_reason": failure_reason,
+            "return": episode_reward,
+            "control_steps": control_step,
+            "terminal_roll_progress": terminal_values["roll_progress"],
+            "terminal_roll_error": terminal_values["roll_error"],
+            "terminal_base_height": terminal_values["base_height"],
+            "terminal_body_up_tilt": terminal_values["body_up_tilt"],
+            "terminal_base_linear_speed": terminal_values["base_linear_speed"],
+            "terminal_base_angular_speed": terminal_values["base_angular_speed"],
+            "terminal_joint_velocity_norm": terminal_values["joint_velocity_norm"],
+            "terminal_action_change_norm": terminal_values["action_change_norm"],
+            "terminal_filtered_contacts": np.asarray(
+                terminal_info["contact_state"], dtype=bool
+            ).tolist(),
+            "terminal_raw_contacts": np.asarray(
+                terminal_info["raw_contact_state"], dtype=bool
+            ).tolist(),
+            "terminal_hold_conditions": {
+                name: bool(terminal_hold_conditions[name])
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "terminal_final_hold_window_failure_counts": {
+                name: int(terminal_window_failures.get(name, 0))
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "terminal_cumulative_hold_condition_failure_counts": {
+                name: int(terminal_cumulative_failures.get(name, 0))
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "terminal_nonfoot_ground_contact_count": int(
+                terminal_info.get("nonfoot_ground_contact_count", 0)
+            ),
+            "final_hold_endpoint_count": final_hold_endpoint_count,
+            "final_hold_streak": int(terminal_info.get("final_hold_streak", 0)),
+            "mean_final_hold_standing_score": (
+                float(np.mean(final_hold_standing_scores))
+                if final_hold_standing_scores
+                else 0.0
+            ),
+            "mean_final_hold_standing_subscores": {
+                name: (
+                    float(np.mean(values)) if values else 0.0
+                )
+                for name, values in final_hold_subscores.items()
+            },
+            "final_hold_condition_valid_fractions": {
+                name: (
+                    final_hold_condition_valid_counts[name]
+                    / final_hold_endpoint_count
+                    if final_hold_endpoint_count
+                    else 0.0
+                )
+                for name in BARREL_ROLL_HOLD_CONDITIONS
+            },
+            "reward_components": cumulative_reward_components,
+            "touchdown_step": touchdown_step,
+            "touchdown_time_s": (
+                touchdown_step * BARREL_ROLL_CONTROL_DT
+                if touchdown_step is not None
+                else None
+            ),
+            "stabilization_step": stabilization_step,
+            "stabilization_time_s": (
+                stabilization_step * BARREL_ROLL_CONTROL_DT
+                if stabilization_step is not None
+                else None
+            ),
+            "terminal_stability_count": int(terminal_info.get("stability_count", 0)),
+            "critic_values": critic_summary,
+        })
+
+    terminal_errors = [episode["terminal_roll_error"] for episode in episodes]
+    terminal_heights = [episode["terminal_base_height"] for episode in episodes]
+    terminal_tilts = [episode["terminal_body_up_tilt"] for episode in episodes]
+    touchdown_times = [
+        episode["touchdown_time_s"]
+        for episode in episodes
+        if episode["touchdown_time_s"] is not None
+    ]
+    stabilization_times = [
+        episode["stabilization_time_s"]
+        for episode in episodes
+        if episode["stabilization_time_s"] is not None
+    ]
+
+    aggregate_critic_summary = None
+    if all_critic_values:
+        critic_array = np.asarray(all_critic_values, dtype=np.float64)
+        aggregate_critic_summary = [
+            {
+                "min": float(np.min(critic_array[:, index])),
+                "max": float(np.max(critic_array[:, index])),
+                "mean": float(np.mean(critic_array[:, index])),
+            }
+            for index in range(critic_array.shape[1])
+        ]
+
+    known_failure_reasons = (
+        "non_finite_state",
+        "non_foot_ground_contact",
+        *BARREL_ROLL_HOLD_FAILURE_REASONS.values(),
+        "final_hold_streak_too_short",
+        "unknown",
+    )
+    failure_reason_report = {
+        reason: int(failure_reasons.get(reason, 0))
+        for reason in known_failure_reasons
+    }
+    failure_reason_report.update({
+        reason: int(count)
+        for reason, count in failure_reasons.items()
+        if reason not in failure_reason_report
+    })
+    filtered_contacts_array = np.asarray(all_filtered_contacts, dtype=np.float64)
+    raw_contacts_array = np.asarray(all_raw_contacts, dtype=np.float64)
+    final_filtered_array = np.asarray(
+        all_final_hold_filtered_contacts, dtype=np.float64
+    ).reshape(-1, 4)
+    final_raw_array = np.asarray(
+        all_final_hold_raw_contacts, dtype=np.float64
+    ).reshape(-1, 4)
+
+    return {
+        "success_rate": float(np.mean(successes)),
+        "mean_reward": float(np.mean(episode_rewards)),
+        "mean_return": float(np.mean(episode_rewards)),
+        "min_return": float(np.min(episode_rewards)),
+        "max_return": float(np.max(episode_rewards)),
+        "episode_rewards": episode_rewards,
+        "failure_reasons": failure_reason_report,
+        "seeds": list(seeds),
+        "episodes": episodes,
+        "mean_terminal_roll_error": float(np.mean(terminal_errors)),
+        "mean_abs_terminal_roll_error": float(np.mean(np.abs(terminal_errors))),
+        "mean_terminal_base_height": float(np.mean(terminal_heights)),
+        "mean_terminal_body_up_tilt": float(np.mean(terminal_tilts)),
+        "mean_final_hold_standing_score": float(np.mean([
+            episode["mean_final_hold_standing_score"] for episode in episodes
+        ])),
+        "mean_cumulative_reward_components": {
+            name: float(np.mean([
+                episode["reward_components"][name] for episode in episodes
+            ]))
+            for name in reward_component_names
+        },
+        "reward_component_distributions": {
+            name: distribution([
+                episode["reward_components"][name] for episode in episodes
+            ])
+            for name in reward_component_names
+        },
+        "standing_subscore_distributions": {
+            name: distribution([
+                episode["mean_final_hold_standing_subscores"][name]
+                for episode in episodes
+            ])
+            for name in standing_subscore_names
+        },
+        "return_distribution": distribution(episode_rewards),
+        "roll_progress_distributions": {
+            "all_control_endpoints": distribution(
+                all_endpoint_metrics["roll_progress"]
+            ),
+            "final_hold_endpoints": distribution(
+                all_final_hold_metrics["roll_progress"]
+            ),
+            "terminal": distribution([
+                episode["terminal_roll_progress"] for episode in episodes
+            ]),
+        },
+        "motion_distributions": {
+            "all_control_endpoints": {
+                name: distribution(all_endpoint_metrics[name])
+                for name in motion_names
+            },
+            "final_hold_endpoints": {
+                name: distribution(all_final_hold_metrics[name])
+                for name in motion_names
+            },
+            "terminal": {
+                name: distribution([
+                    episode[f"terminal_{name}"] for episode in episodes
+                ])
+                for name in motion_names
+            },
+        },
+        "final_hold_streak_distribution": distribution([
+            episode["final_hold_streak"] for episode in episodes
+        ]),
+        "final_hold_condition_failure_endpoints": {
+            name: int(final_hold_condition_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        },
+        "terminal_window_condition_failure_counts": {
+            name: int(terminal_window_condition_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        },
+        "cumulative_hold_condition_failure_counts": {
+            name: int(cumulative_condition_failures.get(name, 0))
+            for name in BARREL_ROLL_HOLD_CONDITIONS
+        },
+        "contact_summary": {
+            "control_endpoint_count": int(filtered_contacts_array.shape[0]),
+            "filtered_contact_fraction_by_foot": np.mean(
+                filtered_contacts_array, axis=0
+            ).tolist(),
+            "raw_contact_fraction_by_foot": np.mean(
+                raw_contacts_array, axis=0
+            ).tolist(),
+            "final_hold_endpoint_count": int(final_filtered_array.shape[0]),
+            "final_hold_filtered_contact_fraction_by_foot": (
+                np.mean(final_filtered_array, axis=0).tolist()
+                if final_filtered_array.size
+                else [0.0] * 4
+            ),
+            "final_hold_raw_contact_fraction_by_foot": (
+                np.mean(final_raw_array, axis=0).tolist()
+                if final_raw_array.size
+                else [0.0] * 4
+            ),
+            "terminal_all_filtered_feet_count": int(sum(
+                all(episode["terminal_filtered_contacts"])
+                for episode in episodes
+            )),
+            "nonfoot_ground_contact_episode_count": int(sum(
+                episode["terminal_nonfoot_ground_contact_count"] > 0
+                for episode in episodes
+            )),
+        },
+        "touchdown_count": len(touchdown_times),
+        "mean_touchdown_time_s": (
+            float(np.mean(touchdown_times)) if touchdown_times else None
+        ),
+        "stabilization_count": len(stabilization_times),
+        "mean_stabilization_time_s": (
+            float(np.mean(stabilization_times)) if stabilization_times else None
+        ),
+        "critic_available": critic_available,
+        "critic_values": aggregate_critic_summary,
+    }
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write one durable JSON artifact without exposing a partial file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    temporary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
+
+
+def write_barrel_roll_training_completion(logdir: Path | str, model) -> dict:
+    """Validate one exact production run and create its write-once marker."""
+    logdir = Path(logdir)
+    complete_path = logdir / "COMPLETE"
+    if complete_path.exists():
+        raise FileExistsError(
+            f"refusing to overwrite barrel-roll completion marker: {complete_path}"
+        )
+    if int(model.num_timesteps) != 500_000:
+        raise RuntimeError(
+            f"barrel-roll run ended at {model.num_timesteps}/500000 timesteps"
+        )
+
+    required_paths = {
+        "config": logdir / "config.json",
+        "final_model": logdir / "final_model.zip",
+        "final_vecnormalize": logdir / "vec_normalize.pkl",
+        "selected_model": logdir / "best_model/best_model.zip",
+        "selected_vecnormalize": logdir / "best_model/vec_normalize.pkl",
+        "selection": logdir / "best_model/selection.json",
+        "evaluation_history": logdir / "barrel_roll_eval_history.jsonl",
+        "diagnostics": logdir / "barrel_roll_pilot_diagnostics.json",
+    }
+    missing = [str(path) for path in required_paths.values() if not path.is_file()]
+    if missing:
+        raise RuntimeError(
+            "barrel-roll run is missing required artifacts: " + ", ".join(missing)
+        )
+    replay_artifacts = sorted(logdir.rglob("*replay_buffer*"))
+    if replay_artifacts:
+        raise RuntimeError(
+            "barrel-roll run unexpectedly saved replay buffers: "
+            + ", ".join(str(path) for path in replay_artifacts)
+        )
+
+    config = json.loads(required_paths["config"].read_text(encoding="utf-8"))
+    expected_config_values = {
+        "algorithm": "SAC-MPC",
+        "env_name": "quadruped-barrel_roll",
+        "total_timesteps": 500_000,
+        "num_envs": 4,
+        "max_episode_steps": BARREL_ROLL_CONTROL_STEPS,
+        "eval_freq": 10_000,
+        "checkpoint_freq": 25_000,
+        "inject_type": "percentage",
+        "percentage": 25,
+        "random_select": True,
+        "quadruped_mpc_replay_mode": "direct",
+        "use_go2_sysid": True,
+        "save_replay_buffer_checkpoints": False,
+        "save_replay_buffer_final": False,
+    }
+    config_mismatches = {
+        name: {"expected": expected, "actual": config.get(name)}
+        for name, expected in expected_config_values.items()
+        if config.get(name) != expected
+    }
+    if config.get("seed") not in (1, 2):
+        config_mismatches["seed"] = {
+            "expected": [1, 2],
+            "actual": config.get("seed"),
+        }
+    if config_mismatches:
+        raise RuntimeError(
+            "barrel-roll completed with incompatible config: "
+            + canonical_json(config_mismatches)
+        )
+    run_provenance = config.get("barrel_roll", {}).get("run_provenance", {})
+    recorded_source_hashes = run_provenance.get("runtime_source_sha256")
+    current_source_hashes = _barrel_roll_runtime_source_hashes(
+        Path(__file__).resolve().parents[1]
+    )
+    if recorded_source_hashes != current_source_hashes:
+        raise RuntimeError(
+            "barrel-roll runtime source changed during training: "
+            + canonical_json({
+                "recorded": recorded_source_hashes,
+                "current": current_source_hashes,
+            })
+        )
+
+    records = []
+    for line_number, line in enumerate(
+        required_paths["evaluation_history"].read_text(encoding="utf-8").splitlines(),
+        1,
+    ):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"invalid evaluation history at line {line_number}: {error}"
+            ) from error
+        records.append(record)
+    steps = tuple(int(record.get("timesteps", -1)) for record in records)
+    if steps != BARREL_ROLL_VALIDATION_STEPS:
+        raise RuntimeError(
+            "barrel-roll evaluation history does not cover exact 0:10000:500000 steps"
+        )
+    for record in records:
+        if record.get("seeds") != list(BARREL_ROLL_VALIDATION_SEEDS):
+            raise RuntimeError("barrel-roll evaluation history used wrong seeds")
+        if len(record.get("episodes", [])) != len(BARREL_ROLL_VALIDATION_SEEDS):
+            raise RuntimeError("barrel-roll evaluation history omitted episodes")
+        required_diagnostics = (
+            "failure_reasons",
+            "final_hold_streak_distribution",
+            "standing_subscore_distributions",
+            "motion_distributions",
+            "reward_component_distributions",
+            "roll_progress_distributions",
+            "contact_summary",
+            "return_distribution",
+        )
+        missing_diagnostics = [
+            name for name in required_diagnostics if record.get(name) is None
+        ]
+        if missing_diagnostics:
+            raise RuntimeError(
+                "barrel-roll evaluation history omitted diagnostics: "
+                + ", ".join(missing_diagnostics)
+            )
+        for name in ("success_rate", "mean_final_hold_standing_score"):
+            value = float(record[name])
+            if not np.isfinite(value):
+                raise RuntimeError(f"barrel-roll evaluation has non-finite {name}")
+
+    winner = max(
+        records,
+        key=lambda record: (
+            float(record["success_rate"]),
+            float(record["mean_final_hold_standing_score"]),
+            -int(record["timesteps"]),
+        ),
+    )
+    selection = json.loads(required_paths["selection"].read_text(encoding="utf-8"))
+    expected_selection = {
+        "selection_order": [
+            "strict_success_rate_desc",
+            "mean_final_hold_standing_score_desc",
+            "timesteps_asc",
+        ],
+        "success_rate": winner["success_rate"],
+        "mean_final_hold_standing_score": winner[
+            "mean_final_hold_standing_score"
+        ],
+        "timesteps": winner["timesteps"],
+    }
+    if selection != expected_selection:
+        raise RuntimeError(
+            "barrel-roll selected checkpoint does not match locked order: "
+            + canonical_json({"expected": expected_selection, "actual": selection})
+        )
+
+    checkpoint_steps = tuple(range(25_000, 500_001, 25_000))
+    checkpoint_models = [
+        logdir / f"checkpoints/model_{step}_steps.zip" for step in checkpoint_steps
+    ]
+    checkpoint_stats = [
+        logdir / f"checkpoints/model_vecnormalize_{step}_steps.pkl"
+        for step in checkpoint_steps
+    ]
+    missing_checkpoints = [
+        str(path)
+        for path in (*checkpoint_models, *checkpoint_stats)
+        if not path.is_file()
+    ]
+    if missing_checkpoints:
+        raise RuntimeError(
+            "barrel-roll run is missing exact checkpoints: "
+            + ", ".join(missing_checkpoints)
+        )
+    tensorboard_events = sorted(
+        path for path in (logdir / "tensorboard").rglob("events.out.tfevents.*")
+        if path.is_file() and path.stat().st_size > 0
+    )
+    if not tensorboard_events:
+        raise RuntimeError("barrel-roll run has no nonempty TensorBoard event file")
+    diagnostics = json.loads(
+        required_paths["diagnostics"].read_text(encoding="utf-8")
+    )
+    if diagnostics.get("status") != "complete":
+        raise RuntimeError("barrel-roll training diagnostics are not complete")
+
+    artifact_hashes = {
+        name: sha256_file(path) for name, path in required_paths.items()
+    }
+    artifact_hashes.update({
+        "checkpoint_models_index": sha256_bytes(
+            canonical_json([
+                {"path": str(path.relative_to(logdir)), "sha256": sha256_file(path)}
+                for path in checkpoint_models
+            ]).encode("utf-8")
+        ),
+        "checkpoint_vecnormalize_index": sha256_bytes(
+            canonical_json([
+                {"path": str(path.relative_to(logdir)), "sha256": sha256_file(path)}
+                for path in checkpoint_stats
+            ]).encode("utf-8")
+        ),
+        "tensorboard_event_index": sha256_bytes(
+            canonical_json([
+                {"path": str(path.relative_to(logdir)), "sha256": sha256_file(path)}
+                for path in tensorboard_events
+            ]).encode("utf-8")
+        ),
+    })
+    marker = {
+        "status": "complete",
+        "completed_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "training_seed": int(config["seed"]),
+        "timesteps": int(model.num_timesteps),
+        "validation_steps": list(BARREL_ROLL_VALIDATION_STEPS),
+        "selected_timesteps": int(selection["timesteps"]),
+        "selected_success_rate": float(selection["success_rate"]),
+        "selected_mean_final_hold_standing_score": float(
+            selection["mean_final_hold_standing_score"]
+        ),
+        "artifact_hashes": artifact_hashes,
+        "replay_buffers_saved": False,
+    }
+    with complete_path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(marker, indent=2, sort_keys=True, allow_nan=False))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return marker
+
+
+class BarrelRollEvalCallback(BaseCallback):
+    """Checkpoint by strict success, standing score, then earliest step."""
+
+    def __init__(
+        self,
+        eval_env,
+        *,
+        eval_freq: int,
+        best_model_save_path: Path,
+        seeds=BARREL_ROLL_EVAL_SEEDS,
+        history_path: Path | None = None,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        if eval_freq <= 0:
+            raise ValueError("eval_freq must be positive")
+        if len(seeds) != 100 or len(set(seeds)) != 100:
+            raise ValueError("barrel-roll evaluation requires 100 unique held-out seeds")
+        self.eval_env = eval_env
+        self.eval_freq = int(eval_freq)
+        self.best_model_save_path = Path(best_model_save_path)
+        self.history_path = (
+            Path(history_path)
+            if history_path is not None
+            else self.best_model_save_path / "evaluation_history.jsonl"
+        )
+        self.seeds = tuple(int(seed) for seed in seeds)
+        self.best_success_rate = -np.inf
+        self.best_final_hold_standing_score = -np.inf
+        self.last_result = None
+
+    def _init_callback(self) -> None:
+        self.best_model_save_path.mkdir(parents=True, exist_ok=True)
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _evaluate_and_record(self) -> None:
+        sync_envs_normalization(self.training_env, self.eval_env)
+        result = evaluate_barrel_roll_policy(self.model, self.eval_env, self.seeds)
+        result = {**result, "timesteps": int(self.num_timesteps)}
+        self.last_result = result
+        with self.history_path.open("a", encoding="utf-8") as history:
+            history.write(json.dumps(result, sort_keys=True, allow_nan=False) + "\n")
+            history.flush()
+        self.logger.record("eval/barrel_roll_success_rate", result["success_rate"])
+        self.logger.record(
+            "eval/mean_final_hold_standing_score",
+            result["mean_final_hold_standing_score"],
+        )
+        self.logger.record("eval/mean_reward", result["mean_reward"])
+        metric_failure_reasons = Counter()
+        for reason, count in result["failure_reasons"].items():
+            metric_failure_reasons[failure_reason_metric_name(reason)] += count
+        for reason, count in metric_failure_reasons.items():
+            self.logger.record(f"eval/failure_reason/{reason}", float(count))
+
+        candidate_key = (
+            float(result["success_rate"]),
+            float(result["mean_final_hold_standing_score"]),
+        )
+        best_key = (
+            float(self.best_success_rate),
+            float(self.best_final_hold_standing_score),
+        )
+        # Evaluations are chronological, so refusing equal keys preserves the
+        # earliest training step as the final tie-break.
+        if candidate_key > best_key:
+            self.best_success_rate = result["success_rate"]
+            self.best_final_hold_standing_score = result[
+                "mean_final_hold_standing_score"
+            ]
+            self.model.save(self.best_model_save_path / "best_model")
+            vec_normalize = self.model.get_vec_normalize_env()
+            if vec_normalize is not None:
+                vec_normalize.save(self.best_model_save_path / "vec_normalize.pkl")
+            _atomic_write_json(
+                self.best_model_save_path / "selection.json",
+                {
+                    "selection_order": [
+                        "strict_success_rate_desc",
+                        "mean_final_hold_standing_score_desc",
+                        "timesteps_asc",
+                    ],
+                    "success_rate": result["success_rate"],
+                    "mean_final_hold_standing_score": result[
+                        "mean_final_hold_standing_score"
+                    ],
+                    "timesteps": int(self.num_timesteps),
+                },
+            )
+
+    def _on_training_start(self) -> None:
+        # G6 requires evidence that held-out success improves above the exact
+        # untrained policy baseline, so evaluate before collecting a transition.
+        self._evaluate_and_record()
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.eval_freq != 0:
+            return True
+
+        self._evaluate_and_record()
+        return True
+
+
+class BarrelRollPilotDiagnosticsCallback(BaseCallback):
+    """Fail fast on non-finite G6 signals and write a durable audit summary."""
+
+    _TRAIN_SCALARS = (
+        "train/actor_loss",
+        "train/critic_loss",
+        "train/ent_coef",
+        "train/ent_coef_loss",
+    )
+
+    def __init__(self, summary_path: Path, verbose: int = 0):
+        super().__init__(verbose)
+        self.summary_path = Path(summary_path)
+        self.rollout_batches_checked = 0
+        self.environment_transitions_checked = 0
+        self.q_batches_checked = 0
+        self.training_snapshots_checked = 0
+        self.last_checked_updates = 0
+        self.ranges: dict[str, list[float]] = {}
+        self.replay_percentages: list[float] = []
+        self.roll_progresses: list[float] = []
+
+    def _update_range(self, name: str, values) -> None:
+        array = np.asarray(values, dtype=np.float64)
+        if array.size == 0:
+            return
+        if not np.isfinite(array).all():
+            self._fail(f"non-finite {name}")
+        low = float(np.min(array))
+        high = float(np.max(array))
+        if name not in self.ranges:
+            self.ranges[name] = [low, high]
+        else:
+            self.ranges[name][0] = min(self.ranges[name][0], low)
+            self.ranges[name][1] = max(self.ranges[name][1], high)
+
+    def _check_observations(self, observations, prefix: str = "observations") -> None:
+        if isinstance(observations, dict):
+            for key, value in observations.items():
+                self._update_range(f"{prefix}/{key}", value)
+        else:
+            self._update_range(prefix, observations)
+
+    def _check_q_values(self, observations, actions) -> None:
+        observation_tensor, _ = self.model.policy.obs_to_tensor(observations)
+        action_tensor = th.as_tensor(
+            actions, dtype=th.float32, device=self.model.device
+        )
+        with th.no_grad():
+            q_values = self.model.critic(observation_tensor, action_tensor)
+        for index, q_value in enumerate(q_values):
+            values = q_value.detach().cpu().numpy()
+            self._update_range(f"q_value/{index}", values)
+        self.q_batches_checked += 1
+        q_min = min(bounds[0] for key, bounds in self.ranges.items() if key.startswith("q_value/"))
+        q_max = max(bounds[1] for key, bounds in self.ranges.items() if key.startswith("q_value/"))
+        self.logger.record("diagnostics/q_value_min", q_min)
+        self.logger.record("diagnostics/q_value_max", q_max)
+
+    def _check_training_scalars(self) -> None:
+        updates = int(getattr(self.model, "_n_updates", 0))
+        if updates <= self.last_checked_updates:
+            return
+        logged = getattr(self.logger, "name_to_value", {})
+        missing = [name for name in self._TRAIN_SCALARS if name not in logged]
+        if missing:
+            self._fail(
+                f"training update {updates} missing diagnostics: {', '.join(missing)}"
+            )
+        for name in self._TRAIN_SCALARS:
+            self._update_range(name, [logged[name]])
+        self.last_checked_updates = updates
+        self.training_snapshots_checked += 1
+
+    def _check_replay(self) -> None:
+        replay_buffer = getattr(self.model, "replay_buffer", None)
+        if replay_buffer is None or not hasattr(replay_buffer, "get_mpc_percentage"):
+            return
+        percentage = float(replay_buffer.get_mpc_percentage())
+        self._update_range("replay_buffer/mpc_percentage", [percentage])
+        if percentage < 0.0 or percentage > 100.0:
+            self._fail(f"invalid MPC replay percentage {percentage}")
+        self.replay_percentages.append(percentage)
+        sources = getattr(replay_buffer, "transition_sources", None)
+        if sources is not None:
+            filled = replay_buffer.size()
+            active_sources = sources if replay_buffer.full else sources[:filled]
+            if active_sources.size and not np.isin(active_sources, (0, 1)).all():
+                self._fail("replay buffer contains a source tag other than 0 or 1")
+
+    def _summary(self, status: str, error: str | None = None) -> dict:
+        return {
+            "status": status,
+            "error": error,
+            "rollout_batches_checked": self.rollout_batches_checked,
+            "environment_transitions_checked": self.environment_transitions_checked,
+            "q_batches_checked": self.q_batches_checked,
+            "training_snapshots_checked": self.training_snapshots_checked,
+            "last_checked_updates": self.last_checked_updates,
+            "ranges": self.ranges,
+            "replay_percentage_last": (
+                self.replay_percentages[-1] if self.replay_percentages else None
+            ),
+            "roll_progress_min": (
+                min(self.roll_progresses) if self.roll_progresses else None
+            ),
+            "roll_progress_max": (
+                max(self.roll_progresses) if self.roll_progresses else None
+            ),
+        }
+
+    def _write_summary(self, status: str, error: str | None = None) -> None:
+        self.summary_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.summary_path.with_suffix(self.summary_path.suffix + ".tmp")
+        temporary_path.write_text(
+            json.dumps(self._summary(status, error), indent=2, sort_keys=True, allow_nan=False)
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(self.summary_path)
+
+    def _fail(self, error: str) -> None:
+        self._write_summary("failed", error)
+        raise FloatingPointError(error)
+
+    def _on_step(self) -> bool:
+        observations = self.locals.get("new_obs")
+        actions = self.locals.get("actions")
+        rewards = self.locals.get("rewards")
+        if observations is None or actions is None or rewards is None:
+            self._fail("rollout callback is missing observations, actions, or rewards")
+        self._check_observations(observations)
+        self._update_range("actions", actions)
+        self._update_range("rewards", rewards)
+        self._check_q_values(observations, actions)
+        self._check_training_scalars()
+        self._check_replay()
+        infos = self.locals.get("infos") or []
+        for info in infos:
+            if isinstance(info, dict) and info.get("roll_progress") is not None:
+                progress = float(info["roll_progress"])
+                self._update_range("roll_progress", [progress])
+                self.roll_progresses.append(progress)
+        self.rollout_batches_checked += 1
+        self.environment_transitions_checked += int(np.asarray(rewards).size)
+        if self.n_calls % 100 == 0:
+            self._write_summary("running")
+        return True
+
+    def _on_training_end(self) -> None:
+        self._check_training_scalars()
+        self._check_replay()
+        self._write_summary("complete")
+
+
 def is_shadow_hand_env(env_name: str) -> bool:
     """
     Check if the environment is a shadow hand environment.
@@ -447,7 +1870,7 @@ def make_dm_env(domain: str, task: str, render_mode=None):
     Returns:
         Wrapped gymnasium environment
     """
-    dm_env = suite.load(domain_name=domain, task_name=task)
+    dm_env = load_dm_control_env(domain_name=domain, task_name=task)
     gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
     gym_env = FlattenObservation(gym_env)
     return gym_env
@@ -497,13 +1920,16 @@ def make_cheetah3_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPE
 
 def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None,
                        simple_reward: bool = False,
-                       use_go2_sysid: bool = True):
+                       use_go2_sysid: bool = True,
+                       task: str = "velocity_tracking",
+
+                       action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID):
     """
-    Create a quadruped velocity tracking gymnasium environment.
+    Create a supported quadruped gymnasium environment.
     
     Returns a Dict observation space for asymmetric actor-critic training:
         "policy" (45-dim): Real-hardware-available sensor observations (actor)
-        "privileged" (3-dim): Simulation-only ground truth base_lin_vel (critic)
+        "privileged": Simulation-only critic input (3D velocity tracking, 4D barrel roll)
     
     No FlattenObservation wrapper is applied since Dict obs is required
     for the asymmetric policy architecture.
@@ -516,15 +1942,37 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
             Used when training with MPC injection (SAC-MPC/TD3-MPC).
         use_go2_sysid: If True, apply the identified Go2 joint dynamics.
             Ignored for non-Go2 robots.
+        task: `velocity_tracking` (default) or `barrel_roll`.
     
     Returns:
-        QuadrupedVelocityTracking gymnasium environment with Dict obs space
+        Task-specific quadruped gymnasium environment with Dict obs space
     """
+    task = validate_quadruped_task(task)
+    if task == "barrel_roll":
+        if robot.lower() != "go2":
+            raise ValueError("barrel-roll requires robot='go2'")
+        if not use_go2_sysid:
+            raise ValueError("barrel-roll requires use_go2_sysid=True")
+        if domain_rand_cfg is not None and domain_rand_cfg.enable:
+            raise ValueError("barrel-roll requires disabled domain randomization")
+        if simple_reward:
+            raise ValueError("barrel-roll requires its frozen task-specific reward")
+        return gym.make(
+            "QuadrupedBarrelRoll-v0",
+            robot="go2",
+            render_mode=render_mode,
+            domain_rand_cfg=DomainRandomizationConfig.disabled(),
+            use_go2_sysid=True,
+            action_scale=BARREL_ROLL_ACTION_SCALE,
+        )
+
+    action_interface = resolve_action_interface(action_interface_id)
     kwargs = dict(
         robot=robot,
         render_mode=render_mode,
         max_episode_steps=_MAX_EPISODE_STEPS.value,
         use_go2_sysid=use_go2_sysid,
+        **action_interface.env_kwargs(),
     )
     if domain_rand_cfg is not None:
         kwargs["domain_rand_cfg"] = domain_rand_cfg
@@ -600,6 +2048,7 @@ def make_single_env_for_model_loading(domain: str, task: str,
                                       robot: str = "go2",
                                       simple_reward: bool = False,
                                       use_go2_sysid: bool = True,
+                                      action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                                       cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Create a single-env VecEnv for loading a saved model."""
     is_shadow_hand = (domain == "shadow_hand")
@@ -611,6 +2060,8 @@ def make_single_env_for_model_loading(domain: str, task: str,
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                task=task,
+                action_interface_id=action_interface_id,
             )
         ])
     if is_cheetah3:
@@ -630,6 +2081,7 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
                                     robot: str = "go2",
                                     simple_reward: bool = False,
                                     use_go2_sysid: bool = True,
+                                    action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                                     cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Load a saved model plus its VecNormalize stats for video evaluation."""
     model_env = make_single_env_for_model_loading(
@@ -640,6 +2092,7 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
         robot=robot,
         simple_reward=simple_reward,
         use_go2_sysid=use_go2_sysid,
+        action_interface_id=action_interface_id,
         cheetah3_speed_goal=cheetah3_speed_goal,
     )
 
@@ -684,7 +2137,8 @@ def create_model(env, cfg, is_quadruped: bool = False):
     """
     if is_quadruped:
         # Quadruped: use SB3 PyTorch with asymmetric actor-critic policies
-        # Actor sees only "policy" obs (45-dim), critic sees "policy"+"privileged" (48-dim)
+        # Actor sees only the 45D policy vector. The critic dimensions are
+        # derived from the task space (48D state for velocity, 49D for barrel).
         if cfg.algorithm == "SAC":
             model = SB3_SAC(
                 AsymmetricSACPolicy,
@@ -845,6 +2299,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                      save_replay_buffer_checkpoints: bool = False,
                      simple_reward: bool = False,
                      use_go2_sysid: bool = True,
+                     action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                      domain_rand_config_type: str = "disabled",
                      cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """
@@ -873,9 +2328,15 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     eval_env = None
     inject_callback = None  # Initialize to None for non-SAC-MPC algorithms
 
-    # Add rollout Tensorboard callback for quadruped TD3-MPC or SAC-MPC
-    if is_quadruped and cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
-        callbacks.append(QuadrupedTensorboardCallback(log_freq=100))
+    # Add rollout Tensorboard callback for quadruped off-policy training.
+    if is_quadruped and cfg.algorithm in ["SAC", "TD3", "SAC-MPC", "TD3-MPC"]:
+        callbacks.append(QuadrupedTensorboardCallback(log_freq=100, task=task))
+        if task == "barrel_roll" and enable_logging:
+            callbacks.append(
+                BarrelRollPilotDiagnosticsCallback(
+                    logdir / "barrel_roll_pilot_diagnostics.json"
+                )
+            )
     
     # Add checkpoint callback if logging is enabled
     if enable_logging:
@@ -903,7 +2364,9 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             eval_env = make_vec_env(
                 lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval,
                                           simple_reward=_sr_eval,
-                                          use_go2_sysid=use_go2_sysid),
+                                          use_go2_sysid=use_go2_sysid,
+                                          task=task,
+                                          action_interface_id=action_interface_id),
                 n_envs=1,
                 seed=seed+1000,
             )
@@ -929,7 +2392,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
             eval_env,
             training=False,  # Don't update stats during evaluation
             norm_obs=True,
-            norm_reward=True,
+            norm_reward=not (is_quadruped and task == "barrel_roll"),
         )
         # Reseed after VecNormalize wrapping
         #eval_env.seed(seed + 1000)
@@ -938,20 +2401,29 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
         
         # Create callback for evaluating the trained model
         # EvalCallback's eval_freq is also per training step, so divide by num_envs
-        eval_callback = EvalCallback(
-            eval_env,
-            best_model_save_path=str(logdir / "best_model"),
-            log_path=str(logdir / "eval_logs"),
-            eval_freq=eval_freq // num_envs,
-            deterministic=True,
-            render=False,
-            n_eval_episodes=5,
-        )
+        if is_quadruped and task == "barrel_roll":
+            eval_callback = BarrelRollEvalCallback(
+                eval_env,
+                eval_freq=max(eval_freq // num_envs, 1),
+                best_model_save_path=logdir / "best_model",
+                seeds=BARREL_ROLL_EVAL_SEEDS,
+                history_path=logdir / "barrel_roll_eval_history.jsonl",
+            )
+        else:
+            eval_callback = EvalCallback(
+                eval_env,
+                best_model_save_path=str(logdir / "best_model"),
+                log_path=str(logdir / "eval_logs"),
+                eval_freq=max(eval_freq // num_envs, 1),
+                deterministic=True,
+                render=False,
+                n_eval_episodes=5,
+            )
         callbacks.append(eval_callback)
     
     # Add MPC injection callback if using SAC-MPC or TD3-MPC
     if cfg.algorithm in ["SAC-MPC", "TD3-MPC"]:
-        if _INJECT_TYPE.value == "fixed":
+        if cfg.inject_type == "fixed":
             print("\nSetting up FIXED MPC Injection from pre-generated trajectories...")
             inject_callback = FixedMPCInjectCallback(
                 domain=domain,
@@ -964,7 +2436,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
             )
-        elif _INJECT_TYPE.value == "percentage":
+        elif cfg.inject_type == "percentage":
             print("\nSetting up PERCENTAGE MPC Injection from pre-generated trajectories...")
             inject_callback = PercentMPCInjectCallback(
                 domain=domain,
@@ -978,6 +2450,20 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 expected_dr_config_type=(
                     domain_rand_config_type if is_quadruped else None
                 ),
+                expected_quadruped_task=(
+                    BARREL_ROLL_TASK_ID
+                    if is_quadruped and task == "barrel_roll"
+                    else None
+                ),
+                expected_quadruped_schema_version=(
+                    BARREL_ROLL_SCHEMA_VERSION
+                    if is_quadruped and task == "barrel_roll"
+                    else None
+                ),
+                expected_action_interface_id=(
+                    action_interface_id if is_quadruped and task != "barrel_roll" else None
+                ),
+                quadruped_mpc_replay_mode=cfg.quadruped_mpc_replay_mode,
                 cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
             )
@@ -989,13 +2475,16 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
     return (callbacks if callbacks else None), eval_env, None
 
 
-def evaluate_and_record(model, domain: str, task: str, num_episodes: int, 
+def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                         num_videos: int, video_dir: Path, normalize_env=None, seed: int = None,
                         is_quadruped: bool = False, robot: str = "go2",
                         simple_reward: bool = False,
                         use_go2_sysid: bool = True,
+                        action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                         is_cheetah3: bool = False,
-                        cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
+                        cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL,
+                        barrel_roll_seeds: tuple[int, ...] | None = None,
+                        barrel_roll_video_labels: dict[int, str] | None = None):
     """
     Evaluate model and record videos.
     
@@ -1016,6 +2505,8 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     
     episode_rewards = []
     episode_lengths = []
+    episode_successes = []
+    failure_reasons = Counter()
     
     # Determine environment type
     is_shadow_hand = (domain == "shadow_hand")
@@ -1023,6 +2514,21 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     # For quadruped evaluation, use fixed x-velocity commands for the recorded videos
     # to systematically test the policy at different speeds
     quadruped_eval_velocities = [0.0, 0.5, 1.0]  # vx for each video
+    is_barrel_roll = is_quadruped and task == "barrel_roll"
+    if is_barrel_roll:
+        evaluation_seeds = (
+            tuple(int(value) for value in barrel_roll_seeds)
+            if barrel_roll_seeds is not None
+            else BARREL_ROLL_EVAL_SEEDS
+        )
+        if not evaluation_seeds or len(evaluation_seeds) != len(set(evaluation_seeds)):
+            raise ValueError("barrel-roll recording seeds must be non-empty and unique")
+        num_episodes = len(evaluation_seeds)
+        invalid_labels = set((barrel_roll_video_labels or {}).values()) - {
+            "success", "failure"
+        }
+        if invalid_labels:
+            raise ValueError(f"invalid barrel-roll video labels: {sorted(invalid_labels)}")
     
     for episode in range(num_episodes):
         # Create evaluation environment with rgb_array render mode for video recording
@@ -1032,6 +2538,8 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                 domain_rand_cfg=DomainRandomizationConfig.disabled(),
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                task=task,
+                action_interface_id=action_interface_id,
             )
         elif is_cheetah3:
             eval_env_base = make_cheetah3_env(
@@ -1047,10 +2555,15 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         eval_env = DummyVecEnv([lambda: eval_env_base])
         
         # Seed the environment for reproducibility (different seed per episode)
-        if seed is not None:
-            eval_env.seed(seed + 2000 + episode)
-            eval_env.action_space.seed(seed + 2000 + episode)
-            eval_env.observation_space.seed(seed + 2000 + episode)
+        episode_seed = (
+            evaluation_seeds[episode]
+            if is_barrel_roll
+            else (seed + 2000 + episode if seed is not None else None)
+        )
+        if episode_seed is not None:
+            eval_env.seed(episode_seed)
+            eval_env.action_space.seed(episode_seed)
+            eval_env.observation_space.seed(episode_seed)
         
         # Apply normalization if available
         if normalize_env is not None:
@@ -1065,7 +2578,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         # For quadruped video episodes, set fixed velocity commands
         # so each video tests a specific speed
-        if is_quadruped and episode < len(quadruped_eval_velocities):
+        if is_quadruped and not is_barrel_roll and episode < len(quadruped_eval_velocities):
             vx = quadruped_eval_velocities[episode]
             # Unwrap through TimeLimit to reach QuadrupedVelocityTrackingEnv
             eval_env_base.unwrapped.set_commands(vx=vx, vy=0.0, wz=0.0)
@@ -1114,6 +2627,12 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
+        if is_barrel_roll:
+            terminal_info = info[0]
+            success = bool(terminal_info.get("is_success", False))
+            episode_successes.append(success)
+            if not success:
+                failure_reasons[str(terminal_info.get("failure_reason") or "unknown")] += 1
         
         print(f"Episode {episode + 1}/{num_episodes}: "
               f"Reward = {episode_reward:.2f}, Length = {episode_length}")
@@ -1121,9 +2640,25 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
         # Save video
         if record_video and frames:
             # Include velocity in filename for quadruped
-            if is_quadruped and episode < len(quadruped_eval_velocities):
+            if is_barrel_roll:
+                outcome_label = (barrel_roll_video_labels or {}).get(int(episode_seed))
+                if outcome_label is not None:
+                    video_path = video_dir / f"{outcome_label}_seed{episode_seed}.mp4"
+                else:
+                    video_path = video_dir / quadruped_video_filename(
+                        task=task,
+                        episode=episode,
+                        episode_seed=episode_seed,
+                        velocity=None,
+                    )
+            elif is_quadruped and episode < len(quadruped_eval_velocities):
                 vx = quadruped_eval_velocities[episode]
-                video_path = video_dir / f"rollout{episode}_vx{vx:.1f}.mp4"
+                video_path = video_dir / quadruped_video_filename(
+                    task=task,
+                    episode=episode,
+                    episode_seed=episode_seed,
+                    velocity=vx,
+                )
             else:
                 video_path = video_dir / f"rollout{episode}.mp4"
             # Use 50 FPS for quadruped (matches control frequency), 30 FPS for others
@@ -1140,7 +2675,16 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
     print(f"Min reward: {np.min(episode_rewards):.2f}")
     print(f"Max reward: {np.max(episode_rewards):.2f}")
     print(f"Mean length: {np.mean(episode_lengths):.1f}")
+    if is_barrel_roll:
+        print(f"Success rate: {np.mean(episode_successes):.1%} over {len(episode_successes)} held-out seeds")
+        print(f"Failure reasons: {dict(failure_reasons)}")
     print("="*50)
+    return {
+        "episode_rewards": episode_rewards,
+        "episode_lengths": episode_lengths,
+        "episode_successes": episode_successes,
+        "failure_reasons": dict(failure_reasons),
+    }
 
 
 def _parse_saved_checkpoint_step(model_zip_path: Path) -> Optional[int]:
@@ -1190,6 +2734,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                                is_quadruped: bool = False, robot: str = "go2",
                                simple_reward: bool = False,
                                use_go2_sysid: bool = True,
+                               action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                                is_cheetah3: bool = False,
                                cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Load requested checkpoints and record videos for each one."""
@@ -1231,6 +2776,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
             robot=robot,
             simple_reward=simple_reward,
             use_go2_sysid=use_go2_sysid,
+            action_interface_id=action_interface_id,
             cheetah3_speed_goal=cheetah3_speed_goal,
         )
 
@@ -1248,11 +2794,103 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                 robot=robot,
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                action_interface_id=action_interface_id,
                 is_cheetah3=is_cheetah3,
                 cheetah3_speed_goal=cheetah3_speed_goal,
             )
         finally:
             checkpoint_env.close()
+
+
+def evaluate_selected_barrel_roll_checkpoint(
+    *,
+    logdir: Path,
+    algorithm: str,
+    domain: str,
+    task: str,
+    robot: str,
+    use_go2_sysid: bool,
+) -> dict:
+    """Evaluate the success-selected checkpoint and record outcome videos."""
+    best_model_dir = Path(logdir) / "best_model"
+    model_path = best_model_dir / "best_model"
+    vecnormalize_path = best_model_dir / "vec_normalize.pkl"
+    selection_path = best_model_dir / "selection.json"
+    required_paths = (model_path.with_suffix(".zip"), vecnormalize_path, selection_path)
+    missing = [str(path) for path in required_paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "selected barrel-roll checkpoint artifacts are missing: " + ", ".join(missing)
+        )
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+
+    selected_model, selected_env = load_saved_model_for_video_eval(
+        algorithm=algorithm,
+        model_path=model_path,
+        vecnormalize_path=vecnormalize_path,
+        domain=domain,
+        task=task,
+        is_quadruped=True,
+        robot=robot,
+        simple_reward=False,
+        use_go2_sysid=use_go2_sysid,
+    )
+    try:
+        evaluation = evaluate_barrel_roll_policy(
+            selected_model,
+            selected_env,
+            BARREL_ROLL_EVAL_SEEDS,
+        )
+        report = {
+            "selection": selection,
+            "checkpoint_model": str(model_path.with_suffix(".zip")),
+            "vecnormalize": str(vecnormalize_path),
+            "evaluation": evaluation,
+        }
+        _atomic_write_json(best_model_dir / "evaluation.json", report)
+
+        representative = {}
+        for episode in evaluation["episodes"]:
+            label = "success" if episode["success"] else "failure"
+            representative.setdefault(label, int(episode["seed"]))
+        video_seeds = tuple(representative.values())
+        if video_seeds:
+            labels_by_seed = {seed: label for label, seed in representative.items()}
+            video_result = evaluate_and_record(
+                model=selected_model,
+                domain=domain,
+                task=task,
+                num_episodes=len(video_seeds),
+                num_videos=len(video_seeds),
+                video_dir=best_model_dir / "videos",
+                normalize_env=vecnormalize_path,
+                seed=None,
+                is_quadruped=True,
+                robot=robot,
+                simple_reward=False,
+                use_go2_sysid=use_go2_sysid,
+                barrel_roll_seeds=video_seeds,
+                barrel_roll_video_labels=labels_by_seed,
+            )
+            for seed, observed_success in zip(
+                video_seeds, video_result["episode_successes"], strict=True
+            ):
+                expected_success = labels_by_seed[seed] == "success"
+                if bool(observed_success) != expected_success:
+                    raise RuntimeError(
+                        f"representative video outcome changed for seed {seed}: "
+                        f"expected {expected_success}, got {bool(observed_success)}"
+                    )
+                video_path = best_model_dir / "videos" / (
+                    f"{labels_by_seed[seed]}_seed{seed}.mp4"
+                )
+                if not video_path.is_file() or video_path.stat().st_size == 0:
+                    raise RuntimeError(f"representative video was not written: {video_path}")
+        report["representative_video_seeds"] = representative
+        _atomic_write_json(best_model_dir / "evaluation.json", report)
+        return report
+    finally:
+        selected_env.close()
 
 
 def main(argv):
@@ -1283,8 +2921,8 @@ def main(argv):
     
     # Parse environment name
     if is_quadruped:
-        # Quadruped velocity tracking environment
         domain, task = parse_env_name(_ENV_NAME.value)
+        task = validate_quadruped_task(task)
         env_name = _ENV_NAME.value
         print(f"Environment: Quadruped ({_ROBOT.value}) / {task}")
     elif is_cheetah3:
@@ -1308,6 +2946,43 @@ def main(argv):
         domain, task = parse_env_name(_ENV_NAME.value)
         env_name = _ENV_NAME.value
         print(f"Environment: {domain}/{task}")
+
+    is_barrel_roll = is_quadruped and task == "barrel_roll"
+    if is_barrel_roll:
+        validate_barrel_roll_training_options(
+            robot=_ROBOT.value,
+            algorithm=_ALGORITHM.value,
+            inject_type=_INJECT_TYPE.value,
+            percentage=_PERCENTAGE.value,
+            replay_mode=_QUADRUPED_MPC_REPLAY_MODE.value,
+            domain_rand_enabled=_DOMAIN_RAND.value,
+            domain_rand_config_type=_DOMAIN_RAND_CONFIG_TYPE.value,
+            use_go2_sysid=_USE_GO2_SYSID.value,
+            data_dir=_DATA_DIR.value,
+            training_seed=_SEED.value,
+            total_timesteps=_TOTAL_TIMESTEPS.value,
+            num_envs=_NUM_ENVS.value,
+            max_episode_steps=_MAX_EPISODE_STEPS.value,
+            eval_freq=_EVAL_FREQ.value,
+            checkpoint_freq=_CHECKPOINT_FREQ.value,
+            enable_logging=_ENABLE_LOGGING.value,
+            save_replay_buffer_checkpoints=(
+                _SAVE_REPLAY_BUFFER_CHECKPOINTS.value
+            ),
+            save_replay_buffer_final=_SAVE_REPLAY_BUFFER_FINAL.value,
+            random_select=_RANDOM_SELECT.value,
+            play_only=_PLAY_ONLY.value,
+            load_run_name=_LOAD_RUN_NAME.value,
+            checkpoint_evals=_CHECKPOINT_EVALS.value,
+            learning_rate=_LEARNING_RATE.value,
+            buffer_size=_BUFFER_SIZE.value,
+            learning_starts=_LEARNING_STARTS.value,
+            batch_size=_BATCH_SIZE.value,
+            tau=_TAU.value,
+            gamma=_GAMMA.value,
+            gradient_steps=_GRADIENT_STEPS.value,
+            policy_delay=_POLICY_DELAY.value,
+        )
 
     checkpoint_eval_steps = parse_checkpoint_eval_steps(_CHECKPOINT_EVALS.value)
     if checkpoint_eval_steps:
@@ -1333,7 +3008,11 @@ def main(argv):
             percentage=_PERCENTAGE.value if _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"] else None
         )
         logdir = Path(_LOGDIR.value) / run_name
-        logdir.mkdir(parents=True, exist_ok=True)
+        if is_barrel_roll and logdir.exists():
+            raise FileExistsError(
+                f"refusing to overwrite barrel-roll run directory: {logdir}"
+            )
+        logdir.mkdir(parents=True, exist_ok=not is_barrel_roll)
         print(f"Created new run: {run_name}")
     
     print(f"Log directory: {logdir}")
@@ -1368,6 +3047,8 @@ def main(argv):
         num_traj=_NUM_TRAJ.value,
         random_select=_RANDOM_SELECT.value,
         data_dir=_DATA_DIR.value,
+        quadruped_mpc_replay_mode=_QUADRUPED_MPC_REPLAY_MODE.value,
+        quadruped_action_interface=_QUADRUPED_ACTION_INTERFACE.value,
         use_go2_sysid=_USE_GO2_SYSID.value,
         cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
     )
@@ -1375,6 +3056,15 @@ def main(argv):
     # ── Domain randomization setup (quadruped only) ──────────────────────
     dr_cfg = None
     if is_quadruped:
+        action_interface = resolve_action_interface(
+            _QUADRUPED_ACTION_INTERFACE.value
+        )
+        print(f"Quadruped action interface: {action_interface.interface_id}")
+        print(
+            "  action_scale="
+            f"{action_interface.action_scale}, action_lpf_cutoff_hz="
+            f"{action_interface.action_lpf_cutoff_hz}"
+        )
         print(
             "Go2 sysID joint dynamics: "
             f"{'ENABLED' if _USE_GO2_SYSID.value else 'DISABLED'}"
@@ -1405,6 +3095,10 @@ def main(argv):
             "task": task,
             "total_timesteps": _TOTAL_TIMESTEPS.value,
             "num_envs": _NUM_ENVS.value,
+            "max_episode_steps": _MAX_EPISODE_STEPS.value,
+            "checkpoint_freq": _CHECKPOINT_FREQ.value,
+            "eval_freq": _EVAL_FREQ.value,
+            "enable_logging": _ENABLE_LOGGING.value,
             "checkpoint_evals": checkpoint_eval_steps,
             "save_replay_buffer_checkpoints": _SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             "save_replay_buffer_final": _SAVE_REPLAY_BUFFER_FINAL.value,
@@ -1412,6 +3106,9 @@ def main(argv):
             "cheetah3_speed_goal": _CHEETAH3_SPEED_GOAL.value,
         })
         if is_quadruped:
+            config_dict["quadruped_action_interface_config"] = (
+                action_interface.to_dict()
+            )
             config_dict["domain_randomization"] = {
                 "enabled": dr_cfg.enable,
                 "config_type": _DOMAIN_RAND_CONFIG_TYPE.value,
@@ -1419,10 +3116,23 @@ def main(argv):
                 "legacy_obs_noise_level": _DOMAIN_RAND_OBS_NOISE.value,
                 "resolved_config": dr_cfg.to_dict(),
             }
+        if is_barrel_roll:
+            barrel_roll_snapshot = barrel_roll_config_snapshot(
+                _DATA_DIR.value,
+                _PERCENTAGE.value,
+            )
+            barrel_roll_snapshot["run_provenance"] = barrel_roll_run_provenance(
+                _DATA_DIR.value
+            )
+            config_dict["barrel_roll"] = barrel_roll_snapshot
         save_config(logdir, config_dict)
 
     # Use simplified reward for quadruped environments when training with MPC injection
-    use_simple_reward = is_quadruped and _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"]
+    use_simple_reward = (
+        is_quadruped
+        and not is_barrel_roll
+        and _ALGORITHM.value in ["SAC-MPC", "TD3-MPC"]
+    )
     if use_simple_reward:
         print("Using simplified reward function (velocity tracking + termination only)")
 
@@ -1435,7 +3145,11 @@ def main(argv):
         vec_env = make_vec_env(
             lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr,
                                       simple_reward=_sr,
-                                      use_go2_sysid=_USE_GO2_SYSID.value),
+                                      use_go2_sysid=_USE_GO2_SYSID.value,
+                                      task=task,
+                                      action_interface_id=(
+                                          _QUADRUPED_ACTION_INTERFACE.value
+                                      )),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )
@@ -1519,6 +3233,7 @@ def main(argv):
             save_replay_buffer_checkpoints=_SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             simple_reward=use_simple_reward,
             use_go2_sysid=_USE_GO2_SYSID.value,
+            action_interface_id=_QUADRUPED_ACTION_INTERFACE.value,
             domain_rand_config_type=(
                 _DOMAIN_RAND_CONFIG_TYPE.value if is_quadruped else "disabled"
             ),
@@ -1560,9 +3275,18 @@ def main(argv):
         # Close eval environment if it was created
         if eval_env is not None:
             eval_env.close()
+
+        if is_barrel_roll and _ENABLE_LOGGING.value:
+            completion = write_barrel_roll_training_completion(logdir, model)
+            print(
+                "Barrel-roll production run complete: "
+                f"seed={completion['training_seed']} "
+                f"selected_step={completion['selected_timesteps']} "
+                f"success={completion['selected_success_rate']:.1%}"
+            )
     
     # Evaluation phase (only if logging enabled)
-    if _ENABLE_LOGGING.value:
+    if _ENABLE_LOGGING.value and not is_barrel_roll:
         if checkpoint_eval_steps:
             evaluate_checkpoint_videos(
                 logdir=logdir,
@@ -1577,6 +3301,7 @@ def main(argv):
                 robot=_ROBOT.value,
                 simple_reward=use_simple_reward,
                 use_go2_sysid=_USE_GO2_SYSID.value,
+                action_interface_id=_QUADRUPED_ACTION_INTERFACE.value,
                 is_cheetah3=is_cheetah3,
                 cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
             )
@@ -1595,6 +3320,7 @@ def main(argv):
             robot=_ROBOT.value,
             simple_reward=use_simple_reward,
             use_go2_sysid=_USE_GO2_SYSID.value,
+            action_interface_id=_QUADRUPED_ACTION_INTERFACE.value,
             is_cheetah3=is_cheetah3,
             cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
         )

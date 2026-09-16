@@ -6,7 +6,7 @@ This document shows the complete working workflow tested on December 16, 2024.
 
 ```bash
 conda activate mpc-rl  # Your conda environment with SBX and dependencies
-cd /home/roy/MPC-RL
+cd /home/roy/MPC-Injection
 ```
 
 ## Step 1: Generate Evaluation Jobs
@@ -142,7 +142,7 @@ python reward_surfaces/scripts/plot_plane.py demo/test_surface/results.csv \
 ## Troubleshooting
 
 **ModuleNotFoundError: No module named 'mpc_rl'**
-- Solution: Run from `/home/roy/MPC-RL` directory
+- Solution: Run from `/home/roy/MPC-Injection` directory
 
 **AttributeError: actor.params**
 - Fixed! Now uses `actor_state.params` and `qf_state.params`

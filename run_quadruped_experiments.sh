@@ -16,35 +16,36 @@
 ENV_NAME="quadruped-velocity_tracking"
 ALGORITHM="SAC-MPC"
 TOTAL_TIMESTEPS=1000000
-NUM_ENVS=256
+NUM_ENVS=4
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="True"
 DOMAIN_RAND="False"
 DOMAIN_RAND_OBS_NOISE=0.0
 USE_GO2_SYSID="True"
-#DATA_DIR="data/quadruped/"
-DATA_DIR="data/quadruped_dr/sysid_nominal/" # Misleading dir placement, doesn't have DR, just sys ID data
+DATA_DIR="data/quadruped/"
+#DATA_DIR="data/quadruped_dr/sysid_nominal/" # Misleading dir placement, doesn't have DR, just sys ID data
+QUADRUPED_MPC_REPLAY_MODE="torque_current_pd" # direct (used when data has converted pd) | torque_saved_pd | torque_current_pd (used for re-calculating pd)
 BUFFER_SIZE=5000000
-LEARNING_RATE=3e-4
+LEARNING_RATE=3e-4 # OG 3e-4
 POLICY_DELAY=2
 BATCH_SIZE=256 # 256 for sim, 512 for sim2real
-#LOG_DIR="logs/TD3-MPC-quadruped_x_vel_only_runs_min_rwrd/"
+LOG_DIR="logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_ablation/"
 #LOG_DIR="logs/SAC-MPC-quadruped_x_vel_only_runs_min_rwrd_tiles_256/"
-LOG_DIR="logs/SAC-MPC-quadruped_sysid_nominal/"
+#LOG_DIR="logs/SAC-MPC-quadruped_sysid_nominal/"
 
 # MPC percentage sweep values
-#PERCENTAGES=(0 25 50)
-PERCENTAGES=(25)
+PERCENTAGES=(0 25 50 75 100)
 
 # Seeds to sweep over
-#SEEDS=(1 50)
-SEEDS=(100 150)
+#SEEDS=(100 150)
+#SEEDS=(200 250)
+SEEDS=(300 350)
 
 # Additional checkpoint video evaluations to record during each run.
 # Bash arrays are space-separated; the script converts them to the
 # comma-separated --checkpoint_evals flag expected by train.py.
-CHECKPOINT_EVALS=(300000 400000 500000 600000)
+CHECKPOINT_EVALS=(500000)
 CHECKPOINT_EVALS_CSV=$(IFS=,; echo "${CHECKPOINT_EVALS[*]}")
 
 echo "Starting ${ALGORITHM} quadruped percentage sweep experiments"

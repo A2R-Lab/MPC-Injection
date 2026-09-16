@@ -42,6 +42,7 @@ from mpc_rl.envs.domain_randomization import (
     sample_startup_domain_rand_patch,
 )
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+from mpc_rl.planner.gen_traj_data_mpx_bound import generate_trajectory as generate_bound_mpx_trajectory
 from mpc_rl.planner.gen_traj_data_mpx_dr import (
     gen_traj_quadruped_dr,
     generate_trajectory as generate_dr_mpx_trajectory,
@@ -228,6 +229,30 @@ class TestFixedCommands:
 class TestEnvSanity:
     """Basic gym.Env contract tests."""
 
+    def test_model_load_uses_unique_removed_scratch_xml(self, monkeypatch):
+        """Each model load must use and remove its own XML scratch file."""
+        real_mkstemp = tempfile.mkstemp
+        scratch_paths = []
+
+        def tracking_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            scratch_paths.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(
+            "mpc_rl.envs.velocity_tracking_env.tempfile.mkstemp",
+            tracking_mkstemp,
+        )
+
+        first = QuadrupedVelocityTrackingEnv(robot="go2", scene="flat")
+        first.close()
+        second = QuadrupedVelocityTrackingEnv(robot="go2", scene="flat")
+        second.close()
+
+        assert len(scratch_paths) == 2
+        assert scratch_paths[0] != scratch_paths[1]
+        assert all(not path.exists() for path in scratch_paths)
+
     def test_observation_space_dict(self, env):
         """Observation space should be a Dict with 'policy' and 'privileged'."""
         assert "policy" in env.observation_space.spaces
@@ -314,6 +339,282 @@ class TestEnvSanity:
         assert info["base_height"] > 0.15, (
             f"Base height {info['base_height']:.3f}m is too low"
         )
+
+
+class TestRewardConfiguration:
+    """Reward-shaping regression tests for the shared full reward."""
+
+    def test_reward_tuning_values(self):
+        """Shared full reward should use the locomotion tune."""
+        cfg = QuadrupedVelocityTrackingEnv._default_reward_cfg()
+
+        assert cfg["w_track_lin_vel"] == pytest.approx(4.0)
+        assert cfg["w_lin_vel_forward"] == pytest.approx(6.0)
+        assert cfg["w_track_ang_vel"] == pytest.approx(2.5)
+        assert cfg["w_flat_orientation"] == pytest.approx(-0.7)
+        assert cfg["w_pose"] == pytest.approx(0.42)
+        assert cfg["w_track_base_height"] == pytest.approx(1.0)
+        assert cfg["base_height_target"] == pytest.approx(0.27)
+        assert cfg["base_height_sigma"] == pytest.approx(0.01)
+        assert cfg["w_body_ang_vel"] == pytest.approx(-0.16)
+        assert cfg["w_angular_momentum"] == pytest.approx(-0.014)
+        assert cfg["w_action_rate"] == pytest.approx(-0.045)
+        assert cfg["w_feet_air_time"] == pytest.approx(0.75)
+        assert cfg["w_feet_clearance"] == pytest.approx(-1.0)
+        assert cfg["w_feet_slip"] == pytest.approx(-0.12)
+
+    def test_simple_reward_dispatch_still_bypasses_full_reward(self, env):
+        """The MPC-injection simple reward guard must remain intact."""
+        env.simple_reward = True
+        sentinel_reward = 123.456
+
+        def _sentinel_simple_reward(action, terminated):
+            del action, terminated
+            return sentinel_reward
+
+        env._compute_simple_reward = _sentinel_simple_reward
+
+        reward = env._compute_reward(np.zeros(env.num_joints), terminated=False)
+
+        assert reward == pytest.approx(sentinel_reward)
+
+
+class TestActionLowPassFilter:
+    """Verify policy targets are filtered before PD control."""
+
+    def test_default_action_lpf_cutoff(self, env):
+        """Default action target LPF should be enabled at 5 Hz."""
+        assert env.action_lpf_cutoff_hz == pytest.approx(5.0)
+        expected_alpha = 1.0 - np.exp(-2.0 * np.pi * 5.0 * env.control_dt)
+        assert env.action_lpf_alpha == pytest.approx(expected_alpha)
+
+    def test_action_lpf_filters_joint_targets(self, env):
+        """First nonzero action should move the PD target partway from default pose."""
+        env.reset(seed=42)
+        action = np.ones(env.num_joints)
+        raw_target = env.default_joint_pos + env.action_scale * action
+        expected_target = (
+            env.default_joint_pos
+            + env.action_lpf_alpha * (raw_target - env.default_joint_pos)
+        )
+
+        env.step(action)
+
+        np.testing.assert_allclose(env._raw_q_target, raw_target)
+        np.testing.assert_allclose(env._filtered_q_target, expected_target)
+
+    def test_action_lpf_can_be_disabled(self):
+        """Setting cutoff to None should pass raw targets straight to the PD loop."""
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            action_lpf_cutoff_hz=None,
+        )
+        try:
+            env.reset(seed=42)
+            action = np.ones(env.num_joints)
+            expected_target = env.default_joint_pos + env.action_scale * action
+
+            env.step(action)
+
+            assert env.action_lpf_alpha == pytest.approx(1.0)
+            np.testing.assert_allclose(env._filtered_q_target, expected_target)
+        finally:
+            env.close()
+
+
+class TestSubstepDiagnostics:
+    """Verify opt-in diagnostics cover the exact environment control loop."""
+
+    def test_diagnostics_are_disabled_by_default(self, env):
+        env.reset(seed=42)
+
+        _, _, _, _, info = env.step(np.zeros(env.num_joints))
+
+        assert "substep_diagnostics" not in info
+        assert env._last_substep_diagnostics is None
+
+    def test_diagnostics_capture_clipping_torque_contacts_and_state(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(
+                enable=False, push_robots=False
+            ),
+            enable_substep_diagnostics=True,
+        )
+        try:
+            env.reset(seed=42)
+            env.torque_limits[:] = np.array([-0.01, 0.01])
+
+            _, _, _, _, info = env.step(np.full(env.num_joints, 2.0))
+            diagnostics = info["substep_diagnostics"]
+
+            np.testing.assert_array_equal(
+                diagnostics["clipped_action"], np.ones(env.num_joints)
+            )
+            assert np.all(diagnostics["action_clipping_mask"])
+            np.testing.assert_allclose(
+                diagnostics["action_clipping_magnitude"],
+                np.ones(env.num_joints),
+            )
+            assert diagnostics["requested_torques"].shape == (
+                env.decimation,
+                env.num_joints,
+            )
+            assert diagnostics["applied_torques"].shape == (
+                env.decimation,
+                env.num_joints,
+            )
+            assert diagnostics["torque_saturation_mask"].shape == (
+                env.decimation,
+                env.num_joints,
+            )
+            assert np.any(diagnostics["torque_saturation_mask"])
+            np.testing.assert_allclose(
+                diagnostics["torque_saturation_magnitude"],
+                np.abs(
+                    diagnostics["requested_torques"]
+                    - diagnostics["applied_torques"]
+                ),
+            )
+            assert diagnostics["foot_contacts"].shape == (
+                env.decimation,
+                4,
+            )
+            assert diagnostics["non_foot_ground_contact"].shape == (
+                env.decimation,
+            )
+            assert diagnostics["qpos"].shape == (
+                env.decimation,
+                env.mjModel.nq,
+            )
+            assert diagnostics["qvel"].shape == (
+                env.decimation,
+                env.mjModel.nv,
+            )
+            assert diagnostics["time"].shape == (env.decimation,)
+            assert diagnostics["push_delta_qvel"].shape == (6,)
+            np.testing.assert_array_equal(
+                diagnostics["applied_torques"][-1], info["applied_torques"]
+            )
+        finally:
+            env.close()
+
+    def test_transient_non_foot_contact_is_retained(self):
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            enable_substep_diagnostics=True,
+        )
+        try:
+            env.reset(seed=42)
+            contacts = iter(
+                [None, ("base", "base touched ground"), None, None]
+            )
+            env._find_non_foot_ground_contact = lambda: next(contacts)
+
+            _, _, _, _, info = env.step(np.zeros(env.num_joints))
+            diagnostics = info["substep_diagnostics"]
+
+            np.testing.assert_array_equal(
+                diagnostics["non_foot_ground_contact"],
+                [False, True, False, False],
+            )
+            assert diagnostics["non_foot_ground_contact_body"][1] == "base"
+            assert (
+                diagnostics["non_foot_ground_contact_detail"][1]
+                == "base touched ground"
+            )
+        finally:
+            env.close()
+
+    def test_enabling_diagnostics_does_not_change_transition(self):
+        common_kwargs = {
+            "robot": "go2",
+            "scene": "flat",
+            "domain_rand_cfg": DomainRandomizationConfig(
+                enable=False, push_robots=False
+            ),
+        }
+        plain_env = QuadrupedVelocityTrackingEnv(**common_kwargs)
+        diagnostic_env = QuadrupedVelocityTrackingEnv(
+            **common_kwargs,
+            enable_substep_diagnostics=True,
+        )
+        try:
+            plain_obs, _ = plain_env.reset(seed=17)
+            diagnostic_obs, _ = diagnostic_env.reset(seed=17)
+            action = np.linspace(-0.8, 0.8, plain_env.num_joints)
+
+            plain_transition = plain_env.step(action)
+            diagnostic_transition = diagnostic_env.step(action)
+
+            np.testing.assert_array_equal(
+                plain_obs["policy"], diagnostic_obs["policy"]
+            )
+            np.testing.assert_array_equal(
+                plain_transition[0]["policy"],
+                diagnostic_transition[0]["policy"],
+            )
+            np.testing.assert_array_equal(
+                plain_transition[0]["privileged"],
+                diagnostic_transition[0]["privileged"],
+            )
+            assert plain_transition[1:4] == diagnostic_transition[1:4]
+            np.testing.assert_array_equal(
+                plain_env.mjData.qpos, diagnostic_env.mjData.qpos
+            )
+            np.testing.assert_array_equal(
+                plain_env.mjData.qvel, diagnostic_env.mjData.qvel
+            )
+        finally:
+            plain_env.close()
+            diagnostic_env.close()
+
+    def test_deterministic_push_schedule_uses_zero_based_control_steps(self):
+        delta = np.array([0.2, -0.1, 0.05, 0.08, -0.06, 0.12])
+        env = QuadrupedVelocityTrackingEnv(
+            robot="go2",
+            scene="flat",
+            domain_rand_cfg=DomainRandomizationConfig(
+                enable=False, push_robots=False
+            ),
+            enable_substep_diagnostics=True,
+            deterministic_push_schedule={1: delta},
+        )
+        try:
+            env.reset(seed=42)
+
+            first_info = env.step(np.zeros(env.num_joints))[4]
+            second_info = env.step(np.zeros(env.num_joints))[4]
+
+            np.testing.assert_array_equal(
+                first_info["substep_diagnostics"]["push_delta_qvel"],
+                np.zeros(6),
+            )
+            np.testing.assert_array_equal(
+                second_info["substep_diagnostics"]["push_delta_qvel"],
+                delta,
+            )
+        finally:
+            env.close()
+
+    @pytest.mark.parametrize(
+        "schedule",
+        [
+            {-1: np.zeros(6)},
+            {0: np.zeros(5)},
+            {0: np.array([0.0, 0.0, 0.0, 0.0, 0.0, np.nan])},
+        ],
+    )
+    def test_invalid_deterministic_push_schedule_is_rejected(self, schedule):
+        with pytest.raises(ValueError, match="deterministic push"):
+            QuadrupedVelocityTrackingEnv(
+                robot="go2",
+                scene="flat",
+                deterministic_push_schedule=schedule,
+            )
 
 
 class TestNominalPlantAlignment:
@@ -544,6 +845,40 @@ class TestStartupDomainRandomizationPatch:
         assert "rewards" in dr_disabled
         assert dr_disabled["policy_obs"].shape[0] == 3
         assert dr_disabled["next_policy_obs"].shape[0] == 3
+        assert extract_startup_domain_rand_patch(dr_disabled) is not None
+
+    def test_disabled_bound_generator_uses_new_direct_transition_schema(self):
+        dr_disabled = generate_bound_mpx_trajectory(
+            seed=5,
+            domain_rand_config_type="disabled",
+            mpc=FakeQuadrupedMPC(),
+            episode_length=3,
+            verbose=0,
+            render=False,
+        )
+
+        assert dr_disabled["dr_enabled"] is False
+        assert dr_disabled["dr_config_type"] == "disabled"
+        assert int(dr_disabled["controller_delay_steps"]) == 0
+        assert float(dr_disabled["controller_delay_s"]) == pytest.approx(0.0)
+        assert dr_disabled["dr_added_mass_kg"] == pytest.approx(0.0)
+        assert "body_mass" not in dr_disabled["dr_applied_fields"].tolist()
+        assert "policy_obs" in dr_disabled
+        assert "next_policy_obs" in dr_disabled
+        assert "actions" in dr_disabled
+        assert "rewards" in dr_disabled
+        assert dr_disabled["policy_obs"].shape[0] == 3
+        assert dr_disabled["next_policy_obs"].shape[0] == 3
+        assert dr_disabled["raw_actions"].shape == (3, 12)
+        assert dr_disabled["action_clipping_mask"].shape == (3, 12)
+        assert dr_disabled["next_qpos_ctrl"].shape == (3, 19)
+        assert dr_disabled["next_qvel_ctrl"].shape == (3, 18)
+        assert dr_disabled["requested_torques_ctrl"].shape == (3, 4, 12)
+        assert dr_disabled["applied_torques_ctrl"].shape == (3, 4, 12)
+        assert dr_disabled["torque_saturation_mask"].shape == (3, 4, 12)
+        assert dr_disabled["foot_contacts_substeps"].shape == (3, 4, 4)
+        assert dr_disabled["non_foot_ground_contact_substeps"].shape == (3, 4)
+        assert dr_disabled["push_delta_qvel"].shape == (3, 6)
         assert extract_startup_domain_rand_patch(dr_disabled) is not None
 
     def test_dr_replay_matches_saved_rollout_for_short_horizon(self):

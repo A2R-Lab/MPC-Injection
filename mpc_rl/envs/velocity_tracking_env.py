@@ -19,7 +19,8 @@ Observation space (Dict):
 
 Action space (12-dim):
     Joint position targets as residuals around the default standing pose.
-    action_applied = default_joint_pos + action_scale * action
+    raw_target = default_joint_pos + action_scale * action
+    action_applied = low_pass_filter(raw_target)
     A PD controller converts targets to torques: tau = Kp*(q_target - q) + Kd*(0 - dq)
 
 The asymmetric observation design enables:
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,7 @@ from scipy.spatial.transform import Rotation
 from gym_quadruped.robot_cfgs import RobotConfig, get_robot_config
 from gym_quadruped.utils.mujoco.terrain import generate_terrain
 
+from mpc_rl.envs.action_interfaces import compute_action_lpf_alpha
 from mpc_rl.envs.domain_randomization import (
     DomainRandomizationConfig,
     apply_startup_domain_rand_patch as apply_startup_domain_rand_patch_to_model,
@@ -68,6 +71,17 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 50}
+    _SIMPLE_REWARD_CFG = {
+        "tracking_sigma": 0.25,
+        "w_track_lin_vel": 1.5,
+        "w_track_ang_vel": 1.5,
+        "w_lin_vel_forward": 1.5,
+        "w_ang_vel_forward": 1.0,
+        "w_is_terminated": -10.0,
+        "w_joint_acc": -3.0e-7,
+        "w_action_rate": -0.03,
+        "only_positive_rewards": False,
+    }
 
     def __init__(
         self,
@@ -92,6 +106,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         kd: float | dict[str, float] | None = None,
         
         action_scale: float = 0.5, # NOTE: mjlab uses 0.5
+        action_lpf_cutoff_hz: float | None = 5.0,
         # Command ranges
         lin_vel_x_range: tuple[float, float] = (0., 0.5), #(-0.5, 0.5), # NOTE mjlab biases forward
         lin_vel_y_range: tuple[float, float] = (0., 0.), #(-0.25, 0.25),
@@ -109,6 +124,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         apply_startup_domain_rand_on_init: bool = True,
         # Simplified reward mode (for MPC-injection training)
         simple_reward: bool = False,
+        # Opt-in exact control-loop diagnostics for trajectory validation
+        enable_substep_diagnostics: bool = False,
+        # Validation-only fixed pushes keyed by zero-based control step
+        deterministic_push_schedule: dict[int, np.ndarray] | None = None,
     ):
         """Initialize the velocity tracking environment.
 
@@ -126,6 +145,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             kp: Proportional gain for PD controller.
             kd: Derivative gain for PD controller.
             action_scale: Scaling factor for action residuals (radians).
+            action_lpf_cutoff_hz: First-order low-pass cutoff for absolute joint
+                targets before the PD controller. Set to None or <= 0 to disable.
             lin_vel_x_range: Range for commanded x velocity (m/s).
             lin_vel_y_range: Range for commanded y velocity (m/s).
             ang_vel_z_range: Range for commanded yaw rate (rad/s).
@@ -138,6 +159,13 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
                 velocity tracking and termination penalty. Used when training
                 with MPC injection (SAC-MPC/TD3-MPC) to provide a cleaner
                 learning signal that aligns better with MPC demonstrations.
+            enable_substep_diagnostics: If True, include action clipping and
+                per-simulation-substep torque, contact, state, and non-foot
+                contact diagnostics in ``info``. Disabled by default.
+            deterministic_push_schedule: Optional validation-only mapping from
+                zero-based control-step index to a six-element base velocity
+                delta `[x, y, z, roll, pitch, yaw]`. When supplied, it replaces
+                stochastic interval pushes. Normal training leaves it unset.
         """
         super().__init__()
 
@@ -154,6 +182,13 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._kp_init = kp
         self._kd_init = kd
         self.action_scale = np.float64(action_scale)
+        self.action_lpf_cutoff_hz = (
+            None if action_lpf_cutoff_hz is None else np.float64(action_lpf_cutoff_hz)
+        )
+        self.action_lpf_alpha = self._compute_lpf_alpha(
+            self.action_lpf_cutoff_hz,
+            self.control_dt,
+        )
 
         # Command ranges
         self.lin_vel_x_range = lin_vel_x_range
@@ -177,6 +212,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         # Simplified reward mode
         self.simple_reward = simple_reward
+        self.enable_substep_diagnostics = bool(enable_substep_diagnostics)
+        self._deterministic_push_schedule = self._validate_push_schedule(
+            deterministic_push_schedule
+        )
 
         # Reward configuration
         self.reward_cfg = self._default_reward_cfg()
@@ -231,6 +270,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
                 f"Foot geom '{geom_name}' not found in MuJoCo model"
             )
             self._foot_geom_ids[leg_name] = geom_id
+        self._foot_names = tuple(self._foot_geom_ids.keys())
+        self._foot_name_to_idx = {
+            name: i for i, name in enumerate(self._foot_names)
+        }
         self._foot_geom_id_set = set(self._foot_geom_ids.values())
         self._num_feet = len(self._foot_geom_ids)
 
@@ -323,7 +366,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         self._commands = np.zeros(3, dtype=np.float64)
         self._last_action = np.zeros(self.num_joints, dtype=np.float64)
         self._prev_last_action = np.zeros(self.num_joints, dtype=np.float64)
+        self._raw_q_target = self.default_joint_pos.copy()
+        self._filtered_q_target = self.default_joint_pos.copy()
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
+        self._last_substep_diagnostics: dict[str, np.ndarray] | None = None
         self._step_count = 0
         self._steps_since_command_resample = 0
         self._fixed_commands = False  # When True, step() will NOT auto-resample commands
@@ -390,26 +436,73 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             truncated: Whether the episode was truncated (handled by gymnasium wrapper).
             info: Additional information dictionary.
         """
-        action = np.clip(action, -1.0, 1.0).astype(np.float64)
+        raw_action = np.asarray(action, dtype=np.float64)
+        action = np.clip(raw_action, -1.0, 1.0).astype(np.float64)
 
         # Store previous action for action rate penalty
         self._prev_last_action = self._last_action.copy()
         self._last_action = action.copy()
+        self._before_control_step()
 
-        # Compute joint position targets
-        q_target = self.default_joint_pos + self.action_scale * action
+        # Compute and filter joint position targets before the PD controller.
+        self._raw_q_target = self.default_joint_pos + self.action_scale * action
+        q_target = self._apply_action_lpf(self._raw_q_target)
+
+        substep_diagnostics = None
+        if self.enable_substep_diagnostics:
+            action_clip_delta = raw_action - action
+            substep_diagnostics = {
+                "raw_action": raw_action.copy(),
+                "clipped_action": action.copy(),
+                "action_clipping_mask": action_clip_delta != 0.0,
+                "action_clipping_magnitude": np.abs(action_clip_delta),
+                "raw_q_target": self._raw_q_target.copy(),
+                "filtered_q_target": q_target.copy(),
+                "requested_torques": np.zeros(
+                    (self.decimation, self.num_joints), dtype=np.float64
+                ),
+                "applied_torques": np.zeros(
+                    (self.decimation, self.num_joints), dtype=np.float64
+                ),
+                "torque_saturation_mask": np.zeros(
+                    (self.decimation, self.num_joints), dtype=bool
+                ),
+                "torque_saturation_magnitude": np.zeros(
+                    (self.decimation, self.num_joints), dtype=np.float64
+                ),
+                "foot_contacts": np.zeros(
+                    (self.decimation, self._num_feet), dtype=bool
+                ),
+                "non_foot_ground_contact": np.zeros(self.decimation, dtype=bool),
+                "non_foot_ground_contact_body": np.full(
+                    self.decimation, "", dtype="<U64"
+                ),
+                "non_foot_ground_contact_detail": np.full(
+                    self.decimation, "", dtype="<U256"
+                ),
+                "qpos": np.zeros(
+                    (self.decimation, self.mjModel.nq), dtype=np.float64
+                ),
+                "qvel": np.zeros(
+                    (self.decimation, self.mjModel.nv), dtype=np.float64
+                ),
+                "time": np.zeros(self.decimation, dtype=np.float64),
+                "push_delta_qvel": np.zeros(6, dtype=np.float64),
+            }
 
         # Apply PD control for `decimation` simulation steps
-        for _ in range(self.decimation):
+        for substep in range(self.decimation):
             q_current = self.mjData.qpos[7:]
             dq_current = self.mjData.qvel[6:]
 
             # PD controller: tau = Kp * (q_target - q) + Kd * (0 - dq)
-            torques = self.kp * (q_target - q_current) + self.kd * (0.0 - dq_current)
+            requested_torques = (
+                self.kp * (q_target - q_current) + self.kd * (0.0 - dq_current)
+            )
 
             # Clip torques to actuator limits
             torques = np.clip(
-                torques,
+                requested_torques,
                 self.torque_limits[:, 0],
                 self.torque_limits[:, 1],
             )
@@ -417,12 +510,52 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
             self.mjData.ctrl[:] = torques
             mujoco.mj_step(self.mjModel, self.mjData)
+            self._after_physics_substep()
+            if self._physics_substeps_should_stop():
+                break
+
+            if substep_diagnostics is not None:
+                torque_clip_delta = requested_torques - torques
+                substep_diagnostics["requested_torques"][substep] = (
+                    requested_torques
+                )
+                substep_diagnostics["applied_torques"][substep] = torques
+                substep_diagnostics["torque_saturation_mask"][substep] = (
+                    torque_clip_delta != 0.0
+                )
+                substep_diagnostics["torque_saturation_magnitude"][substep] = (
+                    np.abs(torque_clip_delta)
+                )
+                substep_diagnostics["foot_contacts"][substep] = (
+                    self._get_foot_contacts()
+                )
+                non_foot_contact = self._find_non_foot_ground_contact()
+                if non_foot_contact is not None:
+                    body_name, detail = non_foot_contact
+                    substep_diagnostics["non_foot_ground_contact"][substep] = True
+                    substep_diagnostics["non_foot_ground_contact_body"][substep] = (
+                        body_name
+                    )
+                    substep_diagnostics["non_foot_ground_contact_detail"][substep] = (
+                        detail
+                    )
+                substep_diagnostics["qpos"][substep] = self.mjData.qpos
+                substep_diagnostics["qvel"][substep] = self.mjData.qvel
+                substep_diagnostics["time"][substep] = self.mjData.time
 
         self._step_count += 1
         self._steps_since_command_resample += 1
 
         # Apply random perturbation (push) periodically
+        base_qvel_before_push = None
+        if substep_diagnostics is not None:
+            base_qvel_before_push = self.mjData.qvel[:6].copy()
         self._maybe_push_robot()
+        if substep_diagnostics is not None:
+            substep_diagnostics["push_delta_qvel"] = (
+                self.mjData.qvel[:6] - base_qvel_before_push
+            )
+            self._last_substep_diagnostics = substep_diagnostics
 
         # Update feet air time tracking (also updates swing peak & first_contact)
         self._update_feet_air_time()
@@ -518,7 +651,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         # Reset internal state
         self._last_action = np.zeros(self.num_joints, dtype=np.float64)
         self._prev_last_action = np.zeros(self.num_joints, dtype=np.float64)
+        self._raw_q_target = self.default_joint_pos.copy()
+        self._filtered_q_target = self.default_joint_pos.copy()
         self._applied_torques = np.zeros(self.num_joints, dtype=np.float64)
+        self._last_substep_diagnostics = None
         self._feet_air_time = np.zeros(self._num_feet, dtype=np.float64)
         self._feet_contact_time = np.zeros(self._num_feet, dtype=np.float64)
         self._last_foot_contacts = np.zeros(self._num_feet, dtype=bool)
@@ -542,6 +678,46 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         obs = self._get_obs()
         info = self._get_info()
         return obs, info
+
+    @staticmethod
+    def _compute_lpf_alpha(cutoff_hz: float | None, dt: float) -> np.float64:
+        """Return first-order LPF alpha for y += alpha * (x - y)."""
+        return compute_action_lpf_alpha(cutoff_hz, dt)
+
+    @staticmethod
+    def _validate_push_schedule(
+        schedule: dict[int, np.ndarray] | None,
+    ) -> dict[int, np.ndarray] | None:
+        """Validate and copy a deterministic validation push schedule."""
+        if schedule is None:
+            return None
+
+        validated = {}
+        for control_step, delta in schedule.items():
+            if not isinstance(control_step, (int, np.integer)) or control_step < 0:
+                raise ValueError(
+                    "deterministic push steps must be non-negative integers"
+                )
+            delta_array = np.asarray(delta, dtype=np.float64)
+            if delta_array.shape != (6,):
+                raise ValueError(
+                    "deterministic push deltas must have shape (6,), got "
+                    f"{delta_array.shape} at step {control_step}"
+                )
+            if not np.all(np.isfinite(delta_array)):
+                raise ValueError("deterministic push deltas must be finite")
+            validated[int(control_step)] = delta_array.copy()
+        return validated
+
+    def _apply_action_lpf(self, raw_q_target: np.ndarray) -> np.ndarray:
+        """Filter absolute joint-position targets before PD control."""
+        if self.action_lpf_alpha >= 1.0:
+            self._filtered_q_target = raw_q_target.copy()
+        else:
+            self._filtered_q_target += (
+                self.action_lpf_alpha * (raw_q_target - self._filtered_q_target)
+            )
+        return self._filtered_q_target.copy()
 
     def render(self) -> np.ndarray | None:
         """Render the environment.
@@ -684,9 +860,10 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         Values from unitree_rl_mjlab Go2 configuration.
         """
-        # Per-joint-type standard deviations (Go2 config from mjlab)
+        # Per-joint-type standard deviations (Go2 config from mjlab, with a
+        # mildly tighter walking/running hip tolerance to reduce lateral bowing).
         std_map = {
-            'hip_joint':   {'standing': 0.05, 'walking': 0.15, 'running': 0.15},
+            'hip_joint':   {'standing': 0.05, 'walking': 0.13, 'running': 0.13},
             'thigh_joint': {'standing': 0.1,  'walking': 0.35, 'running': 0.35},
             'calf_joint':  {'standing': 0.15, 'walking': 0.5,  'running': 0.5},
         }
@@ -749,11 +926,24 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         include.attrib["file"] = str(robot_xml_path.absolute().resolve())
         root.insert(0, include)
 
-        # Write combined scene to temp file and load
-        combined_scene_path = procedural_assets_path / f"{self.robot_name}-{scene}-veltrack.xml"
-        scene_env.write(combined_scene_path)
-
-        self.mjModel = mujoco.MjModel.from_xml_path(str(combined_scene_path.absolute()))
+        # MuJoCo resolves relative assets from the XML's directory, so keep the
+        # scratch file beside the procedural assets.  The path must be unique:
+        # concurrent training/evaluation processes otherwise truncate and parse
+        # the same file at the same time.
+        combined_scene_fd, combined_scene_name = tempfile.mkstemp(
+            dir=procedural_assets_path,
+            prefix=f".{self.robot_name}-{scene}-veltrack-",
+            suffix=".xml",
+        )
+        os.close(combined_scene_fd)
+        combined_scene_path = Path(combined_scene_name)
+        try:
+            scene_env.write(combined_scene_path)
+            self.mjModel = mujoco.MjModel.from_xml_path(
+                str(combined_scene_path.absolute())
+            )
+        finally:
+            combined_scene_path.unlink(missing_ok=True)
         if self.robot_name.lower() == "go2" and self.use_go2_sysid:
             apply_go2_sysid_joint_dynamics(self.mjModel)
         self.mjData = mujoco.MjData(self.mjModel)
@@ -942,6 +1132,79 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         return contacts
 
+    def _after_physics_substep(self) -> None:
+        """Optional task hook invoked after every MuJoCo physics step.
+
+        Velocity tracking intentionally leaves this as a no-op. Tasks that
+        need physics-rate safety bookkeeping (for example barrel rolls) can
+        override it without copying the control loop.
+        """
+        return None
+
+    def _physics_substeps_should_stop(self) -> bool:
+        """Allow task-specific immediate failures to stop the control step."""
+        return False
+
+    def _before_control_step(self) -> None:
+        """Optional task hook invoked once before the physics substeps."""
+        return None
+
+    def _geom_body_label(self, geom_id: int) -> str:
+        """Return a compact geom/body label for contact diagnostics."""
+        geom_name = mujoco.mj_id2name(
+            self.mjModel, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+        )
+        body_id = int(self.mjModel.geom_bodyid[geom_id])
+        body_name = mujoco.mj_id2name(
+            self.mjModel, mujoco.mjtObj.mjOBJ_BODY, body_id
+        )
+        geom_label = geom_name if geom_name else f"geom_{geom_id}"
+        body_label = body_name if body_name else f"body_{body_id}"
+        return f"{geom_label}({body_label})"
+
+    def _body_is_descendant_of(self, body_id: int, root_body_id: int) -> bool:
+        """Return whether a body belongs to the requested MuJoCo subtree."""
+        while body_id != 0:
+            if body_id == root_body_id:
+                return True
+            body_id = int(self.mjModel.body_parentid[body_id])
+        return False
+
+    def _find_non_foot_ground_contact(self) -> tuple[str, str] | None:
+        """Return the first robot non-foot/world-ground contact, if present."""
+        for contact_idx in range(self.mjData.ncon):
+            contact = self.mjData.contact[contact_idx]
+            geom1, geom2 = int(contact.geom1), int(contact.geom2)
+            body1 = int(self.mjModel.geom_bodyid[geom1])
+            body2 = int(self.mjModel.geom_bodyid[geom2])
+
+            if body1 == 0 and body2 == 0:
+                continue
+            if body1 != 0 and body2 != 0:
+                continue
+
+            ground_geom = geom1 if body1 == 0 else geom2
+            robot_geom = geom2 if body1 == 0 else geom1
+            if robot_geom in self._foot_geom_id_set:
+                continue
+
+            robot_body_id = int(self.mjModel.geom_bodyid[robot_geom])
+            if not self._body_is_descendant_of(
+                robot_body_id, int(self._base_body_id)
+            ):
+                continue
+
+            robot_body_name = mujoco.mj_id2name(
+                self.mjModel, mujoco.mjtObj.mjOBJ_BODY, robot_body_id
+            )
+            detail = (
+                f"{self._geom_body_label(robot_geom)} touched "
+                f"{self._geom_body_label(ground_geom)}"
+            )
+            return (robot_body_name or f"body_{robot_body_id}", detail)
+
+        return None
+
     def _get_foot_positions(self) -> np.ndarray:
         """Get world-frame positions of all feet. Shape (num_feet, 3)."""
         positions = np.zeros((self._num_feet, 3))
@@ -1055,7 +1318,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - ang_vel_forward: Linear angular velocity toward command
             - alive: Constant per-step survival bonus
             - variable_posture: Speed-dependent default pose tracking
+            - track_base_height: Exponential tracking of target base height
             - feet_air_time: Encourage trotting gait with proper timing
+            - foot_gait: Encourage diagonal trot contact timing
 
         Penalties (discourage undesired behavior):
             - flat_orientation_l2: Penalize body tilt
@@ -1068,6 +1333,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - feet_clearance: Penalize incorrect foot height during swing
             - feet_slip: Penalize foot sliding during contact
             - soft_landing: Penalize high impact forces at landing
+            - bad_two_foot_contacts: Penalize bounding/pacing two-foot support
+            - lateral_vel: Penalize sideways drift when commanded to walk
+            - pitch_tilt: Penalize persistent forward/backward body tilt
         """
         if self.simple_reward:
             return self._compute_simple_reward(action, terminated)
@@ -1118,6 +1386,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             lin_vel_forward_reward = np.clip(vel_proj, 0.0, cmd_speed)
         else:
             lin_vel_forward_reward = 0.0
+        lateral_vel_penalty = (base_lin_vel_body[1] ** 2) * cmd_active
 
         # ------------------------------------------------------------
         # 2c. Angular forward velocity reward (weight > 0)
@@ -1154,6 +1423,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         pose_reward = np.exp(-np.mean(joint_pos_error ** 2 / (std ** 2)))
 
         # ------------------------------------------------------------
+        # 4b. Track base height (weight > 0)
+        #     Prevents low crouched gaits that satisfy velocity tracking with
+        #     knees close to the ground.
+        # ------------------------------------------------------------
+        base_height_error = (self.mjData.qpos[2] - cfg["base_height_target"]) ** 2
+        track_base_height = np.exp(-base_height_error / cfg["base_height_sigma"])
+
+        # ------------------------------------------------------------
         # 5. Body angular velocity penalty (weight < 0)
         #    sum(ang_vel_world_xy^2): penalizes rocking in world frame.
         # ------------------------------------------------------------
@@ -1162,6 +1439,8 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         R = Rotation.from_quat(quat_xyzw).as_matrix()
         ang_vel_world = R @ base_ang_vel_body
         body_ang_vel_penalty = np.sum(ang_vel_world[:2] ** 2)
+        base_euler = Rotation.from_matrix(R).as_euler("xyz")
+        pitch_tilt_penalty = base_euler[1] ** 2
 
         # ------------------------------------------------------------
         # 6. Angular momentum penalty (weight < 0)
@@ -1223,6 +1502,47 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         feet_air_time_reward *= cmd_active
 
         # ------------------------------------------------------------
+        # 11b. Scheduled diagonal gait reward (weight > 0)
+        #      Unitree MJLab uses a phase-based foot_gait term for Go2:
+        #      FR+RL in stance together, then FL+RR half a cycle later.
+        #      The period is matched to the observed good 0.5 m/s trot
+        #      timing from reward_shaping_progress.md.
+        # ------------------------------------------------------------
+        foot_gait_reward = 0.0
+        bad_two_foot_contacts = 0.0
+        gait_foot_names = ("FL", "FR", "RL", "RR")
+        if cmd_active and all(name in self._foot_name_to_idx for name in gait_foot_names):
+            phase = (
+                (self._step_count * self.control_dt)
+                / cfg["foot_gait_period"]
+            ) % 1.0
+            offsets = np.zeros(self._num_feet, dtype=np.float64)
+            offsets[self._foot_name_to_idx["FR"]] = 0.0
+            offsets[self._foot_name_to_idx["RL"]] = 0.0
+            offsets[self._foot_name_to_idx["FL"]] = 0.5
+            offsets[self._foot_name_to_idx["RR"]] = 0.5
+            scheduled_stance = (
+                (phase + offsets) % 1.0
+            ) < cfg["foot_gait_stance_fraction"]
+            gait_match = np.mean(scheduled_stance == in_contact)
+            # Raw match gives 0.5 when all feet are planted because two feet are
+            # scheduled for stance. Do not pay that standing local optimum.
+            foot_gait_reward = max(2.0 * (gait_match - 0.5), 0.0)
+
+            fl = in_contact[self._foot_name_to_idx["FL"]]
+            fr = in_contact[self._foot_name_to_idx["FR"]]
+            rl = in_contact[self._foot_name_to_idx["RL"]]
+            rr = in_contact[self._foot_name_to_idx["RR"]]
+            diagonal_support = (
+                (fl and rr and not fr and not rl)
+                or (fr and rl and not fl and not rr)
+            )
+            exactly_two_contacts = np.count_nonzero(in_contact) == 2
+            bad_two_foot_contacts = float(
+                exactly_two_contacts and not diagonal_support
+            )
+
+        # ------------------------------------------------------------
         # 12. Feet clearance penalty (weight < 0)
         #     Penalizes foot height deviation from target, weighted
         #     by foot xy velocity (only moving feet contribute).
@@ -1261,16 +1581,21 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             + cfg["w_track_ang_vel"] * track_ang_vel
             + cfg["w_lin_vel_forward"] * lin_vel_forward_reward
             + cfg["w_ang_vel_forward"] * ang_vel_forward_reward
+            + cfg["w_lateral_vel"] * lateral_vel_penalty
             + cfg["w_alive"] * 1.0
             + cfg["w_flat_orientation"] * flat_orientation
             + cfg["w_pose"] * pose_reward
+            + cfg["w_track_base_height"] * track_base_height
             + cfg["w_body_ang_vel"] * body_ang_vel_penalty
+            + cfg["w_pitch_tilt"] * pitch_tilt_penalty
             + cfg["w_angular_momentum"] * angular_momentum_penalty
             + cfg["w_is_terminated"] * termination_cost
             + cfg["w_joint_acc"] * joint_acc_penalty
             + cfg["w_joint_pos_limits"] * joint_pos_limits_penalty
             + cfg["w_action_rate"] * action_rate_penalty
             + cfg["w_feet_air_time"] * feet_air_time_reward
+            + cfg["w_foot_gait"] * foot_gait_reward
+            + cfg["w_bad_two_foot_contacts"] * bad_two_foot_contacts
             + cfg["w_feet_clearance"] * feet_clearance_penalty
             + cfg["w_feet_slip"] * feet_slip_penalty
             + cfg["w_soft_landing"] * soft_landing_penalty
@@ -1282,16 +1607,23 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "track_ang_vel": cfg["w_track_ang_vel"] * track_ang_vel,
             "lin_vel_forward": cfg["w_lin_vel_forward"] * lin_vel_forward_reward,
             "ang_vel_forward": cfg["w_ang_vel_forward"] * ang_vel_forward_reward,
+            "lateral_vel": cfg["w_lateral_vel"] * lateral_vel_penalty,
             "alive": cfg["w_alive"] * 1.0,
             "flat_orientation": cfg["w_flat_orientation"] * flat_orientation,
             "pose": cfg["w_pose"] * pose_reward,
+            "track_base_height": cfg["w_track_base_height"] * track_base_height,
             "body_ang_vel": cfg["w_body_ang_vel"] * body_ang_vel_penalty,
+            "pitch_tilt": cfg["w_pitch_tilt"] * pitch_tilt_penalty,
             "angular_momentum": cfg["w_angular_momentum"] * angular_momentum_penalty,
             "is_terminated": cfg["w_is_terminated"] * termination_cost,
             "joint_acc": cfg["w_joint_acc"] * joint_acc_penalty,
             "joint_pos_limits": cfg["w_joint_pos_limits"] * joint_pos_limits_penalty,
             "action_rate": cfg["w_action_rate"] * action_rate_penalty,
             "feet_air_time": cfg["w_feet_air_time"] * feet_air_time_reward,
+            "foot_gait": cfg["w_foot_gait"] * foot_gait_reward,
+            "bad_two_foot_contacts": (
+                cfg["w_bad_two_foot_contacts"] * bad_two_foot_contacts
+            ),
             "feet_clearance": cfg["w_feet_clearance"] * feet_clearance_penalty,
             "feet_slip": cfg["w_feet_slip"] * feet_slip_penalty,
             "soft_landing": cfg["w_soft_landing"] * soft_landing_penalty,
@@ -1313,7 +1645,7 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             - track_ang_vel: Exponential tracking of commanded yaw rate
             - is_terminated: Large penalty for falling
         """
-        cfg = self.reward_cfg
+        cfg = self._SIMPLE_REWARD_CFG
 
         # -- Ground truth velocities (simulation only) --
         base_lin_vel_body = self._base_lin_vel_body()
@@ -1613,6 +1945,9 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
     def _resample_push_interval(self):
         """Sample a new random push interval for this episode."""
+        if self._deterministic_push_schedule is not None:
+            self._push_interval_steps = 0
+            return
         dr = self.domain_rand_cfg
         if dr.enable and dr.push_robots:
             lo, hi = dr.push_interval_range_s
@@ -1630,6 +1965,13 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
         the policy must recover from. Matches MjLab's push_by_setting_velocity
         with 6-DOF velocity kicks and randomized timing.
         """
+        if self._deterministic_push_schedule is not None:
+            control_step = self._step_count - 1
+            delta = self._deterministic_push_schedule.get(control_step)
+            if delta is not None:
+                self.mjData.qvel[:6] += delta
+            return
+
         dr = self.domain_rand_cfg
         if not dr.enable or not dr.push_robots:
             return
@@ -1656,12 +1998,14 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
     def _get_info(self) -> dict:
         """Return info dictionary with useful debugging information."""
         base_lin_vel_body = self._base_lin_vel_body()
-        return {
+        info = {
             "step_count": self._step_count,
             "commands": self._commands.copy(),
             "base_lin_vel_body": base_lin_vel_body.copy(),
             "base_ang_vel_body": self.mjData.qvel[3:6].copy(),
             "base_height": float(self.mjData.qpos[2]),
+            "raw_q_target": self._raw_q_target.copy(),
+            "filtered_q_target": self._filtered_q_target.copy(),
             "applied_torques": self._applied_torques.copy(),
             "foot_contacts": self._last_foot_contacts.copy(),
             "feet_air_time": self._feet_air_time.copy(),
@@ -1669,6 +2013,16 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             "swing_peak": self._swing_peak.copy(),
             "reward_components": self._reward_components.copy(),
         }
+        if self.enable_substep_diagnostics:
+            info["substep_diagnostics"] = (
+                None
+                if self._last_substep_diagnostics is None
+                else {
+                    key: value.copy()
+                    for key, value in self._last_substep_diagnostics.items()
+                }
+            )
+        return info
 
     @staticmethod
     def _default_reward_cfg() -> dict[str, float]:
@@ -1680,50 +2034,61 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
 
         Reward terms and weights:
             Positive rewards (desired behavior):
-                - track_lin_vel (1.0):     Exponential xy velocity tracking
-                - track_ang_vel (1.0):     Exponential yaw rate tracking
-                - lin_vel_forward (1.5):   Linear forward velocity (SAC gradient)
-                - ang_vel_forward (0.5):   Linear angular velocity (SAC gradient)
-                - alive (0.3):             Constant survival bonus
-                - pose (0.5):              Speed-dependent default pose tracking
-                - feet_air_time (1.0):     Trotting gait encouragement
+                - track_lin_vel (4.0):     Exponential xy velocity tracking
+                - track_ang_vel (2.5):     Exponential yaw rate tracking
+                - lin_vel_forward (6.0):   Linear forward velocity
+                - ang_vel_forward (1.0):   Linear angular velocity
+                - alive (0.0):             Constant survival bonus
+                - pose (0.42):             Speed-dependent default pose tracking
+                - track_base_height (1.0): Exponential target base height tracking
+                - feet_air_time (0.75):    Trotting gait encouragement
+                - foot_gait (1.35):        Diagonal trot phase matching
 
             Penalties (undesired behavior):
-                - flat_orientation (-2.0):  Body tilt
-                - body_ang_vel (-0.05):     Excessive body angular velocity
-                - angular_momentum (-0.0125): Whole-body angular momentum
-                - is_terminated (-200.0):   Falling over
-                - joint_acc (-2.5e-7):      Jerky joint motion
-                - joint_pos_limits (-10.0): Joints near limits
-                - action_rate (-0.05):      Rapid action changes
+                - flat_orientation (-0.7):  Body tilt
+                - pitch_tilt (-2.0):        Forward/back body pitch tilt
+                - lateral_vel (-1.0):       Sideways body velocity
+                - body_ang_vel (-0.16):     Excessive body angular velocity
+                - angular_momentum (-0.014): Whole-body angular momentum
+                - is_terminated (-10.0):    Falling over
+                - joint_acc (-3.0e-7):      Jerky joint motion
+                - joint_pos_limits (-1.0):  Joints near limits
+                - action_rate (-0.045):     Rapid action changes
                 - feet_clearance (-1.0):    Incorrect swing foot height
-                - feet_slip (-0.25):        Foot sliding during contact
-                - soft_landing (-1e-3):     High impact forces at landing
+                - feet_slip (-0.12):        Foot sliding during contact
+                - soft_landing (-2e-4):     High impact forces at landing
+                - bad_two_foot_contacts (-0.7): Bounding/pacing support
         """
         return {
             # -- Tracking rewards --
             # Exponential kernel: exp(-error / sigma) where sigma = std^2 = 0.25
             "tracking_sigma": 0.25,
-            "w_track_lin_vel": 1.5,
-            "w_track_ang_vel": 1.5,
+            "w_track_lin_vel": 4.0,
+            "w_track_ang_vel": 2.5,
             # -- Forward velocity rewards (linear, constant gradient) --
             # Critical for SAC to escape the standing-still local optimum.
             # Projects velocity onto command direction, clipped at cmd magnitude.
-            "w_lin_vel_forward": 1.5,
+            "w_lin_vel_forward": 6.0,
             "w_ang_vel_forward": 1.0,
+            # -- Direction keeping penalties --
+            "w_lateral_vel": -1.0,
             # -- Alive bonus (constant per-step survival reward) --
             "w_alive": 0.0,
             # -- Orientation penalty --
-            "w_flat_orientation": -0.5,
+            "w_flat_orientation": -0.7,
             # -- Variable posture reward --
             # Speed-dependent default pose tracking with per-joint-type stds
-            "w_pose": 0.5,
+            "w_pose": 0.42,
+            "w_track_base_height": 1.0,
+            "base_height_target": 0.27,
+            "base_height_sigma": 0.01,
             "posture_walking_threshold": 0.05,   # speed below this → standing
             "posture_running_threshold": 1.5,   # speed above this → running
             # -- Body angular velocity penalty (world frame, xy only) --
-            "w_body_ang_vel": -0.05, # FROM 1 to 5
+            "w_body_ang_vel": -0.16,
+            "w_pitch_tilt": -2.0,
             # -- Angular momentum penalty (whole-body) --
-            "w_angular_momentum": -0.005, # FROM 1 TO 5
+            "w_angular_momentum": -0.014,
             # -- Termination penalty (large negative on fall) --
             "w_is_terminated": -10.0,
             # -- Joint acceleration L2 penalty --
@@ -1731,17 +2096,25 @@ class QuadrupedVelocityTrackingEnv(gym.Env):
             # -- Joint position limits penalty (soft limits at 95% range) --
             "w_joint_pos_limits": -1.0,
             # -- Action rate L2 penalty --
-            "w_action_rate": -0.03,
+            "w_action_rate": -0.045,
             # -- Feet air time reward (trotting gait) --
-            "w_feet_air_time": 1.0,
-            "feet_air_time_threshold": 0.3,   # target stance/swing duration (s)
+            "w_feet_air_time": 0.75,
+            "feet_air_time_threshold": 0.245,   # target stance/swing duration (s)
+            # -- Scheduled diagonal trot reward --
+            # FR+RL stance alternates with FL+RR stance. The 0.52 s period gives
+            # slightly longer stance/swing windows for less tip-toeing.
+            "w_foot_gait": 1.35,
+            "foot_gait_period": 0.52,
+            "foot_gait_stance_fraction": 0.52,
+            # -- Penalize exact two-foot non-diagonal support (bound/pace) --
+            "w_bad_two_foot_contacts": -0.7,
             # -- Feet clearance penalty (target swing foot height) --
-            "w_feet_clearance": -0.5,
-            "foot_clearance_target": 0.10,    # meters
+            "w_feet_clearance": -1.0,
+            "foot_clearance_target": 0.07,    # meters
             # -- Feet slip penalty (no sliding during contact) --
-            "w_feet_slip": -0.1,
+            "w_feet_slip": -0.12,
             # -- Soft landing penalty (minimize impact forces) --
-            "w_soft_landing": -1e-4,
+            "w_soft_landing": -2e-4,
             # -- Command threshold for actually walking --
             "command_threshold": 0.1,
             # -- Reward clipping --
