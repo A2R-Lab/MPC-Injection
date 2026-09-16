@@ -96,7 +96,7 @@ strength, and other plant properties remain fixed.
 
 ### 1. Make the canonical generator select the requested experiment
 
-Extend `mpc_rl/planner/gen_traj_data_mpx_dr.py` rather than creating another
+Extend `mpc_rl/planner/gen_traj_data_mpx_bound.py` rather than creating another
 rollout implementation.
 
 - Add batch-function and CLI inputs for a target three-element command, command
@@ -301,7 +301,7 @@ This milestone is complete only when:
 ## Canonical command-line implementation
 
 The canonical implementation remains
-`mpc_rl/planner/gen_traj_data_mpx_dr.py`. Fixed-command runs are opt-in, so
+`mpc_rl/planner/gen_traj_data_mpx_bound.py`. Fixed-command runs are opt-in, so
 invocations that omit the new command, gait, and acceptance options retain the
 legacy sampled-command defaults, filenames, action interface, and DR preset.
 
@@ -311,7 +311,7 @@ all generated artifacts under the stage directory:
 ```bash
 PYTHONPATH="$PWD/deps/mpx:$PWD/deps/gym-quadruped:$PWD" \
 conda run --no-capture-output -n mpc-rl \
-python -m mpc_rl.planner.gen_traj_data_mpx_dr \
+python -m mpc_rl.planner.gen_traj_data_mpx_bound \
   --num-trajectories 1 \
   --episode-length 1000 \
   --start-seed 1000 \

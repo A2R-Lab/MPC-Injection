@@ -8,7 +8,7 @@ truth is
 ## Compared transitions
 
 The source transition is produced by the canonical
-`mpc_rl/planner/gen_traj_data_mpx_dr.py` path with actual MPX output. The replay
+`mpc_rl/planner/gen_traj_data_mpx_bound.py` path with actual MPX output. The replay
 transition starts from the same reset state and startup-DR patch, then calls
 `QuadrupedVelocityTrackingEnv.step(saved_action)`. No policy, fake controller,
 or torque replay substitutes for this comparison.

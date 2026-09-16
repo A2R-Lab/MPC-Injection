@@ -24,7 +24,7 @@ from mpc_rl.planner.check_mpx_transition_parity import (
     _numeric_metrics,
     _replay_saved_actions,
 )
-from mpc_rl.planner.gen_traj_data_mpx_dr import (
+from mpc_rl.planner.gen_traj_data_mpx_bound import (
     ENV_STEP_LPF_INVERSE_MODE,
     _configure_mpc_duty_factor,
     _mpx_to_env_step_raw_action,

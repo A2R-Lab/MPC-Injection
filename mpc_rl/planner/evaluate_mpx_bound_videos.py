@@ -8,7 +8,7 @@ import numpy as np
 
 import mpx.utils.mpc_wrapper as mpc_wrapper
 from mpc_rl.envs.action_interfaces import MPX_BOUND_ACTION_INTERFACE_ID
-from mpc_rl.planner.gen_traj_data_mpx_dr import (
+from mpc_rl.planner.gen_traj_data_mpx_bound import (
     _attempt_evidence,
     _controller_config_with_overrides,
     generate_trajectory,

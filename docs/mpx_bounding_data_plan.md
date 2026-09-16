@@ -77,7 +77,7 @@ Key files and behavior:
   or the phase-equivalent `[0.0, 0.0, 0.5, 0.5]` (front pair initially in
   stance). Startup behavior must determine which orientation is more stable;
   steady-state gait identity is the same.
-- `mpc_rl/planner/gen_traj_data_mpx_dr.py` is the current canonical generator.
+- `mpc_rl/planner/gen_traj_data_mpx_bound.py` is the current canonical generator.
   It can run with a named startup-DR preset, saves direct RL transitions, saves
   the realized DR patch, rejects incomplete/fallen trajectories, and writes an
   attempt manifest.
@@ -250,7 +250,7 @@ The expected implementation surface is deliberately narrow:
   `deps/mpx/mpx/config/`, plus MPX-local tests;
 - `mpc_rl/envs/velocity_tracking_env.py` for exact control-step diagnostics,
   without creating a second simulation loop;
-- `mpc_rl/planner/gen_traj_data_mpx_dr.py` for canonical collection;
+- `mpc_rl/planner/gen_traj_data_mpx_bound.py` for canonical collection;
 - `mpc_rl/common/mpc_inject_callbacks.py` and `mpc_rl/train.py` for strict
   loading/configuration;
 - `utils/check_data_integrity.py` plus focused tests under the existing
@@ -333,7 +333,7 @@ MPX tests should prove:
 
 ### 4. Make the DR generator canonical and gait-aware
 
-Extend `mpc_rl/planner/gen_traj_data_mpx_dr.py`. Use it for both nominal and DR
+Extend `mpc_rl/planner/gen_traj_data_mpx_bound.py`. Use it for both nominal and DR
 data; make `gen_traj_data_mpx.py` a documented legacy path or a thin wrapper
 rather than duplicating new gait logic.
 
@@ -531,7 +531,7 @@ Example shape of the command after the new CLI exists:
 
 ```bash
 conda run --no-capture-output -n mpc-rl \
-  python mpc_rl/planner/gen_traj_data_mpx_dr.py \
+  python mpc_rl/planner/gen_traj_data_mpx_bound.py \
   --gait=bound_hind_first \
   --domain-rand-config-type=disabled \
   --num-trajectories=<pilot-count> \

@@ -22,7 +22,7 @@ Reproduce one rollout from the repository root with:
 ```bash
 PYTHONPATH="$PWD/deps/mpx:$PWD/deps/gym-quadruped:$PWD" \
 conda run --no-capture-output -n mpc-rl \
-python mpc_rl/planner/gen_traj_data_mpx_dr.py \
+python mpc_rl/planner/gen_traj_data_mpx_bound.py \
   --num-trajectories 1 \
   --max-attempts 1 \
   --episode-length 1000 \

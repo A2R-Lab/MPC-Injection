@@ -12,7 +12,7 @@ from mpc_rl.envs.action_interfaces import (
 from mpc_rl.planner.check_mpx_transition_parity import (
     validate_full_saved_action_replay,
 )
-from mpc_rl.planner.gen_traj_data_mpx_dr import (
+from mpc_rl.planner.gen_traj_data_mpx_bound import (
     _bounding_filename,
     gen_traj_quadruped_dr,
     generate_trajectory,
@@ -208,7 +208,7 @@ def test_batch_constructs_controller_with_requested_instance_gait(
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(
-        "mpc_rl.planner.gen_traj_data_mpx_dr.mpc_wrapper.MPCControllerWrapper",
+        "mpc_rl.planner.gen_traj_data_mpx_bound.mpc_wrapper.MPCControllerWrapper",
         CapturingMPC,
     )
     gen_traj_quadruped_dr(

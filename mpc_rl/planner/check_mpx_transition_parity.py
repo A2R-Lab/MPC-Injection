@@ -13,7 +13,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-import mpx.config.config_go2 as config
+import mpx.config.config_bound as config
 import mpx.utils.mpc_wrapper as mpc_wrapper
 from mpc_rl.envs.action_interfaces import (
     DEFAULT_ACTION_INTERFACE_ID,
@@ -27,7 +27,7 @@ from mpc_rl.envs.domain_randomization import (
     resolve_startup_domain_rand_config,
 )
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
-from mpc_rl.planner.gen_traj_data_mpx_dr import generate_trajectory
+from mpc_rl.planner.gen_traj_data_mpx_bound import generate_trajectory
 from mpc_rl.planner.mpx_bounding_data import (
     load_npz_pickle_free,
     validate_acceptance_declaration,
@@ -911,7 +911,7 @@ def run_parity_measurement(
             for relative_path in (
                 "mpc_rl/envs/action_interfaces.py",
                 "mpc_rl/envs/velocity_tracking_env.py",
-                "mpc_rl/planner/gen_traj_data_mpx_dr.py",
+                "mpc_rl/planner/gen_traj_data_mpx_bound.py",
                 "mpc_rl/planner/check_mpx_transition_parity.py",
                 "mpc_rl/common/mpc_inject_callbacks.py",
                 "mpc_rl/train.py",
