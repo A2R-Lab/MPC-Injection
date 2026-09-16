@@ -1,5 +1,9 @@
 #!/bin/bash
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Bash script to run a quadruped TD3-MPC diagnostic sweep with varying MPC
 # injection percentages.
 #

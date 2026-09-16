@@ -1,5 +1,9 @@
 #!/bin/bash
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Bash script to run SAC-MPC experiments with varying MPC injection percentages
 # Runs experiments from 0% to 100% MPC data in increments of 5%
 #
@@ -83,5 +87,4 @@ echo ""
 echo "=============================================="
 echo "All experiments completed successfully!"
 echo "=============================================="
-
 

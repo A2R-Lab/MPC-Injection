@@ -2,10 +2,14 @@
 
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Bash script to run TD3-MPC experiments for the three-legged cheetah task with
 # varying MPC injection percentages.
 #
-# This mirrors run_walker_experiments.sh, but uses the local cheetah3
+# This mirrors scripts/run_walker_experiments.sh, but uses the local cheetah3
 # environment and cheetah3 MPC trajectory directory.
 
 # Common parameters

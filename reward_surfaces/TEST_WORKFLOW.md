@@ -5,8 +5,8 @@ This document shows the complete working workflow tested on December 16, 2024.
 ## Prerequisites
 
 ```bash
-conda activate mpc-rl  # Your conda environment with SBX and dependencies
-cd /home/roy/MPC-Injection
+cd /path/to/MPC-Injection
+conda activate "$PWD/.conda/mpc-injection"
 ```
 
 ## Step 1: Generate Evaluation Jobs

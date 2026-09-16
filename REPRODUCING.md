@@ -1,6 +1,6 @@
 # Reproducing MPC-Injection experiments
 
-Use the [Conda installation](README.md#installation). All commands below run from the repository root with that environment active unless stated otherwise. Use new output directories: generators and video tools can overwrite files. `data/` holds regenerated trajectories; `logs/` holds timestamped run directories, checkpoints, normalization statistics, and evaluation videos. No download of datasets or pretrained policies is required for the basic generators.
+Use the [Conda installation](README.md#installation). All commands below run from the repository root with that environment active unless stated otherwise. Historical sweep and plotting helpers live under `scripts/`; they resolve the repository root themselves but still require the environment to be active. Use new output directories: generators and video tools can overwrite files. `data/` holds regenerated trajectories; `logs/` holds timestamped run directories, checkpoints, normalization statistics, and evaluation videos. No download of datasets or pretrained policies is required for the basic generators.
 
 The examples below expose existing entry points and settings; they are not a claim that full training or paper scores were rerun. Compute, storage, and training durations were not re-measured. Existing sweep scripts preserve historical research settings and should be inspected before launching a campaign.
 
@@ -45,7 +45,7 @@ python -m mpc_rl.planner.gen_traj_data_mpx_bound --num-trajectories 10 --max-att
 python -m mpc_rl.train --env_name quadruped-velocity_tracking --algorithm SAC-MPC --percentage 25 --total_timesteps 500000 --seed 1 --domain_rand=False --domain_rand_config_type disabled --quadruped_action_interface mpx_bound_scale_1_no_lpf_v1 --quadruped_mpc_replay_mode direct --data_dir data/reproduction/bound --logdir logs/reproduction/bound --save_replay_buffer_checkpoints=False --save_replay_buffer_final=False
 ```
 
-The second command is an entry-point example, not a newly established paper bounding-policy configuration. Bounding direct transitions use schema v2 and carry their action-interface descriptor. Do not train them with the default filtered scale-0.5 interface. Gait validity and full-cycle acceptance require the existing `mpx_bounding_data` validators; a three-step installation smoke only verifies schema/finite transitions. The parity tool's default report paths are tracked fixtures: always pass an explicit new `--output` path when using `check_mpx_transition_parity` (see its `--help`).
+The second command is an entry-point example, not a newly established paper bounding-policy configuration. Bounding direct transitions use schema v2 and carry their action-interface descriptor. Do not train them with the default filtered scale-0.5 interface. Gait validity and full-cycle acceptance require the existing `mpx_bounding_data` validators; a three-step installation smoke only verifies schema/finite transitions. The parity tool reads its versioned acceptance contracts from `mpc_rl/planner/contracts/mpx_transition_parity/` and writes its default report to the ignored `logs/mpx_transition_parity/report.json` path.
 
 ## Go2 barrel roll
 
@@ -75,7 +75,7 @@ python -m mpc_rl.planner.gen_traj_data_cheetah3 --num-trajectories 10 --seed-sta
 python -m mpc_rl.train --env_name cheetah3-run --algorithm SAC-MPC --percentage 25 --total_timesteps 500000 --seed 1 --cheetah3_speed_goal 3.0 --data_dir data/reproduction/cheetah3 --logdir logs/reproduction/cheetah3 --save_replay_buffer_checkpoints=False --save_replay_buffer_final=False
 ```
 
-The preserved `run_cheetah_experiments.sh` uses seeds 1/50/100/150/200 and percentages 0/25/50/75/100. These are source-backed settings; the paper does not fully specify this campaign. Evaluate with the walker evaluation pattern, substituting `cheetah3-run`, its data/log directories, and `--cheetah3_speed_goal 3.0`.
+The preserved `scripts/run_cheetah_experiments.sh` uses seeds 1/50/100/150/200 and percentages 0/25/50/75/100. These are source-backed settings; the paper does not fully specify this campaign. Evaluate with the walker evaluation pattern, substituting `cheetah3-run`, its data/log directories, and `--cheetah3_speed_goal 3.0`.
 
 ## Policy export and real Go2
 
@@ -113,4 +113,4 @@ The external AMP-MPC launcher mentioned in historical hardware notes is not bund
 
 Cleanup checks cover disposable Conda installation, imports outside the checkout, focused tests, numerical comparisons against preserved implementations, five short task startups, tiny trajectory generation, temporary-policy ONNX export, and native compilation. Full training, paper scores, physical hardware, and an aarch64 build were not rerun. Public recursive retrieval of the integrated MPX commit remains a publication-stage check.
 
-The source controller costs do not exactly match the paper's Appendix B table; existing Go2 and bounding values are preserved separately. The repository does not contain enough evidence to reconcile every paper campaign setting. The old dataset-schema contrast test requires an unbundled historical dataset; the optional sysID HTML comparison also expects an unbundled `deploy/sys_id/report.html`, while runtime sysID uses the checked-in numerical table. Retained JSON files under `docs/mpx_bound_milestone_reports/` are test/parity contracts, not regenerated release results. Use explicit test paths; several files under `tests/` are interactive scripts rather than pytest suites.
+The source controller costs do not exactly match the paper's Appendix B table; existing Go2 and bounding values are preserved separately. The repository does not contain enough evidence to reconcile every paper campaign setting. The old dataset-schema contrast test requires an unbundled historical dataset; the optional sysID HTML comparison also expects an unbundled `deploy/sys_id/report.html`, while runtime sysID uses the checked-in numerical table. The JSON files under `mpc_rl/planner/contracts/mpx_transition_parity/` are test/parity contracts, not generated release results. Historical parity reports are not retained in the source tree. Use explicit test paths; several files under `tests/` are interactive scripts rather than pytest suites.

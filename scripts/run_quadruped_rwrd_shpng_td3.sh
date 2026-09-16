@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Main quadruped sim2real sweep entrypoint.
 #
 # Edit DOMAIN_RAND_CONFIG_TYPE to choose which quadruped DR preset to run:
@@ -21,8 +25,8 @@ set -euo pipefail
 
 # Common experiment parameters
 ENV_NAME="quadruped-velocity_tracking"
-ALGORITHM="SAC-MPC"
-TOTAL_TIMESTEPS=1500000
+ALGORITHM="TD3"
+TOTAL_TIMESTEPS=2000000
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
@@ -31,25 +35,26 @@ DOMAIN_RAND_CONFIG_TYPE="sysid_dyn20_mjlab" # sysID + DR + pushing
 # Only used when DOMAIN_RAND_CONFIG_TYPE="custom".
 DOMAIN_RAND_OBS_NOISE=1.0
 USE_GO2_SYSID="True"
-DATA_DIR="data/quadruped_dr/sysid_dyn20_mjlab_10k_high_step/" # sysid_dyn10_default_no_push_10k
-QUADRUPED_MPC_REPLAY_MODE="direct" # direct (used when data has converted pd) | torque_saved_pd | torque_current_pd (used for re-calculating pd)
+DATA_DIR="data/quadruped_dr/sysid_dyn20_mjlab_10k/" # sysid_dyn10_default_no_push_10k
 BUFFER_SIZE=5000000
-LEARNING_RATE=1e-4 # OG 3e-4, but found that it caused catastrophic forgetting as training went on
+LEARNING_RATE=3e-4 # OG 3e-4, but found that it caused catastrophic forgetting as training went on
 POLICY_DELAY=2
 BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-high_term_cost/"
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
-LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/high_footsteps/"
+#LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 #LOG_DIR="logs/quadruped_domain_rand_sac/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
+LOG_DIR="logs/quadruped_td3_lpf/"
 
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
-PERCENTAGES=(25)
-#SEEDS=(100 200 300 400 600 700)
-SEEDS=(150 250 350 500 800 900)
+PERCENTAGES=(0)
+#SEEDS=(801 802 803 804 805)
+SEEDS=(806 807 808 809 888)
 
 # Optional checkpoint videos during training
-CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000 1000000 1100000 1200000 1300000 1400000)
+#CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)
+CHECKPOINT_EVALS=(900000)
 CHECKPOINT_EVALS_CSV=$(IFS=,; echo "${CHECKPOINT_EVALS[*]}")
 
 echo "Starting quadruped domain-randomization sweep"
@@ -65,7 +70,6 @@ echo "Domain randomization config type: ${DOMAIN_RAND_CONFIG_TYPE}"
 echo "Domain randomization obs noise override: ${DOMAIN_RAND_OBS_NOISE}"
 echo "Go2 sysID joint dynamics: ${USE_GO2_SYSID}"
 echo "Data directory: ${DATA_DIR}"
-echo "Quadruped MPC replay mode: ${QUADRUPED_MPC_REPLAY_MODE}"
 echo "Buffer size: ${BUFFER_SIZE}"
 echo "Learning rate: ${LEARNING_RATE}"
 echo "Policy delay: ${POLICY_DELAY}"
@@ -107,7 +111,6 @@ for seed in "${SEEDS[@]}"; do
                 --domain_rand_obs_noise="${DOMAIN_RAND_OBS_NOISE}" \
                 --use_go2_sysid="${USE_GO2_SYSID}" \
                 --data_dir="${DATA_DIR}" \
-                --quadruped_mpc_replay_mode="${QUADRUPED_MPC_REPLAY_MODE}" \
                 --buffer_size="${BUFFER_SIZE}" \
                 --learning_rate="${LEARNING_RATE}" \
                 --policy_delay="${POLICY_DELAY}" \

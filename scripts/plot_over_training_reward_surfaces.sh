@@ -1,10 +1,11 @@
 #!/bin/bash
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Generate and plot reward surfaces for all checkpoints during training
 # Complete pipeline: for each checkpoint, generate jobs -> run evaluations -> aggregate -> plot
-
-# Activate conda environment
-source ~/.bash_conda && conda activate mpc-rl
 
 # =============================================================================
 # Configuration - Modify these variables

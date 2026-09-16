@@ -5,7 +5,8 @@ across checkpoints.
 
 The recorded trajectories are saved under mode_traj_data_cheetah3 for later
 plotting or analysis. This mirrors record_body_trajs_by_policy_walker.py, but
-uses the local three-legged cheetah environment used by run_cheetah_experiments.sh.
+uses the local three-legged cheetah environment used by
+scripts/run_cheetah_experiments.sh.
 """
 
 from __future__ import annotations
