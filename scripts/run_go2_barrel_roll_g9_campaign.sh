@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly DATA_DIR="data/go2_barrel_roll/v3"
 readonly DATA_PATH="${REPO_ROOT}/${DATA_DIR}"
 readonly EXPECTED_CHECKSUM_INDEX_SHA256="3c4401e353b3195e7c8801ae29257e84598f099c3bfab05b37dcb1c80c62c2cc"

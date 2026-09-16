@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Main quadruped sim2real sweep entrypoint.
 #
 # Edit DOMAIN_RAND_CONFIG_TYPE to choose which quadruped DR preset to run:
@@ -21,8 +25,8 @@ set -euo pipefail
 
 # Common experiment parameters
 ENV_NAME="quadruped-velocity_tracking"
-ALGORITHM="TD3"
-TOTAL_TIMESTEPS=2000000
+ALGORITHM="SAC"
+TOTAL_TIMESTEPS=1000000
 LEARNING_STARTS=50000
 SAVE_REPLAY_BUFFER_CHECKPOINTS="False"
 SAVE_REPLAY_BUFFER_FINAL="False"
@@ -40,16 +44,14 @@ BATCH_SIZE=512 # Increasing batch size cuz of DR from 256
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_new_data_env_changes/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}-low_max_pitch_roll/"
 #LOG_DIR="logs/quadruped_domain_rand_mpc_dr_sysid_dyn20_mjlab_10k_LPF/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
 #LOG_DIR="logs/quadruped_domain_rand_sac/${ALGORITHM}-${DOMAIN_RAND_CONFIG_TYPE}/"
-LOG_DIR="logs/quadruped_td3_lpf/"
+LOG_DIR="logs/quadruped_sac_lpf/"
 
 # Sweep dimensions
 NUM_ENVS_SWEEP=(256)
 PERCENTAGES=(0)
-#SEEDS=(801 802 803 804 805)
-SEEDS=(806 807 808 809 888)
+SEEDS=(1)
 
 # Optional checkpoint videos during training
-#CHECKPOINT_EVALS=(100000 200000 300000 400000 500000 600000 700000 800000 900000)
 CHECKPOINT_EVALS=(900000)
 CHECKPOINT_EVALS_CSV=$(IFS=,; echo "${CHECKPOINT_EVALS[*]}")
 

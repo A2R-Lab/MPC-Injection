@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly DATA_DIR="data/go2_barrel_roll/v2"
 readonly DATA_PATH="${REPO_ROOT}/${DATA_DIR}"
 readonly CAMPAIGN_DIR="${REPO_ROOT}/logs/go2_barrel_roll_g8_production"

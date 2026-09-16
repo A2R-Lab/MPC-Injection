@@ -2,6 +2,10 @@
 
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+cd -- "${REPO_ROOT}"
+
 # Quadruped sim2real sweep entrypoint using the domain-randomized bounding dataset.
 #
 # Edit DOMAIN_RAND_CONFIG_TYPE to choose which quadruped DR preset to run:

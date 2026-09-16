@@ -36,29 +36,14 @@ from mpc_rl.planner.mpx_bounding_data import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TOLERANCES = (
-    REPO_ROOT
-    / "docs"
-    / "mpx_bound_milestone_reports"
-    / "transition_parity_tolerances.json"
+PARITY_CONTRACTS_DIR = (
+    Path(__file__).resolve().parent / "contracts" / "mpx_transition_parity"
 )
-DEFAULT_REPORT = (
-    REPO_ROOT
-    / "docs"
-    / "mpx_bound_milestone_reports"
-    / "transition_parity_baseline_report.json"
-)
+DEFAULT_TOLERANCES = PARITY_CONTRACTS_DIR / "transition_parity_tolerances.json"
+DEFAULT_REPORT = REPO_ROOT / "logs" / "mpx_transition_parity" / "report.json"
 MPX_BOUND_ACTION_INTERFACE_TOLERANCES = (
-    REPO_ROOT
-    / "docs"
-    / "mpx_bound_milestone_reports"
+    PARITY_CONTRACTS_DIR
     / "transition_parity_env_step_scale1_no_lpf_tolerances_v3.json"
-)
-MPX_BOUND_ACTION_INTERFACE_REPORT = (
-    REPO_ROOT
-    / "docs"
-    / "mpx_bound_milestone_reports"
-    / "transition_parity_env_step_scale1_no_lpf_report_v3.json"
 )
 
 

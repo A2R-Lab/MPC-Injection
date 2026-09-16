@@ -14,8 +14,8 @@ pip install pandas matplotlib seaborn tqdm
 
 **Usage**:
 ```bash
-source ~/.bash_conda && conda activate mpc-rl
-cd /home/roy/MPC-Injection
+cd /path/to/MPC-Injection
+conda activate "$PWD/.conda/mpc-injection"
 ```
 
 **Note**: No package installation required - scripts work directly via `sys.path` manipulation.
@@ -110,8 +110,8 @@ Options for `--key`:
 
 ```bash
 # Activate environment and navigate to MPC-Injection directory
-source ~/.bash_conda && conda activate mpc-rl
-cd /home/roy/MPC-Injection
+cd /path/to/MPC-Injection
+conda activate "$PWD/.conda/mpc-injection"
 
 # Generate surface
 python reward_surfaces/scripts/generate_plane_jobs.py \
