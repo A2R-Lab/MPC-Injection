@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -25,6 +26,7 @@ from mpc_rl.planner.check_mpx_transition_parity import (
 )
 from mpc_rl.planner.gen_traj_data_mpx_dr import (
     ENV_STEP_LPF_INVERSE_MODE,
+    _configure_mpc_duty_factor,
     _mpx_to_env_step_raw_action,
     generate_trajectory,
 )
@@ -55,6 +57,34 @@ class _LargeFeedforwardMPC(_ZeroMPC):
             np.asarray(go2_config.q0, dtype=np.float64),
             np.zeros(go2_config.n_joints, dtype=np.float64),
         )
+
+
+def test_command_ramp_smoothly_transitions_gait_parameters():
+    mpc = SimpleNamespace(duty_factor=0.5, step_height=0.03)
+
+    _configure_mpc_duty_factor(
+        np.array([0.25, 0.0, 0.0]),
+        mpc,
+        moving_duty_factor=0.5,
+        moving_step_height=0.06,
+        move_on_any_nonzero_command=True,
+        transition_progress=0.5,
+    )
+
+    assert mpc.duty_factor == pytest.approx(0.75)
+    assert mpc.step_height == pytest.approx(0.03)
+
+    _configure_mpc_duty_factor(
+        np.array([0.5, 0.0, 0.0]),
+        mpc,
+        moving_duty_factor=0.5,
+        moving_step_height=0.06,
+        move_on_any_nonzero_command=True,
+        transition_progress=1.0,
+    )
+
+    assert mpc.duty_factor == pytest.approx(0.5)
+    assert mpc.step_height == pytest.approx(0.06)
 
 
 def test_versioned_action_interface_preserves_default_and_exposes_opt_in_mode():

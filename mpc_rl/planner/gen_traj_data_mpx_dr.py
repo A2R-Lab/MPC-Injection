@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -68,6 +69,75 @@ ACTION_CONVERSION_MODES = (
 # Keep the historical behavior as the default until the conditional mapping
 # has passed its predeclared actual-MPX parity gate.
 DEFAULT_ACTION_CONVERSION_MODE = INFERRED_ACTION_DIRECT_TORQUE_MODE
+
+
+class _FfmpegVideoWriter:
+    """Stream RGB frames to a standard H.264 MP4 without buffering a rollout."""
+
+    def __init__(self, path: Path, *, fps: int, frame: np.ndarray):
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("video recording requires ffmpeg on PATH")
+        frame = np.asarray(frame)
+        if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
+            raise ValueError("video frames must be uint8 RGB arrays")
+        height, width = frame.shape[:2]
+        self._shape = frame.shape
+        self._process = subprocess.Popen(
+            [
+                ffmpeg,
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-video_size",
+                f"{width}x{height}",
+                "-framerate",
+                str(fps),
+                "-i",
+                "-",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                str(path),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+    def append_data(self, frame: np.ndarray) -> None:
+        frame = np.asarray(frame)
+        if frame.shape != self._shape or frame.dtype != np.uint8:
+            raise ValueError(
+                f"video frame must have shape {self._shape} and dtype uint8"
+            )
+        if self._process.stdin is None:
+            raise RuntimeError("ffmpeg video stream is closed")
+        self._process.stdin.write(np.ascontiguousarray(frame).tobytes())
+
+    def close(self) -> None:
+        if self._process.stdin is not None and not self._process.stdin.closed:
+            self._process.stdin.close()
+        error_output = (
+            self._process.stderr.read().decode("utf-8", errors="replace")
+            if self._process.stderr is not None
+            else ""
+        )
+        return_code = self._process.wait()
+        if return_code != 0:
+            raise RuntimeError(
+                f"ffmpeg exited with status {return_code}: {error_output.strip()}"
+            )
 
 
 def _controller_config_with_overrides(
@@ -316,9 +386,11 @@ def _configure_mpc_duty_factor(
     mpc,
     *,
     moving_duty_factor: float = 0.5,
+    moving_step_height: float | None = None,
     move_on_any_nonzero_command: bool = False,
+    transition_progress: float | None = None,
 ) -> float:
-    """Match the nominal MPX standing-vs-trotting duty-factor heuristic."""
+    """Configure standing, moving, or smoothly transitioning gait parameters."""
     total_command = np.linalg.norm(commands[:2]) + abs(commands[2])
     standing = (
         total_command == 0.0
@@ -327,8 +399,20 @@ def _configure_mpc_duty_factor(
     )
     if standing:
         mpc.duty_factor = 1.0
+        if moving_step_height is not None:
+            mpc.step_height = 0.0
+    elif transition_progress is not None:
+        progress = float(np.clip(transition_progress, 0.0, 1.0))
+        smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+        mpc.duty_factor = 1.0 - smooth_progress * (
+            1.0 - float(moving_duty_factor)
+        )
+        if moving_step_height is not None:
+            mpc.step_height = smooth_progress * float(moving_step_height)
     else:
         mpc.duty_factor = float(moving_duty_factor)
+        if moving_step_height is not None:
+            mpc.step_height = float(moving_step_height)
     return float(total_command)
 
 
@@ -751,6 +835,7 @@ def generate_trajectory(
     episode_length=1000,
     verbose=1,
     render=False,
+    video_path=None,
     use_go2_sysid=True,
     deterministic_push_schedule=None,
     fixed_command=None,
@@ -804,10 +889,11 @@ def generate_trajectory(
     domain_rand_cfg.obs_noise_level = 0.0
     domain_rand_cfg.encoder_bias_range = (0.0, 0.0)
 
+    record_video = video_path is not None
     env = QuadrupedVelocityTrackingEnv(
         robot="go2",
         scene="flat",
-        render_mode="rgb_array" if render else None,
+        render_mode="rgb_array" if record_video else None,
         domain_rand_cfg=domain_rand_cfg,
         apply_startup_domain_rand_on_init=False,
         simple_reward=True,
@@ -823,6 +909,7 @@ def generate_trajectory(
     )
 
     own_mpc = mpc is None
+    video_writer = None
     try:
         dr_bundle = env.sample_startup_domain_rand_bundle(
             rng=dr_rng,
@@ -840,6 +927,18 @@ def generate_trajectory(
             wz=float(commands[2]),
         )
         obs, _ = env.reset(seed=seed)
+        if record_video:
+            resolved_video_path = Path(video_path)
+            resolved_video_path.parent.mkdir(parents=True, exist_ok=True)
+            initial_frame = env.render()
+            if initial_frame is None:
+                raise RuntimeError("RGB video recording produced no initial frame")
+            video_writer = _FfmpegVideoWriter(
+                resolved_video_path,
+                fps=int(env.metadata["render_fps"]),
+                frame=initial_frame,
+            )
+            video_writer.append_data(initial_frame)
         dr_bundle = env.export_startup_domain_rand_patch(
             dr_config_type=resolved_dr_type,
             dr_seed=dr_seed,
@@ -891,6 +990,7 @@ def generate_trajectory(
             if verbose > 0:
                 print(f"[Seed {seed}] JIT compilation done in {timer() - compile_start:.1f}s")
 
+        mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
         _validate_requested_gait(
             mpc,
             gait=gait,
@@ -898,15 +998,28 @@ def generate_trajectory(
             step_frequency_hz=step_frequency_hz,
             step_height_m=step_height_m,
         )
-
-        mpc.reset(env.mjData.qpos.copy(), env.mjData.qvel.copy())
         gait_metadata = _controller_gait_metadata(mpc)
         moving_duty_factor = float(gait_metadata["gait_duty_factor"])
+        moving_step_height = float(gait_metadata["gait_step_height_m"])
+        target_command_norm = (
+            np.linalg.norm(configured_command_schedule[-1, :2])
+            + abs(configured_command_schedule[-1, 2])
+            if configured_command_schedule is not None
+            else 0.0
+        )
+        initial_command_norm = np.linalg.norm(commands[:2]) + abs(commands[2])
         total_command = _configure_mpc_duty_factor(
             commands,
             mpc,
             moving_duty_factor=moving_duty_factor,
+            moving_step_height=moving_step_height,
             move_on_any_nonzero_command=(configured_command_schedule is not None),
+            transition_progress=(
+                initial_command_norm / target_command_norm
+                if configured_command_schedule is not None
+                and target_command_norm > 0.0
+                else None
+            ),
         )
         controller_configuration = _controller_configuration_arrays(env, mpc)
 
@@ -988,7 +1101,17 @@ def generate_trajectory(
                         commands,
                         mpc,
                         moving_duty_factor=moving_duty_factor,
+                        moving_step_height=moving_step_height,
                         move_on_any_nonzero_command=True,
+                        transition_progress=(
+                            (
+                                np.linalg.norm(commands[:2])
+                                + abs(commands[2])
+                            )
+                            / target_command_norm
+                            if target_command_norm > 0.0
+                            else 1.0
+                        ),
                     )
                     env.set_commands(
                         vx=float(commands[0]),
@@ -1006,6 +1129,7 @@ def generate_trajectory(
                     commands,
                     mpc,
                     moving_duty_factor=moving_duty_factor,
+                    moving_step_height=moving_step_height,
                 )
                 env.set_commands(
                     vx=float(commands[0]),
@@ -1194,6 +1318,11 @@ def generate_trajectory(
             )
             obs = next_obs
             completed_control_steps = ctrl_step + 1
+            if video_writer is not None:
+                frame = env.render()
+                if frame is None:
+                    raise RuntimeError("RGB video recording produced no frame")
+                video_writer.append_data(frame)
 
             if viewer_closed:
                 failure_reason = "viewer_closed"
@@ -1448,6 +1577,8 @@ def generate_trajectory(
             **dr_bundle,
         }
     finally:
+        if video_writer is not None:
+            video_writer.close()
         env.close()
 
 
@@ -1750,6 +1881,7 @@ def gen_traj_quadruped_dr(
     max_attempts=None,
     verbose=1,
     render=False,
+    overwrite_existing=False,
     domain_rand_config_type=DEFAULT_MPX_TRAJECTORY_DOMAIN_RAND_PRESET,
     dr_seed_offset=1_000_000,
     manifest_filename="generation_manifest.jsonl",
@@ -1789,6 +1921,11 @@ def gen_traj_quadruped_dr(
         raise ValueError("num_trajectories must be positive")
     if max_attempts is not None and max_attempts <= 0:
         raise ValueError("max_attempts must be positive or None")
+    if overwrite_existing and acceptance_declaration is not None:
+        raise ValueError(
+            "overwrite_existing is only supported for legacy generation; "
+            "validated bounding stages retain their immutable artifacts"
+        )
     normalized_declaration = None
     pilot_summary_record = None
     pilot_summary_path = None
@@ -2166,7 +2303,7 @@ def gen_traj_quadruped_dr(
                 )
             )
             filepath = output_dir / filename
-            if filepath.exists():
+            if filepath.exists() and not overwrite_existing:
                 raise FileExistsError(f"refusing to overwrite existing trajectory {filepath}")
             np.savez_compressed(filepath, **traj_data)
             saved += 1
@@ -2402,6 +2539,14 @@ def main():
         "--render",
         action="store_true",
         help="Open a MuJoCo viewer window to display each trajectory attempt in real time",
+    )
+    parser.add_argument(
+        "--overwrite-existing",
+        action="store_true",
+        help=(
+            "Allow legacy generation to replace trajectory files for repeated "
+            "seeds; validated bounding stages remain immutable"
+        ),
     )
     parser.add_argument(
         "--domain-rand-config-type",
@@ -2684,6 +2829,7 @@ def main():
         max_attempts=args.max_attempts,
         verbose=args.verbose,
         render=args.render,
+        overwrite_existing=args.overwrite_existing,
         domain_rand_config_type=args.domain_rand_config_type,
         dr_seed_offset=args.dr_seed_offset,
         manifest_filename=args.manifest_filename,
