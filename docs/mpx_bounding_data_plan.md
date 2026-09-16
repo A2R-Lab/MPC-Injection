@@ -1,5 +1,12 @@
 # MPX Bounding-Data Implementation Plan
 
+> Historical scope note (2026-08-07): this G0-G6 plan records the original
+> broader bounding, domain-randomization, injection, and training workflow. The
+> current repository objective is limited to generating validated nominal MPX
+> bounding trajectories at a commanded 0.5 m/s. The active implementation plan
+> is [mpx_bounding_data_generation_plan.md](mpx_bounding_data_generation_plan.md).
+> Training and use of the generated data are deferred.
+
 ## Goal and definition of done
 
 Build a reproducible pipeline that uses the checked-in `deps/mpx` controller to
@@ -801,3 +808,17 @@ fake-MPC diagnostic does not establish that its mismatch is material for actual
 MPX data or learning. The revised plan predeclares tolerances, measures one-step
 and accumulated nominal/DR disagreement using actual MPX output, keeps the
 current path if it passes, and changes the action path only if it fails.
+
+## 2026-08-20 controller milestone
+
+The nominal 0.5 m/s controller milestone is now achieved. The working
+configuration and final 1,000-step seed results are recorded in
+`docs/mpx_bound_milestone_reports/vx0p5_controller_working_v1.md`.
+
+The implementation corrects swing-reference units and apex overshoot, adds a
+smooth stand-to-bound transition during the command ramp, solves only the
+planned active-contact dynamics, and rejects unusable solver output. The
+validated moving gait uses `bound_front_first`, duty factor 0.65, 2.5 Hz, and a
+0.05 m physical swing apex. This supersedes the earlier no-passing-candidate
+reports for nominal controller commissioning; it does not supersede their
+diagnostic history or establish DR/real-robot robustness.

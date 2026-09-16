@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "report_type": "mpx_bound_environment_step_diagnostic",
+  "recorded_at": "2026-08-05T16:32:51-04:00",
+  "status": "completed_diagnostic_not_g3_evidence",
+  "transition_gate_report": "transition_parity_env_step_scale1_no_lpf_report_v3.json",
+  "transition_gate_report_sha256": "b54199f23e59f83849b827e39cfc729c0e26835ad1e73bb71d9d8c35fe4d6657",
+  "root_commit": "867ffed615718a2bd9f89c440b7519a66fe6f8ea",
+  "mpx_commit": "25f5f91d3050be3abeab83f13af48b352effe39f",
+  "primal_dual_ilqr_commit": "273d78dec439ed270af6f9cb8340af801fefd332",
+  "seed": 17,
+  "domain_rand_config_type": "disabled",
+  "requested_control_steps": 150,
+  "completed_control_steps": 150,
+  "source_complete": true,
+  "fell": false,
+  "failure_reason": "",
+  "non_foot_ground_contact_count": 0,
+  "terminated_count": 0,
+  "action_interface": {
+    "id": "mpx_bound_scale_1_no_lpf_v1",
+    "conversion_mode": "env_step_mpx_target_v1",
+    "action_dim": 12,
+    "action_scale": 1.0,
+    "action_lpf_cutoff_hz": null,
+    "action_lpf_alpha": 1.0,
+    "generation_advance": "env.step(raw_action)"
+  },
+  "fixed_command": {
+    "vx_m_per_s": 0.1,
+    "vy_m_per_s": 0.0,
+    "wz_rad_per_s": 0.0,
+    "configured_vx_range_m_per_s": [
+      0.0,
+      0.1
+    ]
+  },
+  "gait": {
+    "name": "bound_front_first",
+    "contact_order": [
+      "FL",
+      "FR",
+      "RL",
+      "RR"
+    ],
+    "initial_phase": [
+      0.0,
+      0.0,
+      0.5,
+      0.5
+    ],
+    "duty_factor": 0.5,
+    "step_frequency_hz": 3.0,
+    "step_height_m": 0.03
+  },
+  "planned_contact": {
+    "schedule_shape": [
+      150,
+      26,
+      4
+    ],
+    "front_pair_agreement": 1.0,
+    "rear_pair_agreement": 1.0
+  },
+  "measured_contact_substeps": {
+    "front_pair_agreement": 0.9616666666666667,
+    "rear_pair_agreement": 0.9733333333333334,
+    "front_only_fraction": 0.17,
+    "rear_only_fraction": 0.16,
+    "all_four_fraction": 0.605,
+    "all_flight_fraction": 0.0
+  },
+  "action_clipping": {
+    "element_count": 21,
+    "total_elements": 1800,
+    "element_fraction": 0.011666666666666667,
+    "max_abs_raw_action": 1.5374243021011353,
+    "max_clip_magnitude": 0.5374243021011353,
+    "saved_actions_in_range": true
+  },
+  "torque_saturation": {
+    "element_count": 47,
+    "total_elements": 7200,
+    "element_fraction": 0.006527777777777778,
+    "max_requested_torque_overshoot_nm": 5.906025425591157
+  },
+  "achieved_body_vx_m_per_s": {
+    "mean": 0.10197103042404454,
+    "min": -0.5618439234058674,
+    "max": 0.6295800483675147
+  },
+  "posture": {
+    "min_base_height_m": 0.19776214798794256,
+    "max_abs_roll_rad": 0.02345966807905498,
+    "max_abs_pitch_rad": 0.06043653082437972
+  },
+  "conclusion": "The retained bound configuration completed this short nominal environment-step diagnostic without a fall or non-foot contact and showed paired planned/measured support. It still has action clipping, torque saturation, predominantly all-four measured support, no measured flight, and large instantaneous velocity excursions. No frozen measured-contact classifier or durability matrix was run, so this is not G3 evidence and does not authorize bulk generation or training."
+}

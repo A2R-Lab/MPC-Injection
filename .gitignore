@@ -226,6 +226,9 @@ reward_shaping_progress.md
 *.npz
 *.zip
 
+# Ignore generated MPX bounding datasets, manifests, and validation artifacts
+data/quadruped_bound/
+
 # Ignore jax cache
 jax_cache/
 

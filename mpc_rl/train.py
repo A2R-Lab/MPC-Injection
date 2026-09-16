@@ -89,6 +89,11 @@ from mpc_rl.td3_mpc.sb3_td3_mpc import SB3_TD3_MPC
 
 # Register custom quadruped velocity tracking environment
 import mpc_rl.envs
+from mpc_rl.envs.action_interfaces import (
+    ACTION_INTERFACES,
+    DEFAULT_ACTION_INTERFACE_ID,
+    resolve_action_interface,
+)
 from mpc_rl.envs.domain_randomization import DomainRandomizationConfig
 from mpc_rl.envs.go2_sysid import assert_go2_sysid_joint_dynamics
 from mpc_rl.envs.cheetah3_env import DEFAULT_SPEED_GOAL as CHEETAH3_DEFAULT_SPEED_GOAL
@@ -140,6 +145,13 @@ _USE_GO2_SYSID = flags.DEFINE_boolean(
     "use_go2_sysid", True,
     "Apply the identified Go2 joint-dynamics patch to quadruped envs and MPX "
     "controllers. Disable this to match pre-sysID data and training runs."
+)
+_QUADRUPED_ACTION_INTERFACE = flags.DEFINE_enum(
+    "quadruped_action_interface",
+    DEFAULT_ACTION_INTERFACE_ID,
+    list(ACTION_INTERFACES),
+    "Versioned quadruped residual-position action interface. The default "
+    "preserves action_scale=0.5 and the 5-Hz target filter.",
 )
 _MAX_EPISODE_STEPS = flags.DEFINE_integer(
     "max_episode_steps", 1000, "Maximum number of steps per episode"
@@ -334,6 +346,7 @@ class AllConfig:
     random_select: bool
     data_dir: str
     quadruped_mpc_replay_mode: str
+    quadruped_action_interface: str
     use_go2_sysid: bool
     cheetah3_speed_goal: float
 
@@ -1909,7 +1922,9 @@ def make_cheetah3_env(render_mode=None, speed_goal: float = CHEETAH3_DEFAULT_SPE
 def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=None,
                        simple_reward: bool = False,
                        use_go2_sysid: bool = True,
-                       task: str = "velocity_tracking"):
+                       task: str = "velocity_tracking",
+
+                       action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID):
     """
     Create a supported quadruped gymnasium environment.
     
@@ -1952,11 +1967,13 @@ def make_quadruped_env(robot: str = "go2", render_mode=None, domain_rand_cfg=Non
             action_scale=BARREL_ROLL_ACTION_SCALE,
         )
 
+    action_interface = resolve_action_interface(action_interface_id)
     kwargs = dict(
         robot=robot,
         render_mode=render_mode,
         max_episode_steps=_MAX_EPISODE_STEPS.value,
         use_go2_sysid=use_go2_sysid,
+        **action_interface.env_kwargs(),
     )
     if domain_rand_cfg is not None:
         kwargs["domain_rand_cfg"] = domain_rand_cfg
@@ -2032,6 +2049,7 @@ def make_single_env_for_model_loading(domain: str, task: str,
                                       robot: str = "go2",
                                       simple_reward: bool = False,
                                       use_go2_sysid: bool = True,
+                                      action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                                       cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Create a single-env VecEnv for loading a saved model."""
     is_shadow_hand = (domain == "shadow_hand")
@@ -2044,6 +2062,7 @@ def make_single_env_for_model_loading(domain: str, task: str,
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
                 task=task,
+                action_interface_id=action_interface_id,
             )
         ])
     if is_cheetah3:
@@ -2063,6 +2082,7 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
                                     robot: str = "go2",
                                     simple_reward: bool = False,
                                     use_go2_sysid: bool = True,
+                                    action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                                     cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Load a saved model plus its VecNormalize stats for video evaluation."""
     model_env = make_single_env_for_model_loading(
@@ -2073,6 +2093,7 @@ def load_saved_model_for_video_eval(algorithm: str, model_path: Path,
         robot=robot,
         simple_reward=simple_reward,
         use_go2_sysid=use_go2_sysid,
+        action_interface_id=action_interface_id,
         cheetah3_speed_goal=cheetah3_speed_goal,
     )
 
@@ -2279,6 +2300,7 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                      save_replay_buffer_checkpoints: bool = False,
                      simple_reward: bool = False,
                      use_go2_sysid: bool = True,
+                     action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                      domain_rand_config_type: str = "disabled",
                      cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """
@@ -2344,7 +2366,8 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                 lambda: make_quadruped_env(robot=robot, domain_rand_cfg=_dr_eval,
                                           simple_reward=_sr_eval,
                                           use_go2_sysid=use_go2_sysid,
-                                          task=task),
+                                          task=task,
+                                          action_interface_id=action_interface_id),
                 n_envs=1,
                 seed=seed+1000,
             )
@@ -2438,6 +2461,9 @@ def create_callbacks(cfg: AllConfig, enable_logging: bool, logdir: Path,
                     if is_quadruped and task == "barrel_roll"
                     else None
                 ),
+                expected_action_interface_id=(
+                    action_interface_id if is_quadruped and task != "barrel_roll" else None
+                ),
                 quadruped_mpc_replay_mode=cfg.quadruped_mpc_replay_mode,
                 cheetah3_speed_goal=cheetah3_speed_goal,
                 verbose=1,
@@ -2455,6 +2481,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                         is_quadruped: bool = False, robot: str = "go2",
                         simple_reward: bool = False,
                         use_go2_sysid: bool = True,
+                        action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                         is_cheetah3: bool = False,
                         cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL,
                         barrel_roll_seeds: tuple[int, ...] | None = None,
@@ -2513,6 +2540,7 @@ def evaluate_and_record(model, domain: str, task: str, num_episodes: int,
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
                 task=task,
+                action_interface_id=action_interface_id,
             )
         elif is_cheetah3:
             eval_env_base = make_cheetah3_env(
@@ -2707,6 +2735,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                                is_quadruped: bool = False, robot: str = "go2",
                                simple_reward: bool = False,
                                use_go2_sysid: bool = True,
+                               action_interface_id: str = DEFAULT_ACTION_INTERFACE_ID,
                                is_cheetah3: bool = False,
                                cheetah3_speed_goal: float = CHEETAH3_DEFAULT_SPEED_GOAL):
     """Load requested checkpoints and record videos for each one."""
@@ -2748,6 +2777,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
             robot=robot,
             simple_reward=simple_reward,
             use_go2_sysid=use_go2_sysid,
+            action_interface_id=action_interface_id,
             cheetah3_speed_goal=cheetah3_speed_goal,
         )
 
@@ -2765,6 +2795,7 @@ def evaluate_checkpoint_videos(logdir: Path, checkpoint_steps: list[int],
                 robot=robot,
                 simple_reward=simple_reward,
                 use_go2_sysid=use_go2_sysid,
+                action_interface_id=action_interface_id,
                 is_cheetah3=is_cheetah3,
                 cheetah3_speed_goal=cheetah3_speed_goal,
             )
@@ -3018,6 +3049,7 @@ def main(argv):
         random_select=_RANDOM_SELECT.value,
         data_dir=_DATA_DIR.value,
         quadruped_mpc_replay_mode=_QUADRUPED_MPC_REPLAY_MODE.value,
+        quadruped_action_interface=_QUADRUPED_ACTION_INTERFACE.value,
         use_go2_sysid=_USE_GO2_SYSID.value,
         cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
     )
@@ -3025,6 +3057,15 @@ def main(argv):
     # ── Domain randomization setup (quadruped only) ──────────────────────
     dr_cfg = None
     if is_quadruped:
+        action_interface = resolve_action_interface(
+            _QUADRUPED_ACTION_INTERFACE.value
+        )
+        print(f"Quadruped action interface: {action_interface.interface_id}")
+        print(
+            "  action_scale="
+            f"{action_interface.action_scale}, action_lpf_cutoff_hz="
+            f"{action_interface.action_lpf_cutoff_hz}"
+        )
         print(
             "Go2 sysID joint dynamics: "
             f"{'ENABLED' if _USE_GO2_SYSID.value else 'DISABLED'}"
@@ -3066,6 +3107,9 @@ def main(argv):
             "cheetah3_speed_goal": _CHEETAH3_SPEED_GOAL.value,
         })
         if is_quadruped:
+            config_dict["quadruped_action_interface_config"] = (
+                action_interface.to_dict()
+            )
             config_dict["domain_randomization"] = {
                 "enabled": dr_cfg.enable,
                 "config_type": _DOMAIN_RAND_CONFIG_TYPE.value,
@@ -3103,7 +3147,10 @@ def main(argv):
             lambda: make_quadruped_env(robot=robot_name, domain_rand_cfg=_dr,
                                       simple_reward=_sr,
                                       use_go2_sysid=_USE_GO2_SYSID.value,
-                                      task=task),
+                                      task=task,
+                                      action_interface_id=(
+                                          _QUADRUPED_ACTION_INTERFACE.value
+                                      )),
             n_envs=_NUM_ENVS.value,
             seed=_SEED.value,
         )
@@ -3187,6 +3234,7 @@ def main(argv):
             save_replay_buffer_checkpoints=_SAVE_REPLAY_BUFFER_CHECKPOINTS.value,
             simple_reward=use_simple_reward,
             use_go2_sysid=_USE_GO2_SYSID.value,
+            action_interface_id=_QUADRUPED_ACTION_INTERFACE.value,
             domain_rand_config_type=(
                 _DOMAIN_RAND_CONFIG_TYPE.value if is_quadruped else "disabled"
             ),
@@ -3254,6 +3302,7 @@ def main(argv):
                 robot=_ROBOT.value,
                 simple_reward=use_simple_reward,
                 use_go2_sysid=_USE_GO2_SYSID.value,
+                action_interface_id=_QUADRUPED_ACTION_INTERFACE.value,
                 is_cheetah3=is_cheetah3,
                 cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
             )
@@ -3272,6 +3321,7 @@ def main(argv):
             robot=_ROBOT.value,
             simple_reward=use_simple_reward,
             use_go2_sysid=_USE_GO2_SYSID.value,
+            action_interface_id=_QUADRUPED_ACTION_INTERFACE.value,
             is_cheetah3=is_cheetah3,
             cheetah3_speed_goal=_CHEETAH3_SPEED_GOAL.value,
         )

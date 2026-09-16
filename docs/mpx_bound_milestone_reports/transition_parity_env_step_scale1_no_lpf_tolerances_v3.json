@@ -1,0 +1,131 @@
+{
+  "schema_version": 2,
+  "declaration_id": "mpx-transition-parity-v3-env-step-scale1-no-lpf",
+  "inherits_replay_thresholds_from": "mpx-transition-parity-v2-env-step-evaluation",
+  "declared_at": "2026-08-05T16:24:04-04:00",
+  "declared_before_measurement": true,
+  "replay_thresholds_changed_from_v2": false,
+  "action_conversion_limits_changed_from_v2": true,
+  "conversion_mode_under_test": "env_step_mpx_target_v1",
+  "action_interface_id": "mpx_bound_scale_1_no_lpf_v1",
+  "action_interface": {
+    "id": "mpx_bound_scale_1_no_lpf_v1",
+    "version": 1,
+    "action_dim": 12,
+    "normalized_action_bounds": [
+      -1.0,
+      1.0
+    ],
+    "action_scale": 1.0,
+    "action_lpf_cutoff_hz": null,
+    "required_mpx_conversion_mode": "env_step_mpx_target_v1",
+    "mpx_target_formula": "q_target = q_des + tau_ff / kp_realized",
+    "generation_advance": "env.step(raw_action)"
+  },
+  "actuator_limits_modified": false,
+  "one_step_control_steps": 1,
+  "short_rollout_control_steps": 160,
+  "simulation_substeps_per_control_step": 4,
+  "rollout_seed": 17,
+  "dr_seed_offset": 1000000,
+  "scenarios": [
+    {
+      "name": "nominal",
+      "domain_rand_config_type": "disabled",
+      "require_push_event": false,
+      "deterministic_push_schedule": []
+    },
+    {
+      "name": "deterministic_nontrivial_dr",
+      "domain_rand_config_type": "sysid_dyn20_mjlab",
+      "require_push_event": true,
+      "determinism": "The startup-DR patch is sampled from the fixed DR seed. Two fixed validation-only velocity deltas are applied after zero-based control steps 39 and 99 in both source and replay.",
+      "deterministic_push_schedule": [
+        {
+          "after_control_step_zero_based": 39,
+          "delta_qvel_xyz_rpy": [
+            0.2,
+            -0.1,
+            0.05,
+            0.08,
+            -0.06,
+            0.12
+          ]
+        },
+        {
+          "after_control_step_zero_based": 99,
+          "delta_qvel_xyz_rpy": [
+            -0.15,
+            0.08,
+            -0.04,
+            -0.05,
+            0.07,
+            -0.1
+          ]
+        }
+      ]
+    }
+  ],
+  "numeric_fields": {
+    "qpos": {
+      "max_abs": 0.000001,
+      "rms": 1e-7
+    },
+    "qvel": {
+      "max_abs": 0.00001,
+      "rms": 0.000001
+    },
+    "policy_observation": {
+      "max_abs": 0.00001,
+      "rms": 0.000001
+    },
+    "privileged_observation": {
+      "max_abs": 0.00001,
+      "rms": 0.000001
+    },
+    "reward": {
+      "max_abs": 0.000002,
+      "rms": 5e-7
+    },
+    "applied_torque": {
+      "max_abs": 0.00001,
+      "rms": 0.000001
+    },
+    "push_delta_qvel": {
+      "max_abs": 1e-12,
+      "rms": 1e-13
+    }
+  },
+  "exact_fields": {
+    "termination_mismatch_count": 0,
+    "truncation_mismatch_count": 0,
+    "action_out_of_range_count": 0,
+    "push_event_mismatch_count": 0
+  },
+  "mask_tolerances": {
+    "torque_saturation_mismatch_fraction": 0.001,
+    "replay_action_clipping_fraction": 0.0
+  },
+  "generation_action_conversion_limits_by_scenario": {
+    "nominal": {
+      "clipped_element_fraction": 0.0,
+      "max_clip_magnitude": 0.0
+    },
+    "deterministic_nontrivial_dr": {
+      "clipped_element_fraction": 0.02,
+      "max_clip_magnitude": 0.86
+    }
+  },
+  "required_clipping_diagnostics": [
+    "scenario",
+    "joint"
+  ],
+  "accepted_design_evidence": {
+    "official_measurement": false,
+    "deterministic_dr_observed_clipped_element_fraction": 0.019271,
+    "deterministic_dr_observed_max_clip_magnitude": 0.8503,
+    "deterministic_dr_observed_max_abs_raw_action": 1.8503,
+    "decision": "The user explicitly accepted the observed deterministic-DR clipping and normalized overshoot for this opt-in interface. The limits are rounded upward only to 2.00% and 0.86; nominal clipping remains disallowed."
+  },
+  "acceptance_rule": "Every inherited numeric field must satisfy both max_abs and RMS limits over one step and the entire short rollout in both scenarios; every inherited exact and replay-mask limit must pass; the source must complete without a fall; nominal generation clipping must remain zero; deterministic-DR generation clipping must not exceed 2.00% of action elements or 0.86 maximum normalized clip magnitude. Clipping remains reported by scenario and joint. Actuator limits are unchanged."
+}
