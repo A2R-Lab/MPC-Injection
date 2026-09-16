@@ -18,7 +18,7 @@ Validated on Linux x86-64 with Python 3.11.13 and Conda. The environment pins JA
 
 Install native prerequisites first: CMake, a C/C++ compiler, OpenGL/X11 development libraries, and zlib development headers. MuJoCo MPC's CMake build downloads its pinned native dependencies. Real-Go2 compilation has additional prerequisites in [REPRODUCING.md](REPRODUCING.md#policy-export-and-real-go2).
 
-From a new parent directory, clone the repository and pinned dependencies. Before publication, the integrated MPX commit is available only locally; this public clone recipe becomes usable after dependency/root publication.
+From a new parent directory, clone the repository and pinned dependencies.
 
 ```bash
 git clone --recurse-submodules https://github.com/A2R-Lab/MPC-Injection.git
