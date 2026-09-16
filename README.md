@@ -1,8 +1,23 @@
-# MPC-Injection: Biasing Off-Policy Locomotion RL Toward Controller-Induced Behavior Basins
+<div align="center">
 
-**Roy Xing, Seyoung Ree, and Brian Plancher — CoRL 2026**
+# MPC-Injection
 
-MPC-Injection adds controller-generated transitions to off-policy RL replay buffers. The injected experience biases exploration toward controller-induced behavior while the policy learns from the task reward. The repository includes SAC-MPC and TD3-MPC, tagged replay buffers, trajectory generators, and evaluation tools.
+### Biasing Off-Policy Locomotion RL Toward Controller-Induced Behavior Basins
+
+**Roy Xing · Seyoung Ree · Brian Plancher**<br>
+CoRL 2026
+
+[![Paper](https://img.shields.io/badge/arXiv-2606.26392-b31b1b.svg)](https://arxiv.org/abs/2606.26392)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB.svg?logo=python&logoColor=white)](environment.yml)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+[**Paper**](https://arxiv.org/abs/2606.26392) · [**Reproducing experiments**](REPRODUCING.md) · [**Installation**](#installation)
+
+</div>
+
+MPC-Injection steers off-policy locomotion RL toward controller-induced behavior by inserting model-predictive-control transitions into the replay buffer. The policy still learns from the task reward: the injected experience changes which parts of the state space it learns from, without adding an imitation objective or discriminator.
+
+This repository contains the SAC-MPC and TD3-MPC implementations, tagged replay buffers, trajectory generators, evaluation tools, and the simulation and deployment code used for the paper.
 
 | Task family | Entry point |
 |---|---|
@@ -51,6 +66,19 @@ PY
 ```
 
 See [REPRODUCING.md](REPRODUCING.md) for regeneration, training, evaluation, and deployment. Datasets and pretrained policies are not bundled. This is a completed research artifact with limited maintenance; local startup and integration checks do not establish paper-score reproduction or hardware safety.
+
+## Citation
+
+If this repository is useful in your work, please cite the [paper](https://arxiv.org/abs/2606.26392):
+
+```bibtex
+@article{xing2026mpcinjection,
+  title   = {MPC-Injection: Biasing Off-Policy Locomotion RL Toward Controller-Induced Behavior Basins},
+  author  = {Xing, Roy and Ree, Seyoung and Plancher, Brian},
+  journal = {arXiv preprint arXiv:2606.26392},
+  year    = {2026}
+}
+```
 
 ## Acknowledgments
 
