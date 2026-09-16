@@ -15,6 +15,12 @@ CoRL 2026
 
 </div>
 
+<p align="center">
+  <img src="assets/quadruped_main_comparison.png" width="100%" alt="Pure RL produces irregular quadruped footsteps while 25 percent MPC-Injection produces a trotting gait under the same reward function.">
+</p>
+
+<p align="center"><em>With the same velocity-tracking reward, pure RL finds a high-return but irregular behavior (left), while 25% MPC-Injection produces a structured trotting gait (right).</em></p>
+
 MPC-Injection steers off-policy locomotion RL toward controller-induced behavior by inserting model-predictive-control transitions into the replay buffer. The policy still learns from the task reward: the injected experience changes which parts of the state space it learns from, without adding an imitation objective or discriminator.
 
 This repository contains the SAC-MPC and TD3-MPC implementations, tagged replay buffers, trajectory generators, evaluation tools, and the simulation and deployment code used for the paper.
