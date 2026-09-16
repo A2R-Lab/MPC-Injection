@@ -259,3 +259,10 @@ deploy/robots/go2/build/
 
 # Ignore agent generated reference docs
 misc_docs/
+
+# Disposable Conda prefixes and generated research/deployment artifacts
+.conda/
+/data/
+*.onnx.data
+/deploy/robots/go2/config/policy/velocity/policies/
+/deploy/sys_id/*.html
