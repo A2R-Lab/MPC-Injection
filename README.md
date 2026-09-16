@@ -14,7 +14,7 @@ MPC-Injection adds controller-generated transitions to off-policy RL replay buff
 
 ## Installation
 
-Validated on Linux x86-64 with Python 3.11.13 and Conda. The environment pins JAX 0.6.2, MuJoCo 3.3.6, SBX 0.23.0, and SB3 2.7.0. It includes CUDA 12 JAX packages; CPU smoke checks use `JAX_PLATFORMS=cpu`. Headless rendering uses `MUJOCO_GL=egl` and requires a working EGL driver.
+Validated on Linux x86-64 with Python 3.11.13 and Conda. The environment pins JAX 0.6.2, MuJoCo 3.3.6, SBX 0.23.0, and SB3 2.7.0. It includes CUDA 12 JAX packages; CPU smoke checks use `JAX_PLATFORMS=cpu`. Headless rendering uses `MUJOCO_GL=egl` and requires a working EGL driver. Video recording requires `ffmpeg` on `PATH`; interactive viewers also require GLFW/X11 and a display.
 
 Install native prerequisites first: CMake, a C/C++ compiler, OpenGL/X11 development libraries, and zlib development headers. MuJoCo MPC's CMake build downloads its pinned native dependencies. Real-Go2 compilation has additional prerequisites in [REPRODUCING.md](REPRODUCING.md#policy-export-and-real-go2).
 
