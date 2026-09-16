@@ -44,7 +44,7 @@ from absl import flags
 from absl import logging
 
 import gymnasium as gym
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 import matplotlib.pyplot as plt
@@ -82,7 +82,7 @@ logging.set_verbosity(logging.WARNING)
 
 
 def make_dmc_env(domain: str, task: str, render_mode=None):
-        dm_env = suite.load(domain_name=domain, task_name=task)
+        dm_env = load_dm_control_env(domain_name=domain, task_name=task)
         gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
         gym_env = FlattenObservation(gym_env)
         return gym_env

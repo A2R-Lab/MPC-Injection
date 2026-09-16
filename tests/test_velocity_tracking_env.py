@@ -42,6 +42,7 @@ from mpc_rl.envs.domain_randomization import (
     sample_startup_domain_rand_patch,
 )
 from mpc_rl.envs.velocity_tracking_env import QuadrupedVelocityTrackingEnv
+from mpc_rl.planner.gen_traj_data_mpx_bound import generate_trajectory as generate_bound_mpx_trajectory
 from mpc_rl.planner.gen_traj_data_mpx_dr import (
     gen_traj_quadruped_dr,
     generate_trajectory as generate_dr_mpx_trajectory,
@@ -824,6 +825,30 @@ class TestStartupDomainRandomizationPatch:
 
     def test_disabled_dr_generator_uses_new_direct_transition_schema(self):
         dr_disabled = generate_dr_mpx_trajectory(
+            seed=5,
+            domain_rand_config_type="disabled",
+            mpc=FakeQuadrupedMPC(),
+            episode_length=3,
+            verbose=0,
+            render=False,
+        )
+
+        assert dr_disabled["dr_enabled"] is False
+        assert dr_disabled["dr_config_type"] == "disabled"
+        assert int(dr_disabled["controller_delay_steps"]) == 0
+        assert float(dr_disabled["controller_delay_s"]) == pytest.approx(0.0)
+        assert dr_disabled["dr_added_mass_kg"] == pytest.approx(0.0)
+        assert "body_mass" not in dr_disabled["dr_applied_fields"].tolist()
+        assert "policy_obs" in dr_disabled
+        assert "next_policy_obs" in dr_disabled
+        assert "actions" in dr_disabled
+        assert "rewards" in dr_disabled
+        assert dr_disabled["policy_obs"].shape[0] == 3
+        assert dr_disabled["next_policy_obs"].shape[0] == 3
+        assert extract_startup_domain_rand_patch(dr_disabled) is not None
+
+    def test_disabled_bound_generator_uses_new_direct_transition_schema(self):
+        dr_disabled = generate_bound_mpx_trajectory(
             seed=5,
             domain_rand_config_type="disabled",
             mpc=FakeQuadrupedMPC(),

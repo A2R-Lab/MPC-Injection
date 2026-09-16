@@ -1,7 +1,7 @@
 import numpy as np
 import zipfile
 from stable_baselines3.common.callbacks import BaseCallback
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 import gymnasium as gym
@@ -348,7 +348,7 @@ class FixedMPCInjectCallback(BaseCallback):
             )
         else:
             # For dm_control environments
-            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            dm_env = load_dm_control_env(domain_name=self.domain, task_name=self.task)
             temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
             temp_env = FlattenObservation(temp_env)
         
@@ -1303,7 +1303,7 @@ class PercentMPCInjectCallback(BaseCallback):
             )
         else:
             # For dm_control environments
-            dm_env = suite.load(domain_name=self.domain, task_name=self.task)
+            dm_env = load_dm_control_env(domain_name=self.domain, task_name=self.task)
             temp_env = DmControlCompatibilityV0(dm_env, render_mode=None)
             temp_env = FlattenObservation(temp_env)
         

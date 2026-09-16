@@ -11,7 +11,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.patches import Rectangle
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
@@ -32,7 +32,7 @@ def load_config(run_dir: Path):
 
 def make_dm_env(domain: str, task: str, render_mode='rgb_array'):
     """Create a dm_control environment wrapped for gymnasium."""
-    dm_env = suite.load(domain_name=domain, task_name=task)
+    dm_env = load_dm_control_env(domain_name=domain, task_name=task)
     gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
     gym_env = FlattenObservation(gym_env)
     return gym_env
@@ -180,8 +180,11 @@ def create_animated_plot(frames, total_reward, episode_length, save_path: Path =
 def main():
     """Main function to load model and create visualization."""
     # Paths
-    #run_dir = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-113507-percentage-50pct")
-    run_dir = Path("/home/roy/MPC-Injection/logs/SAC-MPC-walker-velocity_only_reward/3rd_run/walker-walk-SAC-MPC-20260107-112012-percentage-0pct")
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-dir", type=Path, required=True)
+    run_dir = parser.parse_args().run_dir
     
     # Load configuration
     print("Loading configuration...")

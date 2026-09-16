@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import sys
 
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from gymnasium.wrappers import TimeLimit
@@ -42,7 +42,7 @@ from reward_surfaces.core.evaluator import RewardSurfaceEvaluator
 
 def make_dm_control_env(domain: str, task: str):
     """Create DM Control environment."""
-    dm_env = suite.load(domain_name=domain, task_name=task)
+    dm_env = load_dm_control_env(domain_name=domain, task_name=task)
     gym_env = DmControlCompatibilityV0(dm_env, render_mode=None)
     gym_env = FlattenObservation(gym_env)
     return gym_env

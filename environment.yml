@@ -54,3 +54,11 @@ dependencies:
       - robot_descriptions==1.22.0
       - tyro==1.0.5
 
+      # Existing policy exporter uses the PyTorch 2.8 ONNX export path.
+      - torch==2.8.0
+      - onnx==1.20.1
+      - onnxruntime==1.24.3
+      # Match MJPC protobuf generation and runtime (working baseline).
+      - grpcio==1.76.0
+      - grpcio-tools==1.76.0
+      - protobuf==6.32.1

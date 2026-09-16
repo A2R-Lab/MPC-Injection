@@ -22,14 +22,13 @@ try:
     # Configuration flags for GPU
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
-    os.environ["JAX_PLATFORMS"] = "cuda"
-    os.environ["XLA_FLAGS"] = f"--xla_gpu_cuda_data_dir=/usr/lib/cuda"
+    os.environ.setdefault("JAX_PLATFORMS", "cuda")
     gpu_available = True
 except Exception as e:
     print(f"Could not detect GPU compute capability: {e}")
     print("Falling back to CPU")
     # Configure for CPU
-    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 # Suppress JAX warnings and info logs
 warnings.filterwarnings("ignore", category=UserWarning, module="jax")
@@ -42,7 +41,7 @@ from absl import logging
 import gymnasium as gym
 from dataclasses import dataclass
 from typing import Optional
-from dm_control import suite
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 from shimmy import DmControlCompatibilityV0
 from gymnasium.wrappers import FlattenObservation
 from sbx import SAC, PPO, TD3
@@ -1871,7 +1870,7 @@ def make_dm_env(domain: str, task: str, render_mode=None):
     Returns:
         Wrapped gymnasium environment
     """
-    dm_env = suite.load(domain_name=domain, task_name=task)
+    dm_env = load_dm_control_env(domain_name=domain, task_name=task)
     gym_env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
     gym_env = FlattenObservation(gym_env)
     return gym_env

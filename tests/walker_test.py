@@ -1,7 +1,8 @@
 # walker_fixed_init.py
 import gymnasium as gym
 import numpy as np
-import shimmy  # registers dm_control/* with Gymnasium
+from shimmy import DmControlCompatibilityV0
+from mpc_rl.envs.dm_control_env import load_dm_control_env
 
 def set_xml_initial_state(env):
     """Force qpos/qvel to the model's XML defaults after every reset."""
@@ -15,9 +16,8 @@ def set_xml_initial_state(env):
 
 def main():
     # Disable dm_control's episode randomization at source.
-    env = gym.make(
-        "dm_control/walker-walk-v0",
-        task_kwargs={"random": None},          # no per-episode randomness
+    env = DmControlCompatibilityV0(
+        load_dm_control_env("walker", "walk", task_kwargs={"random": None}),
         render_mode="human",
     )
 
